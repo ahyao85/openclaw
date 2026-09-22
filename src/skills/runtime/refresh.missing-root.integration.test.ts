@@ -677,9 +677,20 @@ describe("shared missing skill ancestors", () => {
     } else {
       await fs.symlink(outside, link, "dir");
     }
-    await expect
-      .poll(() => getSkillsSourceVersion(workspaceDir), { timeout: 3_000 })
-      .toBeGreaterThan(sourceVersion);
+    await vi.waitFor(
+      () => {
+        expect(getSkillsSourceVersion(workspaceDir)).toBeGreaterThan(sourceVersion);
+        if (replaceAncestor) {
+          // A late initial-ready event can advance the version before the link
+          // is observed. Keep it in place until observation moves to its parent.
+          expect(
+            watch.mock.calls.some(([watched]) => watched === root) ||
+              nativeWatch.mock.calls.some(([watched]) => watched === root),
+          ).toBe(true);
+        }
+      },
+      { timeout: 3_000 },
+    );
     expect(
       watch.mock.calls
         .slice(chokidarAdmissionStart)

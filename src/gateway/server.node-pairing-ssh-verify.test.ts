@@ -43,7 +43,9 @@ afterEach(async () => {
   const errors = outcomes.flatMap((outcome) =>
     outcome.status === "rejected" ? [outcome.reason] : [],
   );
-  if (errors.length) throw new AggregateError(errors, "SSH pairing timeout cleanup failed");
+  if (errors.length) {
+    throw new AggregateError(errors, "SSH pairing timeout cleanup failed");
+  }
 });
 
 // Observe the real verifier and approval owner so assertions and teardown join
@@ -242,10 +244,9 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
         identityName: `ssh-verify-key-match-${timing.replaceAll(" ", "-")}`,
         run: async ({ lanIp, loaded, connectNode }) => {
           const probe = createDeferred<NodeIdentityProbeResult>();
-          let restorePairingRead: (() => void) | undefined;
           const work = observePairingWork(() => {
             probe.resolve({ status: "timeout" });
-            restorePairingRead?.();
+            reread?.mockRestore();
           });
           const matched: NodeIdentityProbeResult = {
             status: "ok",
@@ -265,7 +266,6 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
                   return pendingSnapshot;
                 })
               : undefined;
-          restorePairingRead = () => reread?.mockRestore();
           let bodyFailure: { error: unknown } | undefined;
           try {
             const first = await connectNode();
