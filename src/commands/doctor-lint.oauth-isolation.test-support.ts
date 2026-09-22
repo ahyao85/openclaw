@@ -1,7 +1,6 @@
 // Keep the OAuth source-lock fixture separate from the private-handle retirement matrix.
 import { expect, vi } from "vitest";
 import { operatorMcpOAuthIdentity } from "../agents/mcp-oauth-identity.js";
-import { createMcpOAuthClientProvider } from "../agents/mcp-oauth-provider.js";
 import { resolveMcpOAuthAccessToken } from "../agents/mcp-oauth.js";
 import type { HealthCheck } from "../flows/health-checks.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
@@ -10,7 +9,10 @@ import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-d
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { runDoctorLintCli } from "./doctor-lint.js";
-import { snapshotDoctorLintSqliteFamily } from "./doctor-lint.test-support.js";
+import {
+  seedDoctorLintMcpToken,
+  snapshotDoctorLintSqliteFamily,
+} from "./doctor-lint.test-support.js";
 
 export async function verifyDoctorLintOAuthStateIsolation(
   runtime: RuntimeEnv,
@@ -19,11 +21,7 @@ export async function verifyDoctorLintOAuthStateIsolation(
   await withOpenClawTestState({ prefix: "doctor-lint-oauth-" }, async (state) => {
     await state.writeConfig({});
     const identity = operatorMcpOAuthIdentity("oauth-proof", "https://mcp.example.test/rpc");
-    await createMcpOAuthClientProvider({ identity }).saveTokens({
-      access_token: "stored-inspection-token-not-real",
-      token_type: "Bearer",
-      expires_in: 3600,
-    });
+    await seedDoctorLintMcpToken(identity);
     const databasePath = resolveOpenClawStateSqlitePath(state.env);
     await closeOpenClawStateDatabaseByPathAsync(databasePath);
     const lock = openNodeSqliteDatabase(databasePath);
