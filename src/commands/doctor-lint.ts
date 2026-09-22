@@ -628,10 +628,9 @@ async function withReadOnlyPluginStateSnapshot<T>(
         retirementErrors.push(error);
       }
       if (retirementErrors.length > 0) {
-        const errors = outcome.ok ? retirementErrors : [outcome.error, ...retirementErrors];
         throw new AggregateError(
-          errors,
-          errors.map((error) => scrubDoctorErrorMessage(error)).join("; "),
+          retirementErrors,
+          retirementErrors.map((error) => scrubDoctorErrorMessage(error)).join("; "),
         );
       }
       if (!(await cleanup())) {
@@ -644,7 +643,15 @@ async function withReadOnlyPluginStateSnapshot<T>(
         recordSnapshotCleanupWarning(cleanupWarnings);
       }
     } catch (error) {
-      throw new DoctorLintStateSnapshotError(error);
+      // Neither owner retirement nor ordinary byte cleanup may hide a detector failure.
+      throw new DoctorLintStateSnapshotError(
+        outcome.ok
+          ? error
+          : new AggregateError(
+              [outcome.error, error],
+              `${scrubDoctorErrorMessage(outcome.error)}; ${scrubDoctorErrorMessage(error)}`,
+            ),
+      );
     }
     if (!outcome.ok) {
       throw runStarted ? outcome.error : new DoctorLintStateSnapshotError(outcome.error);

@@ -214,13 +214,12 @@ it("refreshes skills created beneath an initially missing project skills root", 
 });
 
 describe("shared missing skill ancestors", () => {
-  let captureFailure: (() => void) | undefined;
+  let captureFailure: ((stage: "before test teardown" | "afterEach fallback") => void) | undefined;
   const roots = useAutoCleanupTempDirTracker((cleanup) =>
     afterEach(async ({ task }) => {
-      // onTestFailed runs after afterEach. Freeze the failed operation's state
-      // before closing watches or clearing their pending timers.
+      // afterEach may follow the body's cleanup; retain any earlier snapshot.
       if (task.result?.state === "fail") {
-        captureFailure?.();
+        captureFailure?.("afterEach fallback");
       }
       captureFailure = undefined;
       const { closeSkillsWatchers } = await import("./refresh.js");
@@ -285,13 +284,14 @@ describe("shared missing skill ancestors", () => {
           stack: string | undefined;
         }
       >();
-      captureFailure = () => {
+      captureFailure = (captureStage) => {
         if (captureAttempted) {
           return;
         }
         captureAttempted = true;
         try {
           failureSnapshot = JSON.stringify({
+            captureStage,
             ancestor,
             phase,
             transitions,
@@ -315,7 +315,7 @@ describe("shared missing skill ancestors", () => {
         }
       };
       onTestFailed(() => {
-        console.error(`[skills ancestor failure before cleanup] ${failureSnapshot}`);
+        console.error(`[skills ancestor failure] ${failureSnapshot}`);
       });
       const root = await fs.realpath(roots.make("skills-shared-ancestor-"));
       const source = (name: string) => {
@@ -569,8 +569,11 @@ describe("shared missing skill ancestors", () => {
         phase = "discover recreated sibling skill";
         await expect.poll(() => read(second), { timeout: 3_000 }).toContain("recreated-proof");
       } catch (error) {
-        // Freeze failure state before finally retires its native watches.
-        captureFailure?.();
+        try {
+          captureFailure?.("before test teardown");
+        } catch {
+          // Diagnostic failure must not replace the original operation error.
+        }
         throw error;
       } finally {
         unregister();
