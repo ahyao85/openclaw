@@ -31,18 +31,18 @@ export async function verifyDoctorLintOAuthStateIsolation(
       lock.exec("BEGIN IMMEDIATE; ROLLBACK");
       const before = snapshotDoctorLintSqliteFamily(databasePath);
       lock.exec("BEGIN IMMEDIATE");
+      let resolvedToken: string | undefined;
       installHealthChecks([
         {
           id: "core/doctor/runtime-tool-schemas",
           kind: "core",
           description: "checks OAuth state ownership",
           async detect() {
-            const token = await resolveMcpOAuthAccessToken({
+            resolvedToken = await resolveMcpOAuthAccessToken({
               identity,
               acceptUnknownExpiry: true,
               signal: AbortSignal.timeout(250),
             });
-            expect(token).toBe("stored-inspection-token-not-real");
             return [];
           },
         },
@@ -55,11 +55,14 @@ export async function verifyDoctorLintOAuthStateIsolation(
             onlyIds: ["core/doctor/runtime-tool-schemas"],
           }),
         ).resolves.toBe(0);
-        expect(JSON.parse(String(stdout.mock.calls.at(-1)?.[0]))).toMatchObject({
+        const report = JSON.parse(String(stdout.mock.calls.at(-1)?.[0]));
+        expect(report).toMatchObject({
           ok: true,
           checksRun: 1,
           findings: [],
         });
+        expect(report.warnings ?? []).toEqual([]);
+        expect(resolvedToken).toBe("stored-inspection-token-not-real");
         expect(lock.isOpen).toBe(true);
         expect(lock.isTransaction).toBe(true);
         lock.exec("ROLLBACK");
