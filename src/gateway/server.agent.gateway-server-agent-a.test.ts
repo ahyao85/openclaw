@@ -14,7 +14,7 @@ import {
 import { resetPreparedModelCatalogStateForTest } from "../agents/prepared-model-runtime.test-support.js";
 import type { ChannelPlugin } from "../channels/plugins/types.public.js";
 import { listSessionPendingInputs, loadSessionEntry } from "../config/sessions/session-accessor.js";
-import { createAbortError, racePromiseWithAbortSignal } from "../infra/abort-signal.js";
+import { createAbortError } from "../infra/abort-signal.js";
 import {
   type AgentRunDelegatedAuthority,
   validateAgentRunDelegatedAuthority,
@@ -23,6 +23,7 @@ import { redactSensitiveText } from "../logging/redact.js";
 import * as mediaStore from "../media/store.js";
 import {
   getActiveGatewayRootWorkCount,
+  getActiveGatewayRootWorkHolders,
   isGatewaySubordinateWorkAdmissionClosed,
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
@@ -31,7 +32,10 @@ import {
   createChannelTestPluginBase,
   createDirectOutboundTestAdapter,
 } from "../test-utils/channel-plugins.js";
-import { waitForAgentCommandCall } from "./agent-command.test-helpers.js";
+import {
+  observeGatewayRunExecution,
+  waitForAgentCommandCall,
+} from "./agent-command.test-helpers.js";
 import { setRegistry } from "./server.agent.gateway-server-agent.mocks.js";
 import { createRegistry } from "./server.e2e-registry-helpers.js";
 import { readSessionMessagesAsync } from "./session-transcript-readers.js";
@@ -299,7 +303,7 @@ describe("gateway server agent", () => {
     testState.allowFrom = undefined;
   });
 
-  test("keeps accepted detached agent work on its retained request root", async ({ signal }) => {
+  test("keeps accepted detached agent work on its retained request root", async () => {
     await setTestSessionStore({
       entries: {
         main: {
@@ -318,15 +322,18 @@ describe("gateway server agent", () => {
         suspension?.rollback();
       }
     });
-
-    const participantRecorded = createDeferred();
+    const execution = await observeGatewayRunExecution({
+      method: "agent",
+      runId: "idem-agent-detached-root",
+    });
+    let participantRecorded = false;
     const unsubscribeParticipant = onSessionLifecycleEvent((event) => {
       if (
         event.reason === "participants" &&
         event.agentId === "main" &&
         event.sessionKey === "agent:main:main"
       ) {
-        participantRecorded.resolve();
+        participantRecorded = true;
       }
     });
     try {
@@ -338,16 +345,16 @@ describe("gateway server agent", () => {
 
       expect(res.ok).toBe(true);
       expect(res.payload?.status).toBe("accepted");
-      await vi.waitFor(() => {
-        expect(subordinateAdmissionClosed).toBe(false);
-      });
-      // The accepted turn also owns asynchronous participant persistence.
-      await racePromiseWithAbortSignal(participantRecorded.promise, signal);
-      await vi.waitFor(() => {
-        expect(getActiveGatewayRootWorkCount()).toBe(0);
-      });
+      await execution.waitForCompletion();
+      expect(participantRecorded).toBe(true);
+      expect(subordinateAdmissionClosed).toBe(false);
+      expect(getActiveGatewayRootWorkCount(), getActiveGatewayRootWorkHolders().join(", ")).toBe(0);
     } finally {
-      unsubscribeParticipant();
+      try {
+        await execution.restore();
+      } finally {
+        unsubscribeParticipant();
+      }
     }
   });
 

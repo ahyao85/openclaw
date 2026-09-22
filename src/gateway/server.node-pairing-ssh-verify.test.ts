@@ -1,10 +1,11 @@
 // SSH-verified node pairing e2e: real gateway server on the LAN self-connect
 // harness, with the SSH probe runtime mocked at the module boundary.
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { writeConfigFile } from "../config/config.js";
 import { getRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { GatewayNodePairingConfig } from "../config/types.gateway.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import * as pairingApprovals from "../infra/device-pairing-approval.js";
 import { withDevicePairingLock } from "../infra/device-pairing-lock.js";
 import * as devicePairing from "../infra/device-pairing.js";
@@ -33,9 +34,22 @@ vi.mock("../skills/runtime/remote.js", async (importOriginal) => ({
 
 installGatewayTestHooks({ scope: "suite" });
 
+const pendingPairingCleanups = new Set<() => Promise<void>>();
+const pendingPairingAttempts = new Set<Promise<void>>();
+afterEach(async () => {
+  // Runner timeouts do not unwind a body waiting for approval or its pairing lock.
+  const outcomes = await Promise.allSettled([...pendingPairingCleanups].map((close) => close()));
+  await Promise.allSettled(pendingPairingAttempts);
+  const errors = outcomes.flatMap((outcome) =>
+    outcome.status === "rejected" ? [outcome.reason] : [],
+  );
+  if (errors.length) throw new AggregateError(errors, "SSH pairing timeout cleanup failed");
+});
+
 // Observe the real verifier and approval owner so assertions and teardown join
 // their actual work, without replacing authorization or waiting on a timer.
-function observePairingWork() {
+function observePairingWork(release?: () => void | Promise<void>) {
+  const waiting = new AbortController();
   const approve = pairingApprovals.approveDevicePairing;
   const called = createDeferred<{ result: ReturnType<typeof approve> }>();
   const approval = vi
@@ -72,20 +86,30 @@ function observePairingWork() {
       throw new AggregateError(errors, "SSH pairing work failed");
     }
   };
-  return {
-    approval,
-    verification,
-    called: called.promise,
-    settle,
-    async close() {
+  let closing: Promise<void> | undefined;
+  const close = () =>
+    (closing ??= (async () => {
+      waiting.abort();
       try {
-        await settle();
+        try {
+          await release?.();
+        } finally {
+          await settle();
+        }
       } finally {
         rootWork.mockRestore();
         verification.mockRestore();
         approval.mockRestore();
+        pendingPairingCleanups.delete(close);
       }
-    },
+    })());
+  pendingPairingCleanups.add(close);
+  return {
+    approval,
+    verification,
+    waitForApproval: () => racePromiseWithAbortSignal(called.promise, waiting.signal),
+    settle,
+    close,
   };
 }
 
@@ -104,7 +128,7 @@ function createSshVerifyConfig(lanIp: string, overrides: SshVerifyConfig = {}): 
 describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve", (attempt) => {
   const attemptWithSshVerify: typeof attempt = async (params) => {
     const configure = params.configure;
-    await attempt({
+    const pending = attempt({
       ...params,
       configure: async (lanIp) => {
         await writeConfigFile({
@@ -113,6 +137,12 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
         await configure?.(lanIp);
       },
     });
+    pendingPairingAttempts.add(pending);
+    try {
+      await pending;
+    } finally {
+      pendingPairingAttempts.delete(pending);
+    }
   };
 
   beforeEach(() => {
@@ -139,7 +169,11 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
         const lock = createDeferred();
         const locked = createDeferred();
         let lockWork: Promise<void> | undefined;
-        const work = observePairingWork();
+        const work = observePairingWork(async () => {
+          lock.resolve();
+          probe.resolve({ status: "timeout" });
+          await lockWork;
+        });
         const approval = work.approval;
         probeMock.mockImplementation(() => probe.promise);
         try {
@@ -159,7 +193,7 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
                 publicKey: loaded.publicKey,
               }),
             });
-            await work.called;
+            await work.waitForApproval();
             expect(approval).toHaveBeenCalledOnce();
           }
           const current = getRuntimeConfigSnapshot();
@@ -185,7 +219,7 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
           });
           lock.resolve();
           await lockWork;
-          const { result } = await work.called;
+          const { result } = await work.waitForApproval();
           expect(approval).toHaveBeenCalledOnce();
           await result;
           expect(await devicePairing.getPairedDevice(loaded.identity.deviceId)).toBeNull();
@@ -195,9 +229,6 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
             ]),
           );
         } finally {
-          lock.resolve();
-          probe.resolve({ status: "timeout" });
-          await lockWork;
           await work.close();
         }
       },
@@ -211,7 +242,11 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
         identityName: `ssh-verify-key-match-${timing.replaceAll(" ", "-")}`,
         run: async ({ lanIp, loaded, connectNode }) => {
           const probe = createDeferred<NodeIdentityProbeResult>();
-          const work = observePairingWork();
+          let restorePairingRead: (() => void) | undefined;
+          const work = observePairingWork(() => {
+            probe.resolve({ status: "timeout" });
+            restorePairingRead?.();
+          });
           const matched: NodeIdentityProbeResult = {
             status: "ok",
             stdout: `motd noise\n{"deviceId":"${loaded.identity.deviceId}","publicKey":"${loaded.publicKey}"}\n`,
@@ -225,11 +260,12 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
                   // Let the real SSH approval commit after the pending snapshot,
                   // before the handshake revalidates current device authority.
                   probe.resolve(matched);
-                  const { result } = await work.called;
+                  const { result } = await work.waitForApproval();
                   expect((await result)?.status).toBe("approved");
                   return pendingSnapshot;
                 })
               : undefined;
+          restorePairingRead = () => reread?.mockRestore();
           let bodyFailure: { error: unknown } | undefined;
           try {
             const first = await connectNode();
@@ -253,7 +289,7 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
               expect(reread).toHaveBeenCalledOnce();
               expect(first).toMatchObject({ ok: true, payload: { type: "hello-ok" } });
             }
-            const { result } = await work.called;
+            const { result } = await work.waitForApproval();
             expect((await result)?.status).toBe("approved");
             const paired = await devicePairing.getPairedDevice(loaded.identity.deviceId);
             expect(paired?.approvedVia).toBe("ssh-verified");
@@ -272,8 +308,6 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
           }
           // Release a failed assertion's probe and join the real approval tail
           // before the next case resets configuration or pairing state.
-          probe.resolve({ status: "timeout" });
-          reread?.mockRestore();
           try {
             await work.close();
           } catch (cleanupError) {
