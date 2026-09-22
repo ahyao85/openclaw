@@ -4,7 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { expect, vi, type Mock } from "vitest";
 import { acquireAuthProfileReadDatabase } from "../agents/auth-profiles/sqlite-read-pool.js";
 import { closeAuthProfileReadPool } from "../agents/auth-profiles/sqlite.js";
-import type { HealthCheck } from "../flows/health-checks.js";
+import type { HealthCheck, HealthFinding } from "../flows/health-checks.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { removeTempDirectoryAsync } from "../infra/sqlite-readonly-location-cleanup.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -28,6 +28,10 @@ export async function verifyDoctorLintPrivateAuthRetirement(
     | "normal"
     | "update"
     | "reader-close"
+    | "reader-close-detector"
+    | "reader-close-finding"
+    | "reader-close-full-finding"
+    | "writer-close-detector"
     | "writer-close"
     | "detector"
     | "cleanup"
@@ -69,10 +73,18 @@ export async function verifyDoctorLintPrivateAuthRetirement(
     let unregister: (() => void) | undefined;
     let restoreAuthClose: (() => void) | undefined;
     let removedSnapshot = false;
-    let denyWriter = mode === "writer-close";
+    let denyWriter = mode.startsWith("writer-close");
     const cleanupFailure = mode.startsWith("cleanup");
     const detectorFailure = mode.endsWith("detector");
-    const retirementFailure = mode.endsWith("close");
+    const retirementFailure = mode.includes("-close");
+    const readerRetirementFailure = mode.startsWith("reader-close");
+    const returnedFinding = mode.endsWith("finding");
+    const detectorFinding: HealthFinding = {
+      checkId: "core/doctor/runtime-tool-schemas",
+      severity: "error",
+      message: "synthetic authoritative detector finding",
+      path: "synthetic.detector.path",
+    };
     const checkId = "core/doctor/runtime-tool-schemas";
     const closeError = `synthetic ${mode} retirement failure`;
     installHealthChecks([
@@ -109,7 +121,7 @@ export async function verifyDoctorLintPrivateAuthRetirement(
             }
           }
           // Reader/writer retirement failures remain explicit synthetic injections.
-          if (mode === "reader-close") {
+          if (readerRetirementFailure) {
             const close = vi.spyOn(privateAuth, "close").mockImplementationOnce(() => {
               throw new Error(closeError);
             });
@@ -131,7 +143,7 @@ export async function verifyDoctorLintPrivateAuthRetirement(
           if (detectorFailure) {
             throw new Error("synthetic authoritative detector failure");
           }
-          return [];
+          return returnedFinding ? [detectorFinding] : [];
         },
       },
     ]);
@@ -160,21 +172,65 @@ export async function verifyDoctorLintPrivateAuthRetirement(
     });
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
-      const exitCode = await runDoctorLintCli(runtime, { json: true, onlyIds: [checkId] });
+      const exitCode = await runDoctorLintCli(runtime, {
+        json: true,
+        ...(mode === "reader-close-full-finding"
+          ? { includeAllChecks: true }
+          : { onlyIds: [checkId] }),
+      });
       expect(exitCode).toBe(retirementFailure || detectorFailure ? 1 : 0);
       const report = JSON.parse(String(stdout.mock.calls.at(-1)?.[0]));
       expect(report.schemaVersion).toBe(1);
       expect(report.ok).toBe(!retirementFailure && !detectorFailure);
-      const failureMessage = retirementFailure
-        ? expect.stringContaining(closeError)
-        : "health check threw: synthetic authoritative detector failure";
-      expect(report.findings).toEqual(
-        retirementFailure || detectorFailure
-          ? [expect.objectContaining({ checkId, severity: "error", message: failureMessage })]
-          : [],
+      if (returnedFinding) {
+        expect(report.findings).toContainEqual(detectorFinding);
+        expect(report.findings).toContainEqual(
+          expect.objectContaining({
+            severity: "error",
+            message: expect.stringContaining(closeError),
+          }),
+        );
+        expect(report.findings).toHaveLength(2);
+        // A completed full report can include registered plugin checks too;
+        // snapshot disposal must not replace its count with generic failure's zero.
+        expect(report.checksRun).toBeGreaterThan(0);
+      } else if (retirementFailure && detectorFailure) {
+        expect(report.findings).toHaveLength(1);
+        expect(report.findings[0]).toMatchObject({ checkId, severity: "error" });
+        expect(report.findings[0].message).toContain("synthetic authoritative detector failure");
+        expect(report.findings[0].message).toContain(closeError);
+      } else {
+        const failureMessage = retirementFailure
+          ? expect.stringContaining(closeError)
+          : "health check threw: synthetic authoritative detector failure";
+        expect(report.findings).toEqual(
+          retirementFailure || detectorFailure
+            ? [
+                expect.objectContaining({
+                  checkId,
+                  severity: "error",
+                  message: failureMessage,
+                }),
+              ]
+            : [],
+        );
+      }
+      expect(privateWriter).toBeDefined();
+      const snapshotRoot = path.dirname(
+        resolveOpenClawStateDirForDatabasePath(privateWriter!.path),
       );
       if (retirementFailure) {
-        expect(removal).not.toHaveBeenCalled();
+        // Full reports can retire a separate read-only snapshot. No attempted
+        // removal may touch this failed snapshot, its children, or an ancestor.
+        const removedPrivatePaths = removal.mock.calls
+          .map(([target]) => path.resolve(String(target)))
+          .filter(
+            (target) =>
+              target === snapshotRoot ||
+              target.startsWith(`${snapshotRoot}${path.sep}`) ||
+              snapshotRoot.startsWith(`${target}${path.sep}`),
+          );
+        expect(removedPrivatePaths).toEqual([]);
       }
       if (nativeWindows) {
         expect(nativeOpenHandleRefused).toBe(true);
@@ -189,16 +245,16 @@ export async function verifyDoctorLintPrivateAuthRetirement(
       expect(report.warnings ?? []).toMatchObject(
         cleanupFailure ? [{ requirement: "temporary-snapshot-cleanup", severity: "warning" }] : [],
       );
-      expect(privateAuth?.isOpen).toBe(mode === "reader-close");
+      expect(privateAuth?.isOpen).toBe(readerRetirementFailure);
+      if (readerRetirementFailure) {
+        expect(privateWriter?.db.isOpen).toBe(false);
+        expect(privateReader?.database.db.isOpen).toBe(false);
+      }
       if (!retirementFailure) {
         expect(privateWriter?.db.isOpen).toBe(false);
         expect(privateReader?.database.db.isOpen).toBe(false);
       }
-      expect(privateWriter).toBeDefined();
       // Recursive removal can partially succeed before a genuine Windows denial.
-      const snapshotRoot = path.dirname(
-        resolveOpenClawStateDirForDatabasePath(privateWriter!.path),
-      );
       expect(fs.existsSync(snapshotRoot)).toBe(retirementFailure || cleanupFailure);
       if (!nativeWindows || !cleanupFailure) {
         expect(fs.existsSync(privateWriter!.path)).toBe(retirementFailure || cleanupFailure);

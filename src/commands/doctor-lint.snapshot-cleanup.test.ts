@@ -117,3 +117,71 @@ it.each([
     );
   },
 );
+
+it.each(["json", "human"] as const)(
+  "preserves invalid-config failure and cleanup warnings in %s output",
+  async (mode) => {
+    await withOpenClawTestState(
+      {
+        prefix: "doctor-lint-invalid-cleanup-",
+        env: {
+          OPENCLAW_UPDATE_IN_PROGRESS: "1",
+          OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1",
+        },
+      },
+      async (state) => {
+        await state.writeConfig({ gateway: { mode: "fixture-invalid-mode" } });
+        openOpenClawStateDatabase({ env: state.env });
+        await closeOpenClawStateDatabaseAsync();
+        const runtime = createTestRuntime();
+        const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+        const tty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+        Object.defineProperty(process.stdout, "isTTY", {
+          configurable: true,
+          value: mode === "human",
+        });
+        try {
+          const exitCode = await runDoctorLintCli(runtime, {
+            json: mode === "json",
+            severityMin: "error",
+          });
+          expect(exitCode).toBe(1);
+          if (mode === "json") {
+            const report = JSON.parse(String(stdout.mock.calls.at(-1)?.[0]));
+            expect(report.ok).toBe(false);
+            expect(report.findings).toContainEqual(
+              expect.objectContaining({
+                checkId: "core/doctor/final-config-validation",
+                severity: "error",
+                path: "gateway.mode",
+              }),
+            );
+            expect(report.warnings).toContainEqual(
+              expect.objectContaining({
+                checkId: "core/doctor/lint-state-inspection",
+                severity: "warning",
+                requirement: "temporary-snapshot-cleanup",
+              }),
+            );
+          } else {
+            expect(runtime.error).toHaveBeenCalledWith(
+              "doctor --lint: config file exists but does not parse cleanly.",
+            );
+            expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("gateway.mode"));
+            expect(runtime.error).toHaveBeenCalledWith(
+              expect.stringContaining(
+                "Temporary doctor lint state snapshot cleanup did not complete.",
+              ),
+            );
+          }
+        } finally {
+          if (tty) {
+            Object.defineProperty(process.stdout, "isTTY", tty);
+          } else {
+            Reflect.deleteProperty(process.stdout, "isTTY");
+          }
+        }
+      },
+    );
+  },
+);
