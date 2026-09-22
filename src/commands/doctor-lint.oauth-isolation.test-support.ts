@@ -1,12 +1,15 @@
 // Keep the OAuth source-lock fixture separate from the private-handle retirement matrix.
 import { expect, vi } from "vitest";
 import { operatorMcpOAuthIdentity } from "../agents/mcp-oauth-identity.js";
+import { readMcpOAuthStore } from "../agents/mcp-oauth-store.js";
 import { resolveMcpOAuthAccessToken } from "../agents/mcp-oauth.js";
 import type { HealthCheck } from "../flows/health-checks.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { runDoctorLintCli } from "./doctor-lint.js";
 import {
@@ -38,12 +41,14 @@ export async function verifyDoctorLintOAuthStateIsolation(
           kind: "core",
           description: "checks OAuth state ownership",
           async detect() {
-            resolvedToken = await resolveMcpOAuthAccessToken({
-              identity,
-              acceptUnknownExpiry: true,
-              signal: AbortSignal.timeout(250),
+            return await withDoctorLintOAuthWorker(databasePath, async () => {
+              resolvedToken = await resolveMcpOAuthAccessToken({
+                identity,
+                acceptUnknownExpiry: true,
+                signal: AbortSignal.timeout(250),
+              });
+              return [];
             });
-            return [];
           },
         },
       ]);
@@ -77,5 +82,21 @@ export async function verifyDoctorLintOAuthStateIsolation(
       lock.close();
       await closeOpenClawStateDatabaseByPathAsync(databasePath);
     }
+  });
+}
+
+/** Prepare the private worker and cold OAuth module before timing lease behavior. */
+export async function withDoctorLintOAuthWorker<T>(
+  sourceDatabasePath: string,
+  inspect: () => Promise<T>,
+): Promise<T> {
+  const context = captureOpenClawStateWorkerContext();
+  expect(context.admission.databasePath).toBe(resolveOpenClawStateSqlitePath(process.env));
+  expect(context.admission.databasePath).not.toBe(sourceDatabasePath);
+  return await runOpenClawStateWorkerOperation(context, async () => {
+    // A first OAuth read loads its worker module. Keep module loading outside the
+    // unchanged behavior budget, without reading or consuming the seeded token.
+    expect(await readMcpOAuthStore("doctor-lint-worker-initialization", context)).toEqual({});
+    return await inspect();
   });
 }

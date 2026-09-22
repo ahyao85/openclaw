@@ -20,6 +20,7 @@ import { clearHealthChecksForTest } from "../flows/health-check-registry.js";
 import type { HealthCheckContext } from "../flows/health-checks.js";
 import { requestDevicePairing } from "../infra/device-pairing.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
+import { cleanupSnapshotOperations } from "../infra/sqlite-readonly-location-cleanup.js";
 import * as temporaryState from "../infra/tmp-openclaw-dir.js";
 import { resolveManagedUpdateLeaseDatabasePath } from "../infra/update-managed-service-handoff-lease.js";
 import { createSkillProposalEvent } from "../skills/workshop/plugin-hooks.js";
@@ -37,7 +38,10 @@ import {
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { collectDoctorFindings, runDoctorLintCli } from "./doctor-lint.js";
-import { verifyDoctorLintOAuthStateIsolation } from "./doctor-lint.oauth-isolation.test-support.js";
+import {
+  verifyDoctorLintOAuthStateIsolation,
+  withDoctorLintOAuthWorker,
+} from "./doctor-lint.oauth-isolation.test-support.js";
 import { verifyDoctorLintPrivateAuthRetirement } from "./doctor-lint.private-auth-retirement.test-support.js";
 import {
   seedDoctorLintMcpToken,
@@ -116,8 +120,12 @@ describe("doctor lint state isolation", () => {
       try {
         closeOpenClawStateDatabaseForTest();
       } finally {
-        handoffResolver?.mockRestore();
-        restoreEnv(originalEnv);
+        try {
+          await cleanupSnapshotOperations();
+        } finally {
+          handoffResolver?.mockRestore();
+          restoreEnv(originalEnv);
+        }
       }
     }
   });
@@ -873,29 +881,31 @@ describe("doctor lint state isolation", () => {
             kind: "core",
             description: "checks OAuth state ownership",
             async detect() {
-              const privateDatabasePath = resolveOpenClawStateSqlitePath(process.env);
-              expect(privateDatabasePath).not.toBe(databasePath);
-              const competingWriter = openNodeSqliteDatabase(privateDatabasePath);
-              const signal = AbortSignal.timeout(250);
-              const releaseWriter = () => {
-                if (competingWriter.isTransaction) {
-                  competingWriter.exec("ROLLBACK");
+              return await withDoctorLintOAuthWorker(databasePath, async () => {
+                const privateDatabasePath = resolveOpenClawStateSqlitePath(process.env);
+                expect(privateDatabasePath).not.toBe(databasePath);
+                const competingWriter = openNodeSqliteDatabase(privateDatabasePath);
+                const signal = AbortSignal.timeout(250);
+                const releaseWriter = () => {
+                  if (competingWriter.isTransaction) {
+                    competingWriter.exec("ROLLBACK");
+                  }
+                };
+                signal.addEventListener("abort", releaseWriter, { once: true });
+                try {
+                  competingWriter.exec("BEGIN IMMEDIATE");
+                  resolvedToken = await resolveMcpOAuthAccessToken({
+                    identity,
+                    acceptUnknownExpiry: true,
+                    signal,
+                  });
+                  return [];
+                } finally {
+                  signal.removeEventListener("abort", releaseWriter);
+                  releaseWriter();
+                  competingWriter.close();
                 }
-              };
-              signal.addEventListener("abort", releaseWriter, { once: true });
-              try {
-                competingWriter.exec("BEGIN IMMEDIATE");
-                resolvedToken = await resolveMcpOAuthAccessToken({
-                  identity,
-                  acceptUnknownExpiry: true,
-                  signal,
-                });
-                return [];
-              } finally {
-                signal.removeEventListener("abort", releaseWriter);
-                releaseWriter();
-                competingWriter.close();
-              }
+              });
             },
           },
         ]);
