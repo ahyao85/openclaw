@@ -19,7 +19,6 @@ import { resolveCronJobsStorePathFromConfig, saveCronStore } from "../cron/store
 import { clearHealthChecksForTest } from "../flows/health-check-registry.js";
 import type { HealthCheckContext } from "../flows/health-checks.js";
 import { requestDevicePairing } from "../infra/device-pairing.js";
-import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { cleanupSnapshotOperations } from "../infra/sqlite-readonly-location-cleanup.js";
 import * as temporaryState from "../infra/tmp-openclaw-dir.js";
 import { resolveManagedUpdateLeaseDatabasePath } from "../infra/update-managed-service-handoff-lease.js";
@@ -36,12 +35,12 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import * as leaseAcquisition from "../state/openclaw-state-lease-acquisition.js";
+import { withOpenClawStateLease } from "../state/openclaw-state-lease.js";
+import { captureEnv } from "../test-utils/env.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { collectDoctorFindings, runDoctorLintCli } from "./doctor-lint.js";
-import {
-  verifyDoctorLintOAuthStateIsolation,
-  withDoctorLintOAuthWorker,
-} from "./doctor-lint.oauth-isolation.test-support.js";
+import { verifyDoctorLintOAuthStateIsolation } from "./doctor-lint.oauth-isolation.test-support.js";
 import { verifyDoctorLintPrivateAuthRetirement } from "./doctor-lint.private-auth-retirement.test-support.js";
 import {
   seedDoctorLintMcpToken,
@@ -92,11 +91,7 @@ const runtime = createTestRuntime();
 const handoffDirs = useAutoCleanupTempDirTracker(afterEach);
 let handoffResolver: MockInstance<typeof temporaryState.resolvePreferredOpenClawTmpDir> | undefined;
 
-const originalEnv = {
-  HOME: process.env.HOME,
-  OPENCLAW_CONFIG_PATH: process.env.OPENCLAW_CONFIG_PATH,
-  OPENCLAW_STATE_DIR: process.env.OPENCLAW_STATE_DIR,
-};
+const originalEnv = captureEnv(["HOME", "OPENCLAW_CONFIG_PATH", "OPENCLAW_STATE_DIR"]);
 
 describe("doctor lint state isolation", () => {
   beforeEach(() => {
@@ -124,7 +119,7 @@ describe("doctor lint state isolation", () => {
           await cleanupSnapshotOperations();
         } finally {
           handoffResolver?.mockRestore();
-          restoreEnv(originalEnv);
+          originalEnv.restore();
         }
       }
     }
@@ -881,31 +876,50 @@ describe("doctor lint state isolation", () => {
             kind: "core",
             description: "checks OAuth state ownership",
             async detect() {
-              return await withDoctorLintOAuthWorker(databasePath, async () => {
-                const privateDatabasePath = resolveOpenClawStateSqlitePath(process.env);
-                expect(privateDatabasePath).not.toBe(databasePath);
-                const competingWriter = openNodeSqliteDatabase(privateDatabasePath);
-                const signal = AbortSignal.timeout(250);
-                const releaseWriter = () => {
-                  if (competingWriter.isTransaction) {
-                    competingWriter.exec("ROLLBACK");
+              const privateDatabasePath = resolveOpenClawStateSqlitePath(process.env);
+              expect(privateDatabasePath).not.toBe(databasePath);
+              const controller = new AbortController();
+              return await withOpenClawStateLease(
+                {
+                  scope: "core:mcp-oauth",
+                  key: identity.storeKey,
+                  database: { scope: "shared", options: { path: privateDatabasePath } },
+                  leaseMs: 60_000,
+                  waitMs: 0,
+                },
+                async () => {
+                  const acquire = leaseAcquisition.acquireOpenClawStateLease;
+                  let acquisitionOutcome:
+                    | Awaited<ReturnType<Parameters<typeof acquire>[0]["acquire"]>>
+                    | undefined;
+                  const acquisition = vi
+                    .spyOn(leaseAcquisition, "acquireOpenClawStateLease")
+                    .mockImplementation((params) =>
+                      acquire({
+                        ...params,
+                        async acquire(...args) {
+                          const outcome = await params.acquire(...args);
+                          acquisitionOutcome = outcome;
+                          // Observe real native or worker contention before its owner consumes it.
+                          // A raw SQLite write lock can fail before an unrelated abort timer runs.
+                          controller.abort(new Error("cancel pending OAuth inspection"));
+                          return outcome;
+                        },
+                      }),
+                    );
+                  try {
+                    resolvedToken = await resolveMcpOAuthAccessToken({
+                      identity,
+                      acceptUnknownExpiry: true,
+                      signal: controller.signal,
+                    });
+                    return [];
+                  } finally {
+                    acquisition.mockRestore();
+                    expect(acquisitionOutcome).toMatchObject({ kind: "held" });
                   }
-                };
-                signal.addEventListener("abort", releaseWriter, { once: true });
-                try {
-                  competingWriter.exec("BEGIN IMMEDIATE");
-                  resolvedToken = await resolveMcpOAuthAccessToken({
-                    identity,
-                    acceptUnknownExpiry: true,
-                    signal,
-                  });
-                  return [];
-                } finally {
-                  signal.removeEventListener("abort", releaseWriter);
-                  releaseWriter();
-                  competingWriter.close();
-                }
-              });
+                },
+              );
             },
           },
         ]);
@@ -967,14 +981,4 @@ function selectWorkshopCheckWithUnavailableSource(databasePath: string) {
     },
   ]);
   return check;
-}
-
-function restoreEnv(values: typeof originalEnv): void {
-  for (const key of ["HOME", "OPENCLAW_CONFIG_PATH", "OPENCLAW_STATE_DIR"] as const) {
-    if (values[key] === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = values[key];
-    }
-  }
 }

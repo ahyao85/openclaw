@@ -86,7 +86,7 @@ export async function verifyDoctorLintOAuthStateIsolation(
 }
 
 /** Prepare the private worker and cold OAuth module before timing lease behavior. */
-export async function withDoctorLintOAuthWorker<T>(
+async function withDoctorLintOAuthWorker<T>(
   sourceDatabasePath: string,
   inspect: () => Promise<T>,
 ): Promise<T> {
