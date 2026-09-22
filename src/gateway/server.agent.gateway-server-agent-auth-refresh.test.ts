@@ -11,12 +11,14 @@ import {
   loadPublishedGatewayReplyDispatchRuntime,
   registerPreparedModelRuntimePublicationListener,
 } from "../agents/prepared-model-runtime.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
 import {
   activateSecretsRuntimeSnapshot,
   clearSecretsRuntimeSnapshot,
   prepareSecretsRuntimeSnapshot,
 } from "../secrets/runtime.js";
+import { onSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import { installConnectedSessionStoreGatewaySuite } from "./test-helpers.connected-session-store.js";
 import {
   agentCommandMock,
@@ -259,7 +261,9 @@ describe("gateway agent auth refresh dispatch", () => {
     }
   });
 
-  test("aborts one affected waiter without cancelling shared auth publication", async () => {
+  test("aborts one affected waiter without cancelling shared auth publication", async ({
+    signal,
+  }) => {
     const affectedAgentId = "auth-wait";
     const abortedRunId = "idem-agent-auth-aborted";
     const waitingRunId = "idem-agent-auth-waiting";
@@ -281,6 +285,16 @@ describe("gateway agent auth refresh dispatch", () => {
     const unregister = registerPreparedModelRuntimePublicationListener((event) => {
       if (event.phase === "published") {
         published.resolve();
+      }
+    });
+    const participantRecorded = createDeferred();
+    const unsubscribeParticipant = onSessionLifecycleEvent((event) => {
+      if (
+        event.reason === "participants" &&
+        event.agentId === "main" &&
+        event.sessionKey === "agent:main:main"
+      ) {
+        participantRecorded.resolve();
       }
     });
     try {
@@ -315,6 +329,8 @@ describe("gateway agent auth refresh dispatch", () => {
       expect(agentCommandCallsFor(siblingRunId)).toHaveLength(1);
       expect(agentCommandCallsFor(abortedRunId)).toHaveLength(0);
       expect(agentCommandCallsFor(waitingRunId)).toHaveLength(0);
+      // The sibling final response precedes its participant-history completion.
+      await racePromiseWithAbortSignal(participantRecorded.promise, signal);
       await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(activeWorkBefore + 2));
 
       const abort = await rpcReq(gatewaySuite.ws, "chat.abort", {
@@ -369,6 +385,7 @@ describe("gateway agent auth refresh dispatch", () => {
       });
       expect(agentCommandCallsFor(subsequentRunId)).toHaveLength(1);
     } finally {
+      unsubscribeParticipant();
       publicationGate.resolve({ agentDir: before.agentDir, wrote: false });
       unregister();
       ensureSpy.mockRestore();

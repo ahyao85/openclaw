@@ -14,7 +14,7 @@ import {
 import { resetPreparedModelCatalogStateForTest } from "../agents/prepared-model-runtime.test-support.js";
 import type { ChannelPlugin } from "../channels/plugins/types.public.js";
 import { listSessionPendingInputs, loadSessionEntry } from "../config/sessions/session-accessor.js";
-import { createAbortError } from "../infra/abort-signal.js";
+import { createAbortError, racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import {
   type AgentRunDelegatedAuthority,
   validateAgentRunDelegatedAuthority,
@@ -26,6 +26,7 @@ import {
   isGatewaySubordinateWorkAdmissionClosed,
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
+import { onSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import {
   createChannelTestPluginBase,
   createDirectOutboundTestAdapter,
@@ -298,7 +299,7 @@ describe("gateway server agent", () => {
     testState.allowFrom = undefined;
   });
 
-  test("keeps accepted detached agent work on its retained request root", async () => {
+  test("keeps accepted detached agent work on its retained request root", async ({ signal }) => {
     await setTestSessionStore({
       entries: {
         main: {
@@ -318,20 +319,36 @@ describe("gateway server agent", () => {
       }
     });
 
-    const res = await rpcReq(gatewaySuite.ws, "agent", {
-      message: "prove detached root transfer",
-      sessionKey: "main",
-      idempotencyKey: "idem-agent-detached-root",
+    const participantRecorded = createDeferred();
+    const unsubscribeParticipant = onSessionLifecycleEvent((event) => {
+      if (
+        event.reason === "participants" &&
+        event.agentId === "main" &&
+        event.sessionKey === "agent:main:main"
+      ) {
+        participantRecorded.resolve();
+      }
     });
+    try {
+      const res = await rpcReq(gatewaySuite.ws, "agent", {
+        message: "prove detached root transfer",
+        sessionKey: "main",
+        idempotencyKey: "idem-agent-detached-root",
+      });
 
-    expect(res.ok).toBe(true);
-    expect(res.payload?.status).toBe("accepted");
-    await vi.waitFor(() => {
-      expect(subordinateAdmissionClosed).toBe(false);
-    });
-    await vi.waitFor(() => {
-      expect(getActiveGatewayRootWorkCount()).toBe(0);
-    });
+      expect(res.ok).toBe(true);
+      expect(res.payload?.status).toBe("accepted");
+      await vi.waitFor(() => {
+        expect(subordinateAdmissionClosed).toBe(false);
+      });
+      // The accepted turn also owns asynchronous participant persistence.
+      await racePromiseWithAbortSignal(participantRecorded.promise, signal);
+      await vi.waitFor(() => {
+        expect(getActiveGatewayRootWorkCount()).toBe(0);
+      });
+    } finally {
+      unsubscribeParticipant();
+    }
   });
 
   test("agent marks implicit delivery when lastTo is stale", async () => {
