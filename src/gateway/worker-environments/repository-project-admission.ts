@@ -275,6 +275,11 @@ export async function prepareRepositoryWorkerProjectSource(params: AdmissionRequ
     sourceChanged();
   }
   const source = { kind: "repository" as const, url, repositoryId, owner };
+  // GitHub Enterprise can report internal repositories as non-private even
+  // though anonymous Git transport is unavailable. Keep credential-free worker
+  // clones limited to public github.com repositories; enterprise source always
+  // uses the temporary authenticated pack path on the Gateway.
+  const requiresGitPack = metadata.private || new URL(url).hostname !== "github.com";
   const project = readRepositoryWorkerProjectSnapshot({
     key: createHash("sha256")
       // Preserve public cache keys, but never reinterpret them as private content.
@@ -394,7 +399,7 @@ export async function prepareRepositoryWorkerProjectSource(params: AdmissionRequ
     setupRecipe,
     assertCurrent,
     revalidate,
-    ...(metadata.private
+    ...(requiresGitPack
       ? {
           prepareGitPack: async (input: { temporaryRoot: string; signal: AbortSignal }) => {
             assertAdmission();

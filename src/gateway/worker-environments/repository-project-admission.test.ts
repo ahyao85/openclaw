@@ -34,6 +34,7 @@ const rootTree = "b".repeat(40);
 const setupTree = "c".repeat(40);
 const recipe = "d".repeat(40);
 const repositoryUrl = "https://github.com/acme/project.git";
+let observedRepositoryUrl = repositoryUrl;
 const agent = { agentId: "main", provenance: null };
 const initial = {
   repository: { agentId: "main", url: repositoryUrl },
@@ -55,7 +56,7 @@ describe("repository project admission", () => {
   const repositoryNode = () => ({
     __typename: "Repository",
     node_id: repositoryId,
-    clone_url: repositoryUrl.replace(/\.git$/u, ""),
+    clone_url: observedRepositoryUrl.replace(/\.git$/u, ""),
     private: privateRepository,
     object: { __typename: "Commit", sha: commit, tree: { sha: rootTree } },
   });
@@ -63,6 +64,7 @@ describe("repository project admission", () => {
     fetchImpl.mock.calls.map(([input]) => new URL(new Request(input).url).pathname);
 
   beforeEach(() => {
+    observedRepositoryUrl = repositoryUrl;
     selection = { source: "system-configured", profileId: `ghp_${"1".repeat(32)}`, accountId: 1 };
     token = "synthetic-github-source-token";
     selected = true;
@@ -110,7 +112,7 @@ describe("repository project admission", () => {
         }
         value = {
           node_id: repositoryId,
-          clone_url: repositoryUrl,
+          clone_url: observedRepositoryUrl,
           private: privateRepository,
           default_branch: "main",
         };
@@ -137,7 +139,30 @@ describe("repository project admission", () => {
     });
     vi.stubGlobal("fetch", fetchImpl);
   });
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("prepares an authenticated pack for an internal enterprise repository", async () => {
+    vi.stubEnv("OPENCLAW_GITHUB_HOST", "microsoft.ghe.com");
+    observedRepositoryUrl = "https://microsoft.ghe.com/acme/project.git";
+    const admitted = await prepareRepositoryWorkerProjectSource({
+      ...initial,
+      repository: { ...initial.repository, url: observedRepositoryUrl },
+    });
+
+    expect(admitted).toHaveProperty("prepareGitPack");
+    await expect(
+      admitted.prepareGitPack?.({
+        temporaryRoot: "/synthetic/temporary",
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toBe("/synthetic/source.pack");
+    expect(mocks.prepareGitPack).toHaveBeenCalledWith(
+      expect.objectContaining({ url: observedRepositoryUrl, token }),
+    );
+  });
 
   it.each([undefined, "HEAD", "tags/v1", "refs/tags/v1", "feature/ready"])(
     "pins %s through the commit resolver and records executable recipe identity without credentials",
