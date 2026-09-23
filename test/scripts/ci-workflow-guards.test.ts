@@ -6119,7 +6119,7 @@ server.listen(0, "127.0.0.1", () => {
     }
     expect(warmer.on).not.toHaveProperty("workflow_run");
     expect(checkoutStep.with).toBeUndefined();
-    expect(warmerSource).toContain('cron: "17 8 * * *"');
+    expect(warmer.on.schedule).toEqual([{ cron: "17 * * * *" }]);
     expect(warmerSource).not.toContain("OPENCLAW_NODE_TEST_CONFIGS_JSON");
     expect(warmStep.id).toBe("warm-caches");
     expect(warmStep["continue-on-error"]).toBe(true);
@@ -6917,8 +6917,10 @@ server.listen(0, "127.0.0.1", () => {
       },
     });
     expect(job["timeout-minutes"]).toBe(30);
-    expect(workflow.permissions).toEqual({ actions: "read", contents: "write" });
-    expect(workflow.concurrency).toEqual({ group: "docs-agent-main", "cancel-in-progress": false });
+    expect(workflow.permissions).toEqual({ actions: "read", contents: "read" });
+    expect(job.permissions).toEqual({ actions: "read", contents: "write" });
+    expect(workflow.concurrency).toBeUndefined();
+    expect(job.concurrency).toEqual({ group: "docs-agent-main", "cancel-in-progress": false });
     expect(steps[5]).toEqual({
       name: "Run Codex docs agent",
       if: "steps.gate.outputs.run_agent == 'true'",
