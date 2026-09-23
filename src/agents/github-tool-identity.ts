@@ -191,7 +191,12 @@ function prepareGitHubToolEnvironmentForIdentity(
     params.sourceConfig?.gateway?.controlUi?.github?.token ??
     params.config.gateway?.controlUi?.github?.token;
   const credentialScrubEnv: Record<string, string> = managedLocalIdentity
-    ? { GH_TOKEN: "", GITHUB_TOKEN: "" }
+    ? {
+        GH_TOKEN: "",
+        GH_ENTERPRISE_TOKEN: "",
+        GITHUB_TOKEN: "",
+        GITHUB_ENTERPRISE_TOKEN: "",
+      }
     : {};
   const excludedStoreNames: string[] = [];
   if (isSecretRef(previewToken)) {
@@ -463,7 +468,9 @@ export async function preparePersonalGitHubPublicationIdentity(params: {
   const env = {
     ...process.env,
     GH_TOKEN: token,
+    GH_ENTERPRISE_TOKEN: token,
     GITHUB_TOKEN: undefined,
+    GITHUB_ENTERPRISE_TOKEN: undefined,
     GH_CONFIG_DIR: profileDir,
     GH_PROMPT_DISABLED: "1",
   };
@@ -546,7 +553,13 @@ async function prepareSharedGitHubIdentity(
       account: probe.account,
       // Broker children and worker launches receive this fixed snapshot. Profile
       // retirement cannot redirect an already-admitted operation.
-      env: Object.freeze({ ...env, GH_TOKEN: token, GITHUB_TOKEN: undefined }),
+      env: Object.freeze({
+        ...env,
+        GH_TOKEN: token,
+        GH_ENTERPRISE_TOKEN: token,
+        GITHUB_TOKEN: undefined,
+        GITHUB_ENTERPRISE_TOKEN: undefined,
+      }),
     });
     return { prepared, token, readToken };
   }, params);

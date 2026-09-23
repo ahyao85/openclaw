@@ -378,6 +378,7 @@ describe("prepared GitHub read authority", () => {
     expect(mocks.runCommandBuffered).toHaveBeenCalledOnce();
     const publication = await prepareGitHubPublicationIdentity(options);
     expect(publication.env.GH_TOKEN).toBe(token);
+    expect(publication.env.GH_ENTERPRISE_TOKEN).toBe(token);
     expect(mocks.runCommandBuffered).toHaveBeenCalledTimes(2);
     now += 1;
     await expect(identity.revalidate()).rejects.toMatchObject({ reason: "changed" });
@@ -668,6 +669,7 @@ describe("prepared GitHub read authority", () => {
     env.GITHUB_TOKEN = "native-rotated";
     await expect(identity.revalidate()).rejects.toThrow("identity changed");
     expect(publication.env.GH_TOKEN).toBe("native-refreshed");
+    expect(publication.env.GH_ENTERPRISE_TOKEN).toBe("native-refreshed");
     expect(JSON.stringify(mocks.runCommandBuffered.mock.calls)).not.toContain("preview-only");
   });
 
