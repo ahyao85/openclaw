@@ -188,6 +188,13 @@ export function createSessionRowRefresh(
       await owner.catalog.refresh();
     }
     await owner.placementFacts.prepare();
+    // Capture one handoff; later exact traffic cannot starve resident readiness.
+    const exact = exactReads.values().next().value;
+    if (exact) {
+      // The exact caller owns its failure; either outcome releases this resident slice.
+      await exact.completion.promise.catch(() => {});
+      await yieldSessionListWork();
+    }
     for (
       let pending = owner.prepareRegistryFacts();
       pending;
@@ -196,6 +203,7 @@ export function createSessionRowRefresh(
       await pending;
     }
     if (
+      owner.state().disposed ||
       owner.state().topologyDirty ||
       owner.membership.needsPreparation ||
       owner.placementFacts.needsPreparation
