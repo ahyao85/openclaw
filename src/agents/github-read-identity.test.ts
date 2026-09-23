@@ -159,6 +159,31 @@ describe("native GitHub identity absence", () => {
     );
   });
 
+  it("uses an explicit protected executable for native identity probes", async () => {
+    mocks.runCommandBuffered.mockResolvedValue(commandResult("enterprise-token", 0));
+    await expect(
+      readNativeGitHubToken({
+        GH_TOKEN: undefined,
+        GITHUB_TOKEN: undefined,
+        OPENCLAW_GITHUB_HOST: "microsoft.ghe.com",
+        OPENCLAW_GITHUB_IDENTITY_EXECUTABLE: "/opt/teamclaw/bin/gh",
+      }),
+    ).resolves.toBe("enterprise-token");
+    expect(mocks.runCommandBuffered).toHaveBeenCalledWith(
+      ["/opt/teamclaw/bin/gh", "auth", "token", "--hostname", "microsoft.ghe.com"],
+      expect.any(Object),
+    );
+  });
+
+  it("rejects a relative native identity executable", async () => {
+    await expect(
+      readNativeGitHubToken({
+        OPENCLAW_GITHUB_IDENTITY_EXECUTABLE: "relative/gh",
+      }),
+    ).rejects.toMatchObject({ reason: "unverified" });
+    expect(mocks.runCommandBuffered).not.toHaveBeenCalled();
+  });
+
   it("preserves explicit undefined scrubs over inherited native environment tokens", async () => {
     vi.stubEnv("GH_TOKEN", "synthetic-preview-token");
     await expect(

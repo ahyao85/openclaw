@@ -78,7 +78,11 @@ export async function runGitHubIdentityCommand(
   cwd?: string,
   timeoutMs = GITHUB_IDENTITY_COMMAND_TIMEOUT_MS,
 ) {
-  return await runCommandBuffered(argv, {
+  const executable = resolveEnvironmentValue(env, "OPENCLAW_GITHUB_IDENTITY_EXECUTABLE");
+  if (executable !== undefined && (!path.isAbsolute(executable) || executable.includes("\0"))) {
+    throw new GitHubIdentityError("unverified");
+  }
+  return await runCommandBuffered(executable ? [executable, ...argv.slice(1)] : argv, {
     env: env ? { ...env } : {},
     cwd,
     timeoutMs,
