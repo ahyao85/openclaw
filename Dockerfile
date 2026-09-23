@@ -157,6 +157,8 @@ RUN pnpm_config_verify_deps_before_run=false pnpm canvas:a2ui:bundle || \
      rm -rf vendor/a2ui apps/shared/OpenClawKit/Tools/CanvasA2UI)
 # Force pnpm for UI build (Bun may fail on ARM/Synology architectures)
 ENV OPENCLAW_PREFER_PNPM=1
+# Keep Go-based esbuild deterministic under emulated cross-architecture builds.
+ENV GOMAXPROCS=1
 # Correction-release sources keep the base package version; official images
 # stamp the complete release version before generating their build metadata.
 RUN set -eu; \
