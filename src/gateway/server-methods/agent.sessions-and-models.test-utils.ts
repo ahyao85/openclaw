@@ -17,7 +17,6 @@ import { recordAgentRunTerminalOutcome } from "../../channels/turn/agent-run-ter
 import { attachErrorDiagnostic } from "../../infra/error-diagnostics.js";
 import { findTaskByRunId, listTaskRecords } from "../../tasks/task-registry.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
-import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { waitForAgentJob } from "../agent-turn/agent-job.js";
 import { dispatchAgentRunFromGateway } from "../agent-turn/agent-run-dispatch.js";
 import { createAgentTurnIo } from "../agent-turn/io.js";
@@ -456,11 +455,7 @@ describe("gateway agent handler", () => {
             { syntheticClient: true as const },
             bindParentSubagentResume({
               cfg: {},
-              caller: {
-                agentId: "main",
-                sessionKey: requesterSessionKey,
-                assertCurrent: vi.fn(),
-              },
+              caller: { agentId: "main", sessionKey: requesterSessionKey, assertCurrent: vi.fn() },
               childSessionKey,
               childSessionId: "spawned-child-session",
             }),
@@ -812,13 +807,10 @@ describe("gateway agent handler", () => {
   });
 
   it("rejects plugin SDK subagent registration and adoption when persistence fails", async () => {
-    await withOpenClawTestState(
-      { prefix: "openclaw-gateway-plugin-subagent-registry-fail-", layout: "state-only" },
-      async (state) => {
-        const root = state.stateDir;
-        useTestStateDir(root);
+    await withPluginSubagentTestState(
+      "openclaw-gateway-plugin-subagent-registry-fail-",
+      async () => {
         resetAgentTaskRegistryForTests();
-        resetSubagentRegistryForTests({ persist: false });
         const persistSubagentRunsToDiskOrThrow = vi.fn();
         const persistenceError = Object.assign(new Error("disk full"), { code: "SQLITE_FULL" });
         persistSubagentRunsToDiskOrThrow.mockImplementationOnce(() => {
