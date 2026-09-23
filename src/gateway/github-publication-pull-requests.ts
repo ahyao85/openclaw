@@ -19,12 +19,13 @@ function githubPublicationPullRequestLookupArgs(params: {
   owner: string;
   branch: string;
   baseBranch: string;
+  host: string;
 }): string[] {
   return [
     "gh",
     "api",
     "--hostname",
-    "github.com",
+    params.host,
     "--method",
     "GET",
     `repos/${params.repository}/pulls`,
@@ -39,12 +40,12 @@ function githubPublicationPullRequestLookupArgs(params: {
   ];
 }
 
-export function githubPublicationCreatePullRequestArgs(repository: string): string[] {
+export function githubPublicationCreatePullRequestArgs(repository: string, host: string): string[] {
   return [
     "gh",
     "api",
     "--hostname",
-    "github.com",
+    host,
     "--method",
     "POST",
     `repos/${repository}/pulls`,
@@ -122,6 +123,7 @@ export async function findGitHubPublicationPullRequest(params: {
   pushOwner: string;
   branch: string;
   baseBranch: string;
+  host: string;
   headCommit: string;
   marker: string;
   refreshIdentity: () => Promise<PreparedGitHubPublicationIdentity>;
@@ -135,6 +137,7 @@ export async function findGitHubPublicationPullRequest(params: {
       owner: params.pushOwner,
       branch: params.branch,
       baseBranch: params.baseBranch,
+      host: params.host,
     }),
     { env: identity.env },
   );

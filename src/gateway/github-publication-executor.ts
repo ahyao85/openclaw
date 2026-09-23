@@ -2,6 +2,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { readNonBlankString } from "@openclaw/normalization-core/string-coerce";
 import type { SessionGitHubPublicationResult } from "../../packages/gateway-protocol/src/schema/session-github-publication.js";
 import { resolveGitCoauthorAttribution } from "../agents/git-coauthor-attribution.js";
+import { githubRepositoryUrl, resolveGitHubHost } from "../agents/github-host.js";
 import type { PreparedGitHubPublicationIdentity } from "../agents/github-tool-identity.js";
 import { resolveControlUiSessionUrl } from "../config/control-ui-link-base.js";
 import { gitNullConfigPath } from "../infra/git-exec.js";
@@ -163,6 +164,7 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
       cwd: worktree.path,
     });
     let identity = await refreshIdentity();
+    const githubHost = identity.host ?? resolveGitHubHost(identity.env);
     const { pushRepository, repository, branch, baseBranch, pushOwner } =
       await prepareGitHubPublicationTarget({ worktree, identity, assertCurrent: assertAuthority });
     if (
@@ -175,9 +177,10 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
         "GitHub publication accepted repository target changed.",
       );
     }
-    const remoteBaseResult = await run(githubPublicationBaseLookupArgs(repository, baseBranch), {
-      env: identity.env,
-    });
+    const remoteBaseResult = await run(
+      githubPublicationBaseLookupArgs(repository, baseBranch, githubHost),
+      { env: identity.env },
+    );
     if (remoteBaseResult.code !== 0) {
       throw new Error("GitHub publication workspace base branch could not be verified.");
     }
@@ -192,10 +195,13 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
       GIT_CONFIG_GLOBAL: gitNullConfigPath(),
       GIT_CONFIG_SYSTEM: gitNullConfigPath(),
     };
-    const baseFetched = await run(githubPublicationBaseFetchArgs(repository, remoteBaseSha), {
-      cwd: worktree.path,
-      env: baseTransportEnv,
-    });
+    const baseFetched = await run(
+      githubPublicationBaseFetchArgs(repository, remoteBaseSha, githubHost),
+      {
+        cwd: worktree.path,
+        env: baseTransportEnv,
+      },
+    );
     if (baseFetched.code !== 0) {
       throw new Error("GitHub publication workspace base could not be materialized.");
     }
@@ -230,6 +236,7 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
         pushOwner,
         branch,
         baseBranch,
+        host: githubHost,
         headCommit,
         marker: pullRequestMarker,
         refreshIdentity,
@@ -256,7 +263,7 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
         "GitHub publication workspace changed after its accepted snapshot.",
       );
     }
-    const httpsRemote = `https://github.com/${pushRepository}.git`;
+    const httpsRemote = githubRepositoryUrl(pushRepository, githubHost);
     identity = await refreshIdentity();
     let transportEnv = {
       ...identity.env,
@@ -289,10 +296,13 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
     // Fetch objects only: do not move local refs, FETCH_HEAD, or the working tree.
     let remoteHead = await step(observeRemoteHead);
     if (remoteHead && remoteHead !== headCommit) {
-      const fetched = await run(githubPublicationBaseFetchArgs(pushRepository, remoteHead), {
-        cwd: worktree.path,
-        env: transportEnv,
-      });
+      const fetched = await run(
+        githubPublicationBaseFetchArgs(pushRepository, remoteHead, githubHost),
+        {
+          cwd: worktree.path,
+          env: transportEnv,
+        },
+      );
       if (fetched.code !== 0) {
         throw new Error("GitHub publication remote branch could not be verified.");
       }
@@ -474,16 +484,19 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
       assertAuthority();
       params.recordEffect?.("pull_request");
       effectPending = true;
-      const created = await runCommand(githubPublicationCreatePullRequestArgs(repository), {
-        env: identity.env,
-        input: JSON.stringify({
-          title: row.title?.trim() || `Publish ${branch}`,
-          body,
-          head: `${pushOwner}:${branch}`,
-          base: baseBranch,
-          draft: true,
-        }),
-      });
+      const created = await runCommand(
+        githubPublicationCreatePullRequestArgs(repository, githubHost),
+        {
+          env: identity.env,
+          input: JSON.stringify({
+            title: row.title?.trim() || `Publish ${branch}`,
+            body,
+            head: `${pushOwner}:${branch}`,
+            base: baseBranch,
+            draft: true,
+          }),
+        },
+      );
       if (created.code === 0) {
         pullRequestUrl = readNonBlankString(
           parseJsonObject(created.stdout.toString("utf8"), "GitHub pull request creation").html_url,

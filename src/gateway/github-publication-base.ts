@@ -1,20 +1,29 @@
 import os from "node:os";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { readNonBlankString } from "@openclaw/normalization-core/string-coerce";
+import { githubRepositoryUrl, resolveGitHubHost } from "../agents/github-host.js";
 
-export function githubPublicationBaseLookupArgs(repository: string, baseBranch: string): string[] {
+export function githubPublicationBaseLookupArgs(
+  repository: string,
+  baseBranch: string,
+  host = resolveGitHubHost(),
+): string[] {
   return [
     "gh",
     "api",
     "--hostname",
-    "github.com",
+    host,
     `repos/${repository}/git/ref/heads/${baseBranch}`,
     "--jq",
     "{ref: .ref, sha: .object.sha}",
   ];
 }
 
-export function githubPublicationBaseFetchArgs(repository: string, sha: string): string[] {
+export function githubPublicationBaseFetchArgs(
+  repository: string,
+  sha: string,
+  host = resolveGitHubHost(),
+): string[] {
   return [
     "git",
     "-c",
@@ -35,7 +44,7 @@ export function githubPublicationBaseFetchArgs(repository: string, sha: string):
     "--no-write-fetch-head",
     "--recurse-submodules=no",
     "--",
-    `https://github.com/${repository}.git`,
+    githubRepositoryUrl(repository, host),
     sha,
   ];
 }

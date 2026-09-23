@@ -142,6 +142,23 @@ describe("native GitHub identity absence", () => {
     expect(mocks.runCommandBuffered).not.toHaveBeenCalled();
   });
 
+  it("asks the native credential owner for the configured enterprise host", async () => {
+    mocks.runCommandBuffered.mockResolvedValue(commandResult("enterprise-token", 0));
+    await expect(
+      readNativeGitHubToken({
+        GH_TOKEN: undefined,
+        GITHUB_TOKEN: undefined,
+        OPENCLAW_GITHUB_HOST: "microsoft.ghe.com",
+      }),
+    ).resolves.toBe("enterprise-token");
+    expect(mocks.runCommandBuffered).toHaveBeenCalledWith(
+      ["gh", "auth", "token", "--hostname", "microsoft.ghe.com"],
+      expect.objectContaining({
+        env: expect.objectContaining({ OPENCLAW_GITHUB_HOST: "microsoft.ghe.com" }),
+      }),
+    );
+  });
+
   it("preserves explicit undefined scrubs over inherited native environment tokens", async () => {
     vi.stubEnv("GH_TOKEN", "synthetic-preview-token");
     await expect(

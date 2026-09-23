@@ -17,6 +17,7 @@ import { hasErrnoCode } from "../infra/errno.js";
 import { readSecretFile } from "../infra/fs-safe-advanced.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { resolveAgentConfig, resolveAgentWorkspaceDir } from "./agent-scope.js";
+import { resolveGitHubApiBaseUrl, resolveGitHubHost } from "./github-host.js";
 import { verifyGitHubCredential } from "./github-oauth-client.js";
 import { inspectGitHubOAuthRecord } from "./github-oauth-records.js";
 import {
@@ -437,6 +438,7 @@ async function resolveGitHubIdentityFacts(
 export type PreparedGitHubPublicationIdentity = Readonly<{
   source: "system-detected" | "system-configured" | "agent-override" | "personal";
   profileId?: string;
+  host?: string;
   account: GitHubToolAccount;
   env: NodeJS.ProcessEnv;
 }>;
@@ -465,7 +467,10 @@ export async function preparePersonalGitHubPublicationIdentity(params: {
     GH_CONFIG_DIR: profileDir,
     GH_PROMPT_DISABLED: "1",
   };
-  const probe = await verifyGitHubCredential(token);
+  const hostEnv = process.env;
+  const probe = await verifyGitHubCredential(token, {
+    apiBaseUrl: resolveGitHubApiBaseUrl(hostEnv),
+  });
   params.assertCurrent();
   if (probe.status !== "available") {
     throw new Error("My GitHub credential could not be verified; reconnect My GitHub.");
@@ -476,6 +481,7 @@ export async function preparePersonalGitHubPublicationIdentity(params: {
   return Object.freeze({
     source: "personal",
     profileId: params.profileId,
+    host: resolveGitHubHost(hostEnv),
     account: probe.account,
     env: Object.freeze(env),
   });
@@ -490,6 +496,7 @@ export function matchesPreparedGitHubPublicationIdentity(params: {
   const current = resolveGitHubToolIdentity(params);
   return (
     current.source === params.identity.source &&
+    (params.identity.host ?? resolveGitHubHost(params.identity.env)) === resolveGitHubHost() &&
     (current.source === "system-detected" || current.config.profileId === params.identity.profileId)
   );
 }
@@ -509,6 +516,8 @@ async function prepareSharedGitHubIdentity(
     GH_PROMPT_DISABLED: "1",
   });
   const env = currentEnvironment();
+  const host = resolveGitHubHost(env);
+  const apiBaseUrl = resolveGitHubApiBaseUrl(env);
   const readToken = () =>
     managed
       ? readManagedGitHubToken(identity.profileDir)
@@ -522,7 +531,10 @@ async function prepareSharedGitHubIdentity(
       throw new GitHubIdentityError("unavailable");
     }, params);
   }
-  const probe = await startGitHubIdentityOperation(() => verifyGitHubCredential(token), params);
+  const probe = await startGitHubIdentityOperation(
+    () => verifyGitHubCredential(token, { apiBaseUrl }),
+    params,
+  );
   return startGitHubIdentityOperation(() => {
     if (probe.status !== "available") {
       throw new GitHubIdentityError(probe.status);
@@ -530,6 +542,7 @@ async function prepareSharedGitHubIdentity(
     const prepared: PreparedGitHubPublicationIdentity = Object.freeze({
       source: identity.source,
       ...(managed ? { profileId: identity.config.profileId } : {}),
+      host,
       account: probe.account,
       // Broker children and worker launches receive this fixed snapshot. Profile
       // retirement cannot redirect an already-admitted operation.

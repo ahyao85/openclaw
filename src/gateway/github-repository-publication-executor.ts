@@ -1,5 +1,6 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { resolveGitCoauthorAttribution } from "../agents/git-coauthor-attribution.js";
+import { resolveGitHubHost } from "../agents/github-host.js";
 import type { PreparedGitHubPublicationIdentity } from "../agents/github-tool-identity.js";
 import { resolveControlUiSessionUrl } from "../config/control-ui-link-base.js";
 import type { SessionRepositoryWorkspaceRecord } from "../state/session-repository-workspaces.js";
@@ -35,12 +36,12 @@ import type { RepositoryGitHubPublicationExecution } from "./github-repository-p
 import { resolveGitHubRepositoryTarget } from "./github-repository-target.js";
 import { SessionMutationAuthorizationChangedError } from "./session-sharing.js";
 
-function apiArgs(endpoint: string, method = "GET"): string[] {
+function apiArgs(endpoint: string, method = "GET", host = resolveGitHubHost()): string[] {
   return [
     "gh",
     "api",
     "--hostname",
-    "github.com",
+    host,
     "--method",
     method,
     endpoint,
@@ -56,7 +57,11 @@ async function api(
 ): Promise<unknown> {
   assertCurrent();
   const raw = await requirePublicationCommand(
-    apiArgs(endpoint, body === undefined ? "GET" : "POST"),
+    apiArgs(
+      endpoint,
+      body === undefined ? "GET" : "POST",
+      identity.host ?? resolveGitHubHost(identity.env),
+    ),
     {
       env: identity.env,
       ...(body === undefined ? {} : { input: JSON.stringify(body) }),
@@ -78,7 +83,8 @@ export async function prepareRepositoryGitHubPublicationTarget(
   identity: PreparedGitHubPublicationIdentity,
   assertCurrent: () => void,
 ) {
-  const remote = parseGitHubRemoteUrl(workspace.url);
+  const githubHost = identity.host ?? resolveGitHubHost(identity.env);
+  const remote = parseGitHubRemoteUrl(workspace.url, githubHost);
   if (
     !remote ||
     !/^[A-Za-z0-9_.-]+$/u.test(remote.owner) ||
@@ -198,6 +204,8 @@ export async function executeRepositoryGitHubPublication(params: {
             "..." +
             remoteBase +
             "?per_page=1",
+          "GET",
+          identity.host ?? resolveGitHubHost(identity.env),
         ),
         "--jq",
         "{sha: .merge_base_commit.sha}",
@@ -234,7 +242,11 @@ export async function executeRepositoryGitHubPublication(params: {
     const observeHead = async () => {
       const observedIdentity = await refreshIdentity();
       const raw = await requirePublicationCommand(
-        apiArgs(endpoint + "matching-refs/heads/" + encodeURIComponent(branch)),
+        apiArgs(
+          endpoint + "matching-refs/heads/" + encodeURIComponent(branch),
+          "GET",
+          observedIdentity.host ?? resolveGitHubHost(observedIdentity.env),
+        ),
         { env: observedIdentity.env },
       );
       const value: unknown = JSON.parse(raw);
@@ -286,6 +298,7 @@ export async function executeRepositoryGitHubPublication(params: {
         baseBranch,
         headCommit: headCommit ?? snapshot.baseCommit,
         marker,
+        host: identity.host ?? resolveGitHubHost(identity.env),
         refreshIdentity,
         assertCurrent,
         recordObserved: (url) => execution.recordEffect("pull_request", { url }),
@@ -374,27 +387,30 @@ export async function executeRepositoryGitHubPublication(params: {
       execution.recordEffect("push");
       dispatched = true;
       // GraphQL's beforeOid is an exact lease; REST's non-force update only checks ancestry.
-      const result = await runPublicationCommand(apiArgs("graphql", "POST"), {
-        env: identity.env,
-        input: JSON.stringify({
-          query:
-            "mutation($input: UpdateRefsInput!) { updateRefs(input: $input) { clientMutationId } }",
-          variables: {
-            input: {
-              repositoryId: sourceRepository.node_id,
-              clientMutationId: row.request_id,
-              refUpdates: [
-                {
-                  name: "refs/heads/" + branch,
-                  beforeOid: remoteHead ?? "0".repeat(40),
-                  afterOid: headCommit,
-                  force: false,
-                },
-              ],
+      const result = await runPublicationCommand(
+        apiArgs("graphql", "POST", identity.host ?? resolveGitHubHost(identity.env)),
+        {
+          env: identity.env,
+          input: JSON.stringify({
+            query:
+              "mutation($input: UpdateRefsInput!) { updateRefs(input: $input) { clientMutationId } }",
+            variables: {
+              input: {
+                repositoryId: sourceRepository.node_id,
+                clientMutationId: row.request_id,
+                refUpdates: [
+                  {
+                    name: "refs/heads/" + branch,
+                    beforeOid: remoteHead ?? "0".repeat(40),
+                    afterOid: headCommit,
+                    force: false,
+                  },
+                ],
+              },
             },
-          },
-        }),
-      });
+          }),
+        },
+      );
       let succeeded = false;
       if (result.code === 0) {
         const reply: unknown = JSON.parse(result.stdout.toString("utf8"));
@@ -434,7 +450,10 @@ export async function executeRepositoryGitHubPublication(params: {
       execution.recordEffect("pull_request");
       dispatched = true;
       const created = await runPublicationCommand(
-        githubPublicationCreatePullRequestArgs(repository),
+        githubPublicationCreatePullRequestArgs(
+          repository,
+          identity.host ?? resolveGitHubHost(identity.env),
+        ),
         {
           env: identity.env,
           input: JSON.stringify({

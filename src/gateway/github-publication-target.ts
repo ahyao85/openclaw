@@ -1,4 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { resolveGitHubHost } from "../agents/github-host.js";
 import type { PreparedGitHubPublicationIdentity } from "../agents/github-tool-identity.js";
 import { managedWorktrees } from "../agents/worktrees/service.js";
 import type { resolveGitHubPublicationWorktreeOwner } from "./github-publication-availability.js";
@@ -15,6 +16,7 @@ export async function prepareGitHubPublicationTarget(params: {
   assertCurrent: () => void;
 }) {
   const { worktree, assertCurrent } = params;
+  const githubHost = params.identity.host ?? resolveGitHubHost(params.identity.env);
   assertCurrent();
   const repositoryIdentity = await managedWorktrees.resolveRepositoryIdentity(worktree.path);
   assertCurrent();
@@ -27,7 +29,7 @@ export async function prepareGitHubPublicationTarget(params: {
       "GitHub publication workspace repository changed.",
     );
   }
-  const remote = parseGitHubRemoteUrl(repositoryIdentity.originUrl);
+  const remote = parseGitHubRemoteUrl(repositoryIdentity.originUrl, githubHost);
   if (
     !remote ||
     !/^[A-Za-z0-9_.-]+$/u.test(remote.owner) ||
@@ -49,7 +51,7 @@ export async function prepareGitHubPublicationTarget(params: {
       "gh",
       "api",
       "--hostname",
-      "github.com",
+      githubHost,
       `repos/${pushRepository}`,
       "--jq",
       "{fork, default_branch, parent: {name: .parent.name, default_branch: .parent.default_branch, owner: {login: .parent.owner.login}}}",

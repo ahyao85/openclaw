@@ -54,6 +54,19 @@ describe("parseGitHubRemoteUrl", () => {
     expect(parseGitHubRemoteUrl("ssh://git@github.com/openclaw/openclaw.git")).toEqual(expected);
   });
 
+  it("parses the configured GitHub Enterprise host without admitting another host", () => {
+    const expected = { owner: "bic", repo: "lobster" };
+    expect(
+      parseGitHubRemoteUrl("https://microsoft.ghe.com/bic/lobster.git", "microsoft.ghe.com"),
+    ).toEqual(expected);
+    expect(
+      parseGitHubRemoteUrl("git@microsoft.ghe.com:bic/lobster.git", "microsoft.ghe.com"),
+    ).toEqual(expected);
+    expect(
+      parseGitHubRemoteUrl("https://github.com/bic/lobster.git", "microsoft.ghe.com"),
+    ).toBeNull();
+  });
+
   it("rejects non-GitHub and malformed remotes", () => {
     expect(parseGitHubRemoteUrl("https://gitlab.com/openclaw/openclaw.git")).toBeNull();
     expect(parseGitHubRemoteUrl("git@github.com:openclaw")).toBeNull();

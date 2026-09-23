@@ -10,6 +10,7 @@ import { mergeProcessEnv, resolveEnvironmentValue } from "../infra/process-env.j
 import { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
 import { runCommandBuffered } from "../process/exec.js";
 import { getOrCreatePromise } from "../shared/lazy-promise.js";
+import { resolveGitHubHost } from "./github-host.js";
 
 const GITHUB_IDENTITY_COMMAND_TIMEOUT_MS = 15_000;
 export const GITHUB_IDENTITY_OUTPUT_LIMIT_BYTES = 32 * 1024;
@@ -147,8 +148,9 @@ export async function readNativeGitHubToken(
     return normalizeGitHubToken(token);
   }
   const startedAt = performance.now();
+  const githubHost = resolveGitHubHost(effectiveEnv);
   const result = await runGitHubIdentityCommand(
-    ["gh", "auth", "token", "--hostname", "github.com"],
+    ["gh", "auth", "token", "--hostname", githubHost],
     env,
   );
   try {
@@ -190,7 +192,7 @@ export async function readNativeGitHubToken(
   // gh's JSON status includes an entry even for locked, rejected, or timed-out
   // configured accounts. Only an empty host map proves anonymous admission.
   const observed = await runGitHubIdentityCommand(
-    ["gh", "auth", "status", "--active", "--hostname", "github.com", "--json", "hosts"],
+    ["gh", "auth", "status", "--active", "--hostname", githubHost, "--json", "hosts"],
     env,
     undefined,
     remainingMs,
