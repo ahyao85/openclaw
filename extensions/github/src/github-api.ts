@@ -11,7 +11,25 @@ import {
 
 export { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 
-export const GITHUB_API_ORIGIN = "https://api.github.com";
+const DEFAULT_GITHUB_API_ORIGIN = "https://api.github.com";
+
+export function resolveGitHubApiOrigin(value: string | undefined): string {
+  const raw = value?.trim() || DEFAULT_GITHUB_API_ORIGIN;
+  const parsed = new URL(raw);
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    (parsed.pathname !== "/" && parsed.pathname !== "")
+  ) {
+    throw new Error("OPENCLAW_GITHUB_API_BASE_URL must be an HTTPS origin");
+  }
+  return parsed.origin;
+}
+
+export const GITHUB_API_ORIGIN = resolveGitHubApiOrigin(process.env.OPENCLAW_GITHUB_API_BASE_URL);
 const GITHUB_JSON_MAX_BYTES = 256 * 1024;
 export const GITHUB_REQUEST_TIMEOUT_MS = 8_000;
 const GITHUB_API_VERSION = "2022-11-28";
