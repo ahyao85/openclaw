@@ -620,9 +620,13 @@ describe("shared missing skill ancestors", () => {
       }
       return originalUnwatchFile(...args);
     });
+    const observedPaths = new Set<string>();
     const originalWatch = chokidar.watch;
     const watch = vi.spyOn(chokidar, "watch").mockImplementation((...args) => {
       const watcher = originalWatch(...args);
+      watcher.on("all", (_event, changedPath) => {
+        observedPaths.add(changedPath);
+      });
       if (resolveSkillsWatcherUsePolling()) {
         const originalEmit = watcher.emit.bind(watcher);
         vi.spyOn(watcher, "emit").mockImplementation((...emitArgs) => {
@@ -640,7 +644,16 @@ describe("shared missing skill ancestors", () => {
       }
       return watcher;
     });
-    const nativeWatch = vi.spyOn(nativeFs, "watch");
+    const originalNativeWatch = nativeFs.watch;
+    const nativeWatch = vi.spyOn(nativeFs, "watch").mockImplementation((...args) => {
+      const watcher = originalNativeWatch(...args);
+      watcher.on("change", (_event, filename) => {
+        if (typeof args[0] === "string" && filename !== null) {
+          observedPaths.add(path.resolve(args[0], filename.toString()));
+        }
+      });
+      return watcher;
+    });
     syncBuiltinESMExports();
     const { ensureSkillsWatcher } = await import("./refresh.js");
     const { getSkillsSourceVersion } = await import("./refresh-state.js");
@@ -684,9 +697,15 @@ describe("shared missing skill ancestors", () => {
           // A late initial-ready event can advance the version before the link
           // is observed. Keep it in place until observation moves to its parent.
           expect(
-            watch.mock.calls.some(([watched]) => watched === root) ||
-              nativeWatch.mock.calls.some(([watched]) => watched === root),
+            watch.mock.calls.slice(chokidarAdmissionStart).some(([watched]) => watched === root) ||
+              nativeWatch.mock.calls
+                .slice(nativeAdmissionStart)
+                .some(([watched]) => watched === root),
           ).toBe(true);
+        } else {
+          // A late ready event does not prove the new symlink was observed.
+          // Keep it in place until the watcher reports that exact entry.
+          expect(observedPaths.has(link)).toBe(true);
         }
       },
       { timeout: 3_000 },

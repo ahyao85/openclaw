@@ -1,7 +1,7 @@
 // SSH-verified node pairing e2e: real gateway server on the LAN self-connect
 // harness, with the SSH probe runtime mocked at the module boundary.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
+import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
 import { writeConfigFile } from "../config/config.js";
 import { getRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { GatewayNodePairingConfig } from "../config/types.gateway.js";
@@ -109,7 +109,23 @@ function observePairingWork(release?: () => void | Promise<void>) {
   return {
     approval,
     verification,
-    waitForApproval: () => racePromiseWithAbortSignal(called.promise, waiting.signal),
+    // Preserve the former vi.waitFor call-observation budget and the explicit
+    // eight-second approval-completion budget while allowing teardown to abort.
+    waitForApproval: () =>
+      withTestTimeout(
+        racePromiseWithAbortSignal(called.promise, waiting.signal),
+        1_000,
+        "timed out waiting for SSH approval dispatch",
+      ),
+    waitForApprovalResult: () =>
+      withTestTimeout(
+        racePromiseWithAbortSignal(
+          called.promise.then(({ result }) => result),
+          waiting.signal,
+        ),
+        8_000,
+        "timed out waiting for ssh-verified device approval",
+      ),
     settle,
     close,
   };
@@ -261,8 +277,8 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
                   // Let the real SSH approval commit after the pending snapshot,
                   // before the handshake revalidates current device authority.
                   probe.resolve(matched);
-                  const { result } = await work.waitForApproval();
-                  expect((await result)?.status).toBe("approved");
+                  const result = await work.waitForApprovalResult();
+                  expect(result?.status).toBe("approved");
                   return pendingSnapshot;
                 })
               : undefined;
@@ -289,8 +305,8 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
               expect(reread).toHaveBeenCalledOnce();
               expect(first).toMatchObject({ ok: true, payload: { type: "hello-ok" } });
             }
-            const { result } = await work.waitForApproval();
-            expect((await result)?.status).toBe("approved");
+            const result = await work.waitForApprovalResult();
+            expect(result?.status).toBe("approved");
             const paired = await devicePairing.getPairedDevice(loaded.identity.deviceId);
             expect(paired?.approvedVia).toBe("ssh-verified");
             expect(paired?.publicKey).toBe(loaded.publicKey);

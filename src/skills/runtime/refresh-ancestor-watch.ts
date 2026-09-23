@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
+import path from "node:path";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import chokidar, { type FSWatcher } from "chokidar";
 import { isPathInside } from "../../infra/path-guards.js";
@@ -77,6 +78,12 @@ function createAncestorWatcher(
       depth: 0,
       ignored,
     });
+    if (process.platform === "darwin" && !usePolling) {
+      // macOS can keep a directory watch on its moved inode without a rename
+      // event. Observe its directory entry through the same filtered watcher so
+      // replacement can reconcile even when the old directory emits nothing.
+      watcher.add(path.dirname(watchRoot));
+    }
     return { watcher, close: () => teardownSkillsPathWatcher({ watcher }) };
   });
 }

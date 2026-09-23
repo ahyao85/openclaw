@@ -1312,7 +1312,11 @@ Read-only callbacks made while a cached agent writer holds a transaction use a
 separate read-only companion connection. Each call rereads committed rows and
 checks the current schema, agent owner, and physical file identity. The companion
 retains prepared statements, never an authorization result or an open read
-transaction. Canonical validation belongs to the admitted physical database:
+transaction. On connections whose owner enables statement caching, schema-version
+checks reuse the prepared `PRAGMA user_version` statement but read its current
+value on every call. Authorizer changes, database replacement, and close retain
+the existing statement-cache invalidation rules.
+Canonical validation belongs to the admitted physical database:
 first admission requires full proof, then the schema-21 pending-key projection
 records changes independently of connection lifetime. Startup and initial Gateway
 authorization of an unadmitted reader use the existing mutation worker for pending
@@ -1622,8 +1626,11 @@ the parent synchronously joins transaction settlement before allowing owner reti
 that mandatory join cannot be abandoned at the append deadline.
 
 Periodic incremental vacuum uses the same write-admission boundary, so it can
-service reclamation approval before taking the writer lock. Its 512-page limit
-is unchanged; passive checkpoints remain outside the write transaction.
+service reclamation approval before taking the writer lock. Each connection starts
+with eight-page units and adjusts toward a 25 ms hold target, growing at most twice
+per unit up to 512 pages. The scheduling estimate expires with the connection.
+Periodic maintenance retains its 512-page total budget per tick, reacquiring
+admission between units; passive checkpoints remain outside the write transaction.
 
 The WAL owner supplies one checkpoint-before-vacuum operation for periodic,
 reclamation, and archive maintenance. An incomplete checkpoint skips vacuum.
