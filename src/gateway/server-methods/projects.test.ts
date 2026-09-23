@@ -4,6 +4,7 @@ import path from "node:path";
 import type { StatementSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { beforeEach, expect, test, vi } from "vitest";
+import * as githubReadIdentity from "../../agents/github-read-identity.js";
 import { insertRegistryWorktree } from "../../agents/worktrees/registry.js";
 import { loadCombinedSessionStoreForGatewayCore } from "../../config/sessions/combined-store-gateway.js";
 import {
@@ -45,8 +46,32 @@ const projectsHandlers = createProjectsHandlers({
 } as never);
 
 beforeEach(() => {
+  vi.unstubAllEnvs();
   listRegistryRecords.mockClear();
   resolveRepositoryIdentity.mockClear();
+});
+
+test("projects.searchRemote uses the opted-in native system GitHub identity", async () => {
+  vi.stubEnv("OPENCLAW_PROJECTS_SEARCH_NATIVE_GITHUB", "1");
+  const token = vi
+    .spyOn(githubReadIdentity, "readCachedNativeGitHubToken")
+    .mockResolvedValue("native-system-token");
+  const search = vi.spyOn(projectGitHubSearch, "searchRemoteProjects").mockResolvedValue({
+    credential: "configured",
+    projects: [],
+  });
+  try {
+    expect(await invokeProjectMethod("projects.searchRemote", { query: "bic/lobster" })).toEqual({
+      ok: true,
+      payload: { credential: "configured", projects: [] },
+      error: undefined,
+    });
+    expect(token).toHaveBeenCalledWith(process.env);
+    expect(search).toHaveBeenCalledWith("bic/lobster", { token: "native-system-token" });
+  } finally {
+    search.mockRestore();
+    token.mockRestore();
+  }
 });
 
 async function initializeRepository(

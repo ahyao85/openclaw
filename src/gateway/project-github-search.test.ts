@@ -93,6 +93,36 @@ describe("project GitHub search", () => {
     );
   });
 
+  it("accepts an explicitly prepared native credential without ambient token state", async () => {
+    const selected = repository("bic/lobster", "2026-09-23T00:00:00Z");
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = requestUrl(input);
+      if (url.includes("/repos/bic/lobster")) {
+        return json(selected);
+      }
+      if (url.includes("/user/repos")) {
+        return json([selected]);
+      }
+      return json({ items: [selected] });
+    });
+
+    const result = await searchRemoteProjects("bic/lobster", {
+      env: {},
+      fetchImpl,
+      now: 250,
+      token: "prepared-native-token",
+    });
+
+    expect(result).toMatchObject({
+      credential: "configured",
+      projects: [{ fullName: "bic/lobster" }],
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    for (const [, init] of fetchImpl.mock.calls) {
+      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer prepared-native-token");
+    }
+  });
+
   it("preserves GitHub best-match order for global results instead of re-sorting by recency", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       json({

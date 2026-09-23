@@ -16,6 +16,7 @@ import {
   validateProjectsRemoveParams,
   validateProjectsSearchRemoteParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { readCachedNativeGitHubToken } from "../../agents/github-read-identity.js";
 import { listRegistryWorktrees } from "../../agents/worktrees/registry.js";
 import { managedWorktrees, type ManagedWorktreeService } from "../../agents/worktrees/service.js";
 import { loadCombinedSessionStoreForGatewayCoreAsync } from "../../config/sessions/combined-store-gateway.js";
@@ -612,7 +613,18 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
         return;
       }
       try {
-        respond(true, await searchRemoteProjects(params.query), undefined);
+        const nativeToken =
+          process.env.OPENCLAW_PROJECTS_SEARCH_NATIVE_GITHUB === "1"
+            ? await readCachedNativeGitHubToken(process.env)
+            : undefined;
+        respond(
+          true,
+          await searchRemoteProjects(
+            params.query,
+            nativeToken === undefined ? undefined : { token: nativeToken },
+          ),
+          undefined,
+        );
       } catch (error) {
         const { message, ...details } =
           error instanceof gitHubPublicApi.ControlUiGitHubError ||

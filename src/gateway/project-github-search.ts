@@ -153,10 +153,21 @@ async function searchProjectsUncached(params: {
 /** Searches affiliated and public GitHub repositories for the project picker. */
 export function searchRemoteProjects(
   query: string,
-  options: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch; now?: number } = {},
+  options: {
+    env?: NodeJS.ProcessEnv;
+    fetchImpl?: typeof fetch;
+    now?: number;
+    token?: string;
+  } = {},
 ): Promise<ProjectsSearchRemoteResult> {
   const normalizedQuery = query.trim().toLowerCase();
-  const { token, cacheScope } = gitHubPublicApi.resolveGitHubApiCredentialScope(options.env);
+  const { token, cacheScope } =
+    options.token === undefined
+      ? gitHubPublicApi.resolveGitHubApiCredentialScope(options.env)
+      : {
+          token: options.token,
+          cacheScope: gitHubPublicApi.githubApiCredentialCacheScope(options.token),
+        };
   // Gateway reloads run in-process, so cache results must stay credential-scoped.
   const cacheKey = `${normalizedQuery}\0${cacheScope}`;
   const now = options.now ?? Date.now();
