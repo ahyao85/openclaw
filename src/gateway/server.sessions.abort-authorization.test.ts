@@ -258,10 +258,14 @@ describe("native sessions.abort requester authorization over WebSocket", () => {
       expect(
         await rpcReq(owner.ws, "sessions.abort", { key: run.sessionKey, runId: run.runId }),
       ).toMatchObject({ ok: true, payload: { status: "aborted", abortedRunId: run.runId } });
-      // The RPC response precedes the deferred publisher; join it before
-      // asserting the actual notification received on this subscription.
+      // Join the real publisher and cross a same-socket response barrier
+      // before asserting that this subscription received the abort event.
       await flushPendingSessionsChangedEvents();
-      await expect.poll(() => events).toContain("sessions.changed");
+      expect(await rpcReq(owner.ws, "sessions.subscribe", {})).toMatchObject({
+        ok: true,
+        payload: { subscribed: true },
+      });
+      expect(events).toContain("sessions.changed");
     } finally {
       owner.ws.off("message", record);
       queueCleanup.clearSessionQueues([run.sessionKey]);
