@@ -6919,12 +6919,16 @@ describe("runCodexAppServerAttempt", () => {
       vi.stubEnv("OPENCLAW_STATE_DIR", path.join(tempDir, "ephemeral-state"));
       const storePath = path.join(tempDir, "ephemeral-sessions.json");
       let generation = 0;
+      const turnStarts = new Map<number, ReturnType<typeof createDeferred<void>>>();
       const harness = createStartedThreadHarness(async (method) => {
         if (method === "thread/start") {
           generation += 1;
           return threadStartResult(`thread-ephemeral-${generation}`);
         }
         if (method === "turn/start") {
+          const started = turnStarts.get(generation);
+          assert(started, "Unexpected Codex turn generation");
+          started.resolve();
           return turnStartResult(`turn-ephemeral-${generation}`);
         }
         return undefined;
@@ -6940,26 +6944,26 @@ describe("runCodexAppServerAttempt", () => {
           params.config = { ...params.config, session: { store: storePath } };
         }
 
-        const run = runCodexAppServerAttempt(params);
-        let startupError: unknown;
-        void run.catch((error: unknown) => {
-          startupError = error;
-        });
         const expectedGeneration = index + 1;
-        await vi.waitFor(() => {
-          if (startupError) {
-            throw startupError instanceof Error
-              ? startupError
-              : new Error("Codex attempt failed.", { cause: startupError });
-          }
-          expect(
-            harness.requests.filter((request) => request.method === "turn/start"),
-          ).toHaveLength(expectedGeneration);
-        }, fastWait);
+        const turnStarted = createDeferred<void>();
+        turnStarts.set(expectedGeneration, turnStarted);
+        const run = runCodexAppServerAttempt(params);
+        const startup = await Promise.race([
+          turnStarted.promise.then(() => ({ kind: "started" as const })),
+          run.then((result) => ({ kind: "completed" as const, result })),
+        ]);
+        expect(startup).toMatchObject({ kind: "started" });
+        expect(harness.requests.filter((request) => request.method === "turn/start")).toHaveLength(
+          expectedGeneration,
+        );
         const threadId = `thread-ephemeral-${expectedGeneration}`;
         const turnId = `turn-ephemeral-${expectedGeneration}`;
         await harness.completeTurn({ threadId, turnId });
-        await expect(run).resolves.toBeDefined();
+        expect(readAttemptTerminal(await run)).toMatchObject({
+          aborted: false,
+          timedOut: false,
+          promptError: null,
+        });
       }
       expect(harness.requests.filter((request) => request.method === "thread/start")).toHaveLength(
         2,
