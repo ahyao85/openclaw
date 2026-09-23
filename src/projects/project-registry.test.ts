@@ -38,6 +38,7 @@ const execFileAsync = promisify(execFile);
 const tempDirs = createTempDirTracker();
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
   tempDirs.cleanup();
@@ -68,6 +69,20 @@ describe("project registry", () => {
     ["ssh://git@github.com:22/OpenClaw/OpenClaw", "https://github.com/openclaw/openclaw.git"],
   ])("canonicalizes accepted GitHub clone URL %s", (input, expected) => {
     expect(parseProjectGitUrl(input)?.url).toBe(expected);
+  });
+
+  it.each([
+    ["https://microsoft.ghe.com/Bic/Lobster", "https://microsoft.ghe.com/bic/lobster.git"],
+    ["git@microsoft.ghe.com:Bic/Lobster.git", "https://microsoft.ghe.com/bic/lobster.git"],
+    ["ssh://git@microsoft.ghe.com/Bic/Lobster.git", "https://microsoft.ghe.com/bic/lobster.git"],
+  ])("canonicalizes accepted enterprise GitHub clone URL %s", (input, expected) => {
+    vi.stubEnv("OPENCLAW_GITHUB_HOST", "microsoft.ghe.com");
+    expect(parseProjectGitUrl(input)?.url).toBe(expected);
+  });
+
+  it("rejects a repository URL from a host other than the configured GitHub host", () => {
+    vi.stubEnv("OPENCLAW_GITHUB_HOST", "microsoft.ghe.com");
+    expect(parseProjectGitUrl("https://github.com/openclaw/openclaw.git")).toBeNull();
   });
 
   it.each([
