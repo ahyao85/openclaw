@@ -14,7 +14,9 @@ import {
   replaceSessionEntry,
   replaceSessionEntrySync,
 } from "../../../config/sessions/session-accessor.js";
+import { historyPages } from "../../../config/sessions/session-transcript-worker-resources.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import { sessionChanges } from "../../../sessions/session-row-changes.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import {
   createOpenClawTestState,
@@ -188,6 +190,38 @@ async function createFixture(
 }
 
 describe("model chat and native model ownership", () => {
+  it("retries one benign session-row race before native model dispatch", async () => {
+    const nativeOwner = vi.fn(() => ({ model: "native", auth: "native" as const }));
+    const fixture = await createFixture({}, nativeOwner);
+    const run = historyPages.run.bind(historyPages);
+    let changed = false;
+    const spy = vi.spyOn(historyPages, "run").mockImplementation(async (...args) => {
+      const reply = await run(...args);
+      if (
+        !changed &&
+        reply.ok &&
+        typeof reply.value === "object" &&
+        !Array.isArray(reply.value) &&
+        reply.value.kind === "session-exact-entries"
+      ) {
+        changed = true;
+        sessionChanges.emit({
+          sessionKey: fixture.target.sessionKey,
+          storePath: fixture.target.storePath,
+        });
+      }
+      return reply;
+    });
+    try {
+      const setup = await fixture.resolve();
+      expect(setup.nativeModelOwned).toBe(true);
+      expect(changed).toBe(true);
+      expect(nativeOwner).toHaveBeenCalledOnce();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it.each(["current", "changed-again", "revoked"] as const)(
     "reacquires initial model preparation after a shared OAuth refresh while authority is %s",
     async (outcome) => {

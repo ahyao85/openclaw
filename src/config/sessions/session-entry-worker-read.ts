@@ -35,6 +35,13 @@ type CapturedRead = {
   registry?: ReturnType<typeof prepareOpenClawAgentDatabaseRegistrySnapshotRead>;
 };
 
+export class SessionEntryChangedDuringReadError extends Error {
+  constructor() {
+    super("Session entry changed during read");
+    this.name = "SessionEntryChangedDuringReadError";
+  }
+}
+
 function captureRead(input: SessionAccessScope): CapturedRead {
   const env = cloneEnvWithPlatformSemantics(input.env ?? process.env);
   env.OPENCLAW_STATE_DIR = resolveStateDir(env);
@@ -145,7 +152,7 @@ export async function withSessionEntriesWorkerRead<T>(
                 });
                 entries.push(result.entries[0]?.entry);
                 assertCurrent();
-                if (changed) throw new Error("Session entry changed during read");
+                if (changed) throw new SessionEntryChangedDuringReadError();
               }
               // Process-owned incognito handles cannot be reopened by durable workers.
               // Read them only in the final consuming frame, with no worker-error fallback.
@@ -154,12 +161,12 @@ export async function withSessionEntriesWorkerRead<T>(
                   entries[index] = loadSessionEntryReadOnly(item.captured.scope);
               }
               assertCurrent();
-              if (changed) throw new Error("Session entry changed during read");
+              if (changed) throw new SessionEntryChangedDuringReadError();
               let consuming = true;
               const assertReadCurrent = () => {
                 if (!consuming) throw new Error("Session entry read scope is closed");
                 assertCurrent();
-                if (changed) throw new Error("Session entry changed during read");
+                if (changed) throw new SessionEntryChangedDuringReadError();
               };
               try {
                 return consumeSync(entries, assertReadCurrent);
