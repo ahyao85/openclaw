@@ -283,7 +283,7 @@ manual targets cannot use the override. Final acceptance requires two green
 main-shaped and two green PR-shaped workflows at the same head, each within
 900 seconds; failed or interrupted attempts remain in the report.
 
-## Hybrid hosted assignment guard
+### Hybrid hosted assignment guard
 
 Automatic canonical hybrid first attempts inspect recent hosted assignment before admitting additional checks. Main pushes qualify directly; PRs must select Windows coverage and a full compact Node plan containing at least 500 predicted seconds in one serial row. The admitted hosted checks completed within 549 seconds including setup in the native PR trial, with at least 289 seconds of slack before the final Node job. The serial prediction is an admission floor; actual setup, assignment delay, and workflow completion still require measurement. Precise plans, shorter serial rows, and aggregate two-slot estimates do not qualify. The five Windows shards alone no longer establish the old two-shard latency floor. Fast-only scopes, frozen targets, manual dispatches, retries, other repositories, and untrusted authors retain their existing routing.
 
