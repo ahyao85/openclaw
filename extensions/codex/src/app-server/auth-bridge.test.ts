@@ -83,7 +83,13 @@ it("keeps subscription-sharing OAuth in the host and hands native Codex only an 
       client: h.client,
       preparedAuth: handoff.preparedAuth,
       authRequirement: "api-key",
-      startOptions: { transport: "stdio", command: "codex", args: [], homeScope: "agent" },
+      startOptions: {
+        transport: "stdio",
+        command: "codex",
+        args: [],
+        homeScope: "agent",
+        headers: {},
+      },
     });
     const login = JSON.parse(await h.waitForWrite(0));
     expect(login.method).toBe("account/login/start");

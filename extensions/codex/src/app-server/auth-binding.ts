@@ -9,9 +9,8 @@ import {
 } from "openclaw/plugin-sdk/agent-runtime";
 import { resolveOpenAICodexAuthIdentity } from "openclaw/plugin-sdk/provider-auth";
 import {
-  fingerprintCodexResponsesOAuth,
   isCodexResponsesOAuthCredential,
-  materializeCodexResponsesOAuthProfile,
+  resolveCodexResponsesOAuthProfileFingerprint,
 } from "./responses-oauth.js";
 
 type CodexAppServerPreparedAuthBinding = {
@@ -47,14 +46,14 @@ export async function prepareCodexAppServerAuthBinding(
   if (credential.type === "oauth") {
     if (isCodexResponsesOAuthCredential(credential)) {
       const store = structuredClone(params.authProfileStore);
-      const materialized = await materializeCodexResponsesOAuthProfile({
+      const fingerprint = await resolveCodexResponsesOAuthProfileFingerprint({
         profileId: params.authProfileId,
         store,
         agentDir: params.agentDir,
         config: params.config,
       });
       return {
-        fingerprint: fingerprintCodexResponsesOAuth(materialized),
+        fingerprint,
         authProfileStore: store,
       };
     }

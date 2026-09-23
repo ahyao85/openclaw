@@ -54,26 +54,42 @@ Slack connected app hosted by OpenAI.
 The **harness**, or [agent runtime](/concepts/agent-runtimes), runs the agent loop
 and tools. The login method determines which OpenAI service and account it uses.
 
-**Codex login does not require the native Codex harness in OpenClaw.** You can use
-OpenClaw's own runtime with its built-in Codex-backend adapter. Model calls still
-use the Codex service and allowance; the credential does not become a grant for
-the public Responses API. A different harness needs its own compatible
-Codex-backend integration to use that login.
-
-**Choose SIWC when you want app-specific access through the public Responses
-API.** It lets OpenClaw use eligible OpenAI models with its own application grant
-and permissions. A harness with a compatible SIWC/Responses integration can use
-that access without depending on the Codex backend. An API key also supports
-public API access, with Platform billing.
-
-OpenClaw can run the native Codex harness with Codex login, an API key, or its
-SIWC integration. The SIWC preview currently requires a managed local process
-when using that harness.
+OpenClaw's own runtime supports all three methods. Choosing Codex login does not
+require the native Codex harness; model calls still use the Codex service. If you
+choose the native Codex harness, all three methods are supported, but SIWC
+requires a managed local process.
 See [runtime selection](/providers/openai/runtimes#implicit-agent-runtime) and
 [SIWC setup](/providers/openai/setup#sign-in-with-chatgpt-preview) for configuration
 and current limits.
 
+## Shared agent credential or personal account?
+
+| You want to…                                                                | Use                                                                    |
+| --------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Configure the credential an agent uses for its conversations                | **Settings → Models → Connect provider** or `models auth login`        |
+| Connect an account to your person on a Gateway and select it for your chats | **Settings → Profile → Connected accounts** or `models accounts login` |
+
+These are model credentials. The Gateway access token used to connect the
+dashboard or Mac app is separate.
+
+For example, to connect SIWC as a personal account:
+
+```bash
+openclaw models accounts login openai --method siwc
+```
+
+Check the **Gateway**, **Person**, and **Scope** shown before signing in. A personal
+connection does not replace the agent's shared credential. Its default applies
+to new chats; existing chats keep their account selection. Collaborators
+continuing a chat use that chat's selected account, and Gateway fallback rules
+still apply. See [per-person model accounts](/concepts/multi-user#per-person-model-accounts).
+
 ## Set up an agent's credential
+
+In **Settings → Models**, select the agent, choose **Connect provider → OpenAI**,
+then choose a sign-in method. For SIWC, choose **Sign in with ChatGPT** and approve
+token sharing in your browser. When the account is connected, choose a model and
+use **Test & use** to verify a reply and select it.
 
 Run the command on the machine running the OpenClaw installation you want to
 configure:
@@ -102,28 +118,9 @@ to name the saved credential. Login saves and prioritizes that credential for th
 agent. Add `--set-default` to select the provider's recommended model; otherwise
 the existing default model is preserved.
 
-For guided setup, use **Settings → Models → Configure Models** or
-`openclaw onboard`. An existing compatible login may be offered for reuse.
+For guided setup, use `openclaw onboard`. An existing compatible login may be
+offered for reuse.
 See [model setup](/providers/openai/setup) and the [models CLI](/cli/models).
-
-## Shared agent credential or personal account?
-
-| You want to…                                                                | Use                                                                    |
-| --------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Configure the credential an agent uses for its conversations                | Agent model setup or `models auth login`                               |
-| Connect an account to your person on a Gateway and select it for your chats | **Settings → Profile → Connected accounts** or `models accounts login` |
-
-For example, to connect SIWC as a personal account:
-
-```bash
-openclaw models accounts login openai --method siwc
-```
-
-Check the **Gateway**, **Person**, and **Scope** shown before signing in. A personal
-connection does not replace the agent's shared credential. Its default applies
-to new chats; existing chats keep their account selection. Collaborators
-continuing a chat use that chat's selected account, and Gateway fallback rules
-still apply. See [per-person model accounts](/concepts/multi-user#per-person-model-accounts).
 
 ## Check the selected account
 

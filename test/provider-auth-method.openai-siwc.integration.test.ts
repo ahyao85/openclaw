@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { buildOpenAISetupProvider } from "../extensions/openai/setup-api.js";
+import { buildOpenAIProvider } from "../extensions/openai/api.js";
 import { runProviderPluginAuthMethodUnpersisted } from "../src/plugins/provider-auth-method.js";
 import { createNonExitingRuntime } from "../src/runtime.js";
 import { WizardSession } from "../src/wizard/session.js";
@@ -37,7 +37,7 @@ vi.mock("node:http", async (importOriginal) => {
 });
 
 it("releases the SIWC callback port when OAuth expires before the wizard note is acknowledged", async () => {
-  const method = buildOpenAISetupProvider().auth.find((entry) => entry.id === "siwc");
+  const method = buildOpenAIProvider().auth.find((entry) => entry.id === "siwc");
   if (!method) {
     throw new Error("OpenAI did not register its SIWC method");
   }

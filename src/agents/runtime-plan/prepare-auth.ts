@@ -467,6 +467,10 @@ export function prepareAgentRuntimeAuth(
     ...(fallbackDirectSource ? { fallback: fallbackDirectSource } : {}),
     allowCooldown: params.allowTransientCooldownProbe,
   });
+  const pinnedSource =
+    sourcePlan.kind === "required"
+      ? sourcePlan.source
+      : sourcePlan.orderedProfiles.find((source) => source.profileId === userPinnedProfileId);
   const resolution = resolveOpenAIModelRoutes({
     provider: params.provider,
     modelId: params.modelId,
@@ -492,14 +496,8 @@ export function prepareAgentRuntimeAuth(
     pinnedAuthRequirement: resolveProviderModelRouteAuthRequirement(
       sourcePlan.kind === "required"
         ? sourcePlan.source.mode
-        : (sourcePlan.orderedProfiles.find((source) => source.profileId === userPinnedProfileId)
-            ?.mode ?? configuredAuthMode),
-      sourcePlan.kind === "required" && sourcePlan.source.kind === "profile"
-        ? sourcePlan.source.authRequirement
-        : sourcePlan.kind === "automatic"
-          ? sourcePlan.orderedProfiles.find((source) => source.profileId === userPinnedProfileId)
-              ?.authRequirement
-          : undefined,
+        : (pinnedSource?.mode ?? configuredAuthMode),
+      pinnedSource?.kind === "profile" ? pinnedSource.authRequirement : undefined,
     ),
     env: params.env,
     requestTransportOverrides: params.requestTransportOverrides,

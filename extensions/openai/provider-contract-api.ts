@@ -5,19 +5,18 @@ import {
   asNonArrayRecord,
   normalizeOptionalString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { isTokenSharingAuthFlow } from "./token-sharing.js";
+import { isSIWCAuthFlow } from "./token-sharing.js";
 
 const noopAuth = async () => ({ profiles: [] });
 const OPENAI_API_KEY_LABEL = "OpenAI API Key";
-const OPENAI_CHATGPT_LOGIN_LABEL = "ChatGPT Login";
-const OPENAI_CHATGPT_LOGIN_HINT = "Sign in with your ChatGPT or Codex subscription";
-const OPENAI_CHATGPT_DEVICE_PAIRING_LABEL = "ChatGPT Device Pairing";
-const OPENAI_CHATGPT_DEVICE_PAIRING_HINT =
-  "Pair your ChatGPT account in browser with a device code";
+const OPENAI_CHATGPT_LOGIN_LABEL = "Codex login (browser)";
+const OPENAI_CHATGPT_LOGIN_HINT = "Sign in to Codex with your ChatGPT account";
+const OPENAI_CHATGPT_DEVICE_PAIRING_LABEL = "Codex login (device code)";
+const OPENAI_CHATGPT_DEVICE_PAIRING_HINT = "Approve Codex access using a code in your browser";
 const OPENAI_ACCOUNT_WIZARD_GROUP = {
   groupId: "openai",
   groupLabel: "OpenAI",
-  groupHint: "ChatGPT/Codex sign-in or API key",
+  groupHint: "Codex login, Sign in with ChatGPT, or API key",
 } as const;
 const CODEX_CHATGPT_IMPORT = {
   migrationProviderId: "codex",
@@ -38,8 +37,8 @@ const matchesTokenSharingAccount: NonNullable<
     existing.type !== "oauth" ||
     credential.provider !== "openai" ||
     existing.provider !== "openai" ||
-    !isTokenSharingAuthFlow(credential.authFlow) ||
-    !isTokenSharingAuthFlow(existing.authFlow) ||
+    !isSIWCAuthFlow(credential.authFlow) ||
+    !isSIWCAuthFlow(existing.authFlow) ||
     !credential.idToken ||
     !existing.idToken ||
     !credential.clientId ||

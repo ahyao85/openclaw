@@ -6,6 +6,7 @@ import { createOpenAINativeWebSearchWrapper } from "./native-web-search.js";
 import { TOKEN_SHARING_AUTH_FLOW } from "./token-sharing.js";
 
 const { wrapStreamFn } = buildProviderStreamFamilyHooks("openai-responses-defaults");
+const SIWC_SERVICE_TIERS = ["default", "priority", "ultrafast", "slow"];
 
 export function wrapOpenAIResponsesStream(ctx: ProviderWrapStreamFnContext) {
   let streamContext = ctx;
@@ -38,13 +39,11 @@ export function wrapOpenAIResponsesStream(ctx: ProviderWrapStreamFnContext) {
             }
             if (
               request.service_tier != null &&
-              !["default", "priority", "ultrafast", "slow"].some(
-                (tier) => tier === request.service_tier,
-              )
+              !SIWC_SERVICE_TIERS.some((tier) => tier === request.service_tier)
             ) {
               throw new Error(
                 "Sign in with ChatGPT does not support this service tier. " +
-                  "Remove serviceTier/service_tier from the model params or select default or priority.",
+                  `Remove serviceTier/service_tier from the model params or select one of: ${SIWC_SERVICE_TIERS.join(", ")}.`,
               );
             }
             request.store = false;

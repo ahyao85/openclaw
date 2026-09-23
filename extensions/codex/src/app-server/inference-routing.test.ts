@@ -441,12 +441,13 @@ describe("managed inference route ownership", () => {
   it("fails closed for host OAuth on native backend and custom provider configurations", async () => {
     const h = harness();
     ownCodexInferenceClient(h.client, {}, { resolve: vi.fn() });
-    for (const config of [
+    const configs: CodexConfigReadResponse["config"][] = [
       { openai_base_url: "https://chatgpt.com/backend-api/codex" },
       { openai_base_url: "https://models.example.com/v1" },
       { model_provider: "bedrock" },
       { features: { respect_system_proxy: true } },
-    ]) {
+    ];
+    for (const config of configs) {
       await expect(prepareThread(h.client, { config, origins: {} })).rejects.toThrow(
         "public Responses",
       );

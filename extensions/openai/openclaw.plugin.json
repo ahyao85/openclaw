@@ -308,12 +308,12 @@
       "choiceId": "openai",
       "appGuidedAuth": "oauth",
       "credentialOnly": true,
-      "choiceLabel": "ChatGPT Login",
-      "choiceHint": "Sign in with your ChatGPT or Codex subscription",
+      "choiceLabel": "Codex login (browser)",
+      "choiceHint": "Sign in to Codex with your ChatGPT account",
       "assistantPriority": -10,
       "groupId": "openai",
       "groupLabel": "OpenAI",
-      "groupHint": "ChatGPT/Codex sign-in or API key"
+      "groupHint": "Codex login, Sign in with ChatGPT, or API key"
     },
     {
       "provider": "openai",
@@ -325,12 +325,12 @@
       "channelLogin": {
         "aliases": ["codex"]
       },
-      "choiceLabel": "ChatGPT Device Pairing",
-      "choiceHint": "Pair your ChatGPT account in browser with a device code",
+      "choiceLabel": "Codex login (device code)",
+      "choiceHint": "Approve Codex access using a code in your browser",
       "assistantPriority": -40,
       "groupId": "openai",
       "groupLabel": "OpenAI",
-      "groupHint": "ChatGPT/Codex sign-in or API key",
+      "groupHint": "Codex login, Sign in with ChatGPT, or API key",
       "onboardingFeatured": true
     },
     {
@@ -345,7 +345,7 @@
       "assistantPriority": 0,
       "groupId": "openai",
       "groupLabel": "OpenAI",
-      "groupHint": "ChatGPT/Codex sign-in or API key"
+      "groupHint": "Codex login, Sign in with ChatGPT, or API key"
     },
     {
       "provider": "openai",
@@ -358,7 +358,7 @@
       "assistantPriority": 5,
       "groupId": "openai",
       "groupLabel": "OpenAI",
-      "groupHint": "ChatGPT/Codex sign-in or API key",
+      "groupHint": "Codex login, Sign in with ChatGPT, or API key",
       "onboardingFeatured": true,
       "optionKey": "openaiApiKey",
       "cliFlag": "--openai-api-key",

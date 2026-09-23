@@ -584,6 +584,8 @@ describe("prepareEmbeddedAttemptTransport", () => {
         pruning: false,
         apiKey: "test-access-token",
       });
+      streamFn.mockReturnValue(createAssistantMessageEventStream());
+      registerProviderStreamForModel.mockReturnValue(streamFn);
       input.attempt.runtimePlan!.auth.selectedAuthMode = "oauth";
       input.attempt.runtimePlan!.auth.selectedAuthFlow = authFlow;
       extraParamsTesting.setProviderRuntimeDepsForTest({
@@ -601,7 +603,7 @@ describe("prepareEmbeddedAttemptTransport", () => {
       });
 
       await prepareEmbeddedAttemptTransport(input);
-      void session.agent.streamFn(input.attempt.model, { messages: [] }, {});
+      await session.agent.streamFn(input.attempt.model, { messages: [] }, {});
 
       expect(streamFn).toHaveBeenCalledWith(
         expect.anything(),

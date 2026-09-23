@@ -58,9 +58,13 @@ function profileAuthRequirement(params: {
 }): ProviderModelRouteAuthRequirement | undefined {
   const credential = params.store?.profiles[params.profileId];
   const configured = params.cfg.auth?.profiles?.[params.profileId];
+  const provider = credential?.provider ?? configured?.provider;
+  if (!provider) {
+    return undefined;
+  }
   return (
     resolveProviderModelAuthPolicy({
-      provider: credential?.provider ?? configured?.provider ?? "",
+      provider,
       mode: credential?.type ?? configured?.mode,
       authFlow: credential?.type === "oauth" ? credential.authFlow : undefined,
     }).authRequirement ?? undefined

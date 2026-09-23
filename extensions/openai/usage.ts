@@ -21,7 +21,7 @@ import {
   resolveProviderUsageDisplayName,
   type ProviderUsageSnapshot,
 } from "openclaw/plugin-sdk/provider-usage";
-import { isTokenSharingAuthFlow } from "./token-sharing.js";
+import { isSIWCAuthFlow } from "./token-sharing.js";
 
 const OPENAI_COSTS_URL = "https://api.openai.com/v1/organization/costs";
 const OPENAI_COMPLETIONS_USAGE_URL = "https://api.openai.com/v1/organization/usage/completions";
@@ -230,7 +230,7 @@ export async function resolveOpenAIUsageAuth(
     return { token: encodeAdminToken(explicitAdminKey) };
   }
   const oauth = await ctx.resolveOAuthToken();
-  if (oauth && isTokenSharingAuthFlow(oauth.authFlow)) {
+  if (oauth && isSIWCAuthFlow(oauth.authFlow)) {
     // ChatPass has no supported usage endpoint. Never send its scoped bearer to WHAM.
     return { handled: true };
   }

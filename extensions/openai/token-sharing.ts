@@ -14,6 +14,6 @@ export const TOKEN_SHARING_LEGACY_SCOPE =
 // The callback's real client ID replaces this marker for exchange and refresh.
 export const TOKEN_SHARING_CLIENT_ID = "dynamic_agent_client";
 
-export function isTokenSharingAuthFlow(authFlow: string | undefined): boolean {
+export function isSIWCAuthFlow(authFlow: string | undefined): boolean {
   return authFlow === TOKEN_SHARING_AUTH_FLOW || authFlow === IDENTITY_AUTH_FLOW;
 }

@@ -48,6 +48,7 @@ export function createCodexDynamicToolSpecs(params: {
   entries: readonly ProjectedCodexDynamicTool<CodexToolDescriptor>[];
   loading: CodexDynamicToolsLoading;
   directToolNames?: Iterable<string>;
+  /** Direct loading still namespaces direct-only tools; SIWC requires plain function specs. */
   functionToolsOnly?: boolean;
 }): CodexDynamicToolSpec[] {
   const directToolNames = new Set([

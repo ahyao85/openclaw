@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import {
   createCodexResponsesOAuth,
   fingerprintCodexResponsesOAuth,
-  materializeCodexResponsesOAuthProfile,
+  resolveCodexResponsesOAuthProfileFingerprint,
 } from "./responses-oauth.js";
 
 const owner = vi.hoisted(() => ({
@@ -122,9 +122,7 @@ it("materializes a pending cold-start snapshot from the existing refresh owner's
     profileId,
     credential: credential(),
   });
-  const materialized = await materializeCodexResponsesOAuthProfile({ profileId, store });
-  expect(fingerprintCodexResponsesOAuth(materialized)).toBe(
-    fingerprintCodexResponsesOAuth(credential()),
-  );
+  const fingerprint = await resolveCodexResponsesOAuthProfileFingerprint({ profileId, store });
+  expect(fingerprint).toBe(fingerprintCodexResponsesOAuth(credential()));
   expect(store.profiles[profileId]).toEqual(credential());
 });

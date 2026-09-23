@@ -78,9 +78,8 @@ import type {
   CodexLoginAccountParams,
 } from "./protocol.js";
 import {
-  fingerprintCodexResponsesOAuth,
   isCodexResponsesOAuthCredential,
-  materializeCodexResponsesOAuthProfile,
+  resolveCodexResponsesOAuthProfileFingerprint,
 } from "./responses-oauth.js";
 import { resolveCodexAppServerSpawnEnv } from "./transport-stdio.js";
 
@@ -241,14 +240,12 @@ export async function resolveCodexAppServerPreparedAuthProfileSnapshot(params: {
       // Native Codex also uses API-key auth for auxiliary services. Only this local
       // placeholder may enter native auth; the parent relay owns the real bearer.
       loginParams: { type: "apiKey", apiKey: `openclaw-local-${randomUUID()}` },
-      secretFreeCacheKey: fingerprintCodexResponsesOAuth(
-        await materializeCodexResponsesOAuthProfile({
-          profileId,
-          store,
-          agentDir,
-          config: params.config,
-        }),
-      ),
+      secretFreeCacheKey: await resolveCodexResponsesOAuthProfileFingerprint({
+        profileId,
+        store,
+        agentDir,
+        config: params.config,
+      }),
     };
   }
   if (credential.type === "oauth" && credential.authFlow === "chatgpt-identity") {

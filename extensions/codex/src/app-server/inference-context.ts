@@ -70,6 +70,7 @@ export function createCodexInferenceContext(assertClientCurrent: () => void) {
       return { generation: registration.generation, release: registration.release };
     },
     /** Caller must authenticate its private transport before parsing any model request. */
+    // Host-held OAuth may fund only admitted generations; native background work has no such grant.
     prepare(body: JsonObject, preparedMetadata?: CodexInferenceMetadata, requireAdmission = false) {
       assertOpen();
       const metadata = preparedMetadata ?? readCodexInferenceMetadata(body);

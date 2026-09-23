@@ -68,7 +68,7 @@ import {
 } from "./shared.js";
 import { resolveUnifiedOpenAIThinkingProfile } from "./thinking-policy.js";
 import {
-  isTokenSharingAuthFlow,
+  isSIWCAuthFlow,
   TOKEN_SHARING_AUTH_FLOW,
   TOKEN_SHARING_RESOURCE,
 } from "./token-sharing.js";
@@ -951,7 +951,7 @@ export function buildOpenAIProvider(): ProviderPlugin {
           return null;
         }
         const auth = ctx.resolveProviderAuth(PROVIDER_ID);
-        if (isTokenSharingAuthFlow(auth.authFlow)) {
+        if (isSIWCAuthFlow(auth.authFlow)) {
           // Token sharing authorizes Responses, not either model-discovery endpoint.
           const sharing = auth.authFlow === TOKEN_SHARING_AUTH_FLOW;
           const provider = buildOpenAIStaticPlatformProviderConfig(
@@ -1162,7 +1162,7 @@ export function buildOpenAIProvider(): ProviderPlugin {
     resolveUsageAuth: codexHooks.resolveUsageAuth,
     fetchUsageSnapshot: codexHooks.fetchUsageSnapshot,
     refreshOAuth: async (credential) =>
-      isTokenSharingAuthFlow(credential.authFlow)
+      isSIWCAuthFlow(credential.authFlow)
         ? (await import("./token-sharing-oauth.runtime.js")).refreshTokenSharingCredential(
             credential,
           )

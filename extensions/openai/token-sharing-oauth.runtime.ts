@@ -22,7 +22,7 @@ import {
 import { OPENAI_DEFAULT_MODEL } from "./default-models.js";
 import {
   IDENTITY_AUTH_FLOW,
-  isTokenSharingAuthFlow,
+  isSIWCAuthFlow,
   TOKEN_SHARING_AUTH_FLOW,
   TOKEN_SHARING_CLIENT_ID,
   TOKEN_SHARING_ISSUER,
@@ -188,7 +188,7 @@ async function readCredential(params: {
       tokenEndpoint: TOKEN_ENDPOINT,
       grantedScope: scope,
       authFlow: sharing ? TOKEN_SHARING_AUTH_FLOW : IDENTITY_AUTH_FLOW,
-      displayName: sharing ? "ChatGPT — Token Sharing" : "ChatGPT — Identity only",
+      displayName: sharing ? "Sign in with ChatGPT" : "Sign in with ChatGPT (identity only)",
     },
   };
 }
@@ -237,7 +237,7 @@ export async function loginTokenSharing(ctx: ProviderAuthContext): Promise<Provi
     (profile): profile is typeof profile & { credential: OAuthCredential } =>
       profile.credential.type === "oauth" &&
       profile.credential.provider === "openai" &&
-      isTokenSharingAuthFlow(profile.credential.authFlow) &&
+      isSIWCAuthFlow(profile.credential.authFlow) &&
       profile.credential.issuer === TOKEN_SHARING_ISSUER &&
       profile.credential.tokenEndpoint === TOKEN_ENDPOINT &&
       Boolean(profile.credential.clientId) &&

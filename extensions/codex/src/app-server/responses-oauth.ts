@@ -53,12 +53,12 @@ export type CodexResponsesOAuth = {
   resolve: (forceRefresh: boolean) => Promise<{ token: string; assertCurrent: () => void }>;
 };
 
-export async function materializeCodexResponsesOAuthProfile(params: {
+export async function resolveCodexResponsesOAuthProfileFingerprint(params: {
   profileId: string;
   store: AuthProfileStore;
   agentDir?: string;
   config?: Parameters<typeof resolveApiKeyForProfile>[0]["cfg"];
-}): Promise<AuthProfileCredential> {
+}): Promise<string> {
   const credential = params.store.profiles[params.profileId];
   if (credential?.type === "oauth" && isPendingOAuthRefreshFence(credential)) {
     // A cold client can observe an in-progress durable refresh. Its selected
@@ -73,15 +73,14 @@ export async function materializeCodexResponsesOAuthProfile(params: {
     if (!resolved?.credential || resolved.profileId !== params.profileId) {
       throw new Error("ChatGPT subscription sharing could not settle its refresh; sign in again.");
     }
-    fingerprintCodexResponsesOAuth(resolved.credential);
+    const fingerprint = fingerprintCodexResponsesOAuth(resolved.credential);
     params.store.profiles[params.profileId] = resolved.credential;
-    return resolved.credential;
+    return fingerprint;
   }
   if (!credential) {
     throw new Error("ChatGPT subscription sharing profile is unavailable; sign in again.");
   }
-  fingerprintCodexResponsesOAuth(credential);
-  return credential;
+  return fingerprintCodexResponsesOAuth(credential);
 }
 
 /** Keep OAuth refresh and persisted grant ownership in OpenClaw, outside native Codex auth. */
