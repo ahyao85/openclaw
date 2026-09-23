@@ -44,6 +44,26 @@ const query = (db: DatabaseSync) => getNodeSqliteKysely<Pick<DB, typeof table>>(
 const manifestPattern = /^sha256:[a-f0-9]{64}$/u;
 const resultRefPattern = /^refs\/openclaw\/worker-results\/[A-Za-z0-9-]+$/u;
 
+export function repositoryWorkspaceArtifactsAreEphemeral(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env.OPENCLAW_REPOSITORY_WORKSPACE_EPHEMERAL === "1";
+}
+
+function resolveRepositoryWorkspaceArtifactRoot(
+  databasePath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const configured = env.OPENCLAW_REPOSITORY_WORKSPACE_ROOT?.trim();
+  if (configured) {
+    if (!path.isAbsolute(configured) || path.normalize(configured) !== configured) {
+      throw new Error("Repository workspace artifact root must be an absolute normalized path");
+    }
+    return configured;
+  }
+  return path.join(path.dirname(databasePath), "repository-workspaces");
+}
+
 function bounded(value: string, field: string, limit: number): string {
   const result = value.trim();
   if (!result || result.length > limit || /\p{Cc}/u.test(result)) {
@@ -107,6 +127,7 @@ export function createSessionRepositoryWorkspaceStore(
   options: { database?: OpenClawStateDatabase; now?: () => number } = {},
 ) {
   const databasePath = options.database?.path ?? path.resolve(resolveOpenClawStateSqlitePath());
+  const artifactRoot = resolveRepositoryWorkspaceArtifactRoot(databasePath);
   const now = options.now ?? Date.now;
   const read = () => openOpenClawStateDatabase({ path: databasePath }).db;
   const write = <T>(operation: (db: DatabaseSync) => T) =>
@@ -157,7 +178,7 @@ export function createSessionRepositoryWorkspaceStore(
     if (!/^[a-f0-9-]{36}$/u.test(workspaceId)) {
       throw new Error("Repository workspace id is invalid");
     }
-    return path.join(path.dirname(databasePath), "repository-workspaces", `${workspaceId}.git`);
+    return path.join(artifactRoot, `${workspaceId}.git`);
   };
   return {
     path: databasePath,
@@ -263,6 +284,29 @@ export function createSessionRepositoryWorkspaceStore(
           throw new Error("Repository workspace base has not been captured");
         }
         return { checkpoint_ref: input.checkpointRef, manifest_hash: input.manifestHash };
+      });
+    },
+    discardCheckpoint(input: WorkspaceMutation): SessionRepositoryWorkspaceRecord {
+      return mutate(input, () => ({ checkpoint_ref: null, manifest_hash: null }));
+    },
+    advanceToPublishedHead(
+      input: WorkspaceMutation & { branch: string; headCommit: string },
+    ): SessionRepositoryWorkspaceRecord {
+      const branch = bounded(input.branch, "branch", 256);
+      if (!/^[a-f0-9]{40}$/u.test(input.headCommit)) {
+        throw new Error("Repository workspace published head is invalid");
+      }
+      return mutate(input, (current) => {
+        if (current.branch !== branch) {
+          throw new Error("Repository workspace publication branch changed");
+        }
+        return {
+          requested_ref: branch,
+          base_commit: input.headCommit,
+          base_manifest_hash: null,
+          checkpoint_ref: null,
+          manifest_hash: null,
+        };
       });
     },
     async delete(input: { workspaceId: string; assertCurrent: () => void }): Promise<void> {

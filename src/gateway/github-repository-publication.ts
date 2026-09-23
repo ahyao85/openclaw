@@ -5,7 +5,10 @@ import type {
   SessionGitHubStatusResult,
 } from "../../packages/gateway-protocol/src/schema/session-github-publication.js";
 import type { PreparedGitHubPublicationIdentity } from "../agents/github-tool-identity.js";
-import type { SessionRepositoryWorkspaceRecord } from "../state/session-repository-workspaces.js";
+import {
+  getSessionRepositoryWorkspaceStore,
+  type SessionRepositoryWorkspaceRecord,
+} from "../state/session-repository-workspaces.js";
 import { personalGitHubStatus, type PersonalGitHubAction } from "./github-personal-oauth.js";
 import {
   assertPersonalGitHubPublicationReplay,
@@ -235,36 +238,56 @@ export function createRepositoryGitHubPublicationCoordinator(
         active.delete(row.request_id);
       }
     };
-    if (prepared) {
-      return await publish(prepared);
-    }
-    return await withSessionRepositoryCheckpoint(
-      {
-        workspaceId: row.workspace_id,
-        checkpointRef: row.checkpoint_ref,
-        includePublication: true,
-      },
-      async (payload) => {
-        assertExecution();
-        if (
-          !payload.publicationStagingRoot ||
-          !payload.publicationDigest ||
-          payload.publicationDigest !== row.checkpoint_digest
-        ) {
-          throw new Error("GitHub publication accepted checkpoint is unavailable.");
-        }
-        const { snapshot } = await readGitHubRepositoryPublicationMetadata(
-          payload.publicationStagingRoot,
-          payload.publicationDigest,
+    const result = prepared
+      ? await publish(prepared)
+      : await withSessionRepositoryCheckpoint(
+          {
+            workspaceId: row.workspace_id,
+            checkpointRef: row.checkpoint_ref,
+            includePublication: true,
+          },
+          async (payload) => {
+            assertExecution();
+            if (
+              !payload.publicationStagingRoot ||
+              !payload.publicationDigest ||
+              payload.publicationDigest !== row.checkpoint_digest
+            ) {
+              throw new Error("GitHub publication accepted checkpoint is unavailable.");
+            }
+            const { snapshot } = await readGitHubRepositoryPublicationMetadata(
+              payload.publicationStagingRoot,
+              payload.publicationDigest,
+            );
+            return await publish({
+              snapshot,
+              snapshotRoot: payload.publicationStagingRoot,
+              checkpointRef: row.checkpoint_ref!,
+              digest: payload.publicationDigest,
+            });
+          },
         );
-        return await publish({
-          snapshot,
-          snapshotRoot: payload.publicationStagingRoot,
-          checkpointRef: row.checkpoint_ref!,
-          digest: payload.publicationDigest,
+    if (result.status === "published" && result.headCommit) {
+      const repositories = getSessionRepositoryWorkspaceStore();
+      const current = repositories.get(row.workspace_id);
+      if (
+        current?.agentId === row.agent_id &&
+        current.sessionKey === row.session_key &&
+        current.branch === row.branch &&
+        current.checkpointRef === row.checkpoint_ref
+      ) {
+        repositories.advanceToPublishedHead({
+          workspaceId: current.workspaceId,
+          expectedRevision: current.revision,
+          branch: row.branch,
+          headCommit: result.headCommit,
+          assertCurrent: () => {
+            assertReceiptOwner(row);
+          },
         });
-      },
-    );
+      }
+    }
+    return result;
   };
   const makeRow = (input: {
     session: SessionIdentity;
