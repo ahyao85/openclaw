@@ -177,19 +177,27 @@ Unified declarations also passed its complete 80-file inventory on the AWS
 scope with a 4.564-GiB peak and the original compiler admission guard. These
 measurements describe the recorded workloads, not every later companion set.
 
-Main's later inventory and packing update at `63fa1d2dedac` changes all six
-envelopes. The guarded storage and SDK/planner exceptions no longer match the
-current broad plans: their owners separated, gained children, or changed
-concurrency. The remaining unified-declaration row has 47 files, only ten of
-which belonged to its previous 80-file probe. Thirty-seven different companions
-and updated test dependencies invalidate the smaller-fit inference. It retains
-the original Blacksmith 32-label until its current workload qualifies on a
-smaller allocation. No historical probe is counted as current whole-VM proof.
+Main's inventory and packing update at `63fa1d2dedac` changed all six
+envelopes. The guarded storage and SDK/planner exceptions no longer matched
+those broad plans: their owners separated, gained children, or changed
+concurrency. The unified-declaration row had 47 files, only ten shared with its
+previous 80-file probe. That revision retained its original Blacksmith 32-label;
+the older process fit did not qualify the changed workload on a smaller host.
+Its RunsOn planner emitted 81 compact PR descriptors (79 Node rows), plus 41
+plugin Node rows before the cron comparator, and 68 main descriptors (67 Node).
 
-The rebased RunsOn planner emits 81 compact PR descriptors (79 Node rows),
-plus 41 plugin Node rows before the separate cron comparator; its main plan
-has 68 compact descriptors and 67 Node rows. This capacity correction changes
-only the unified row's runner, without another shard or execution-policy change.
+The later integration at `aeb32f35468d` emits 77 compact PR descriptors
+(75 Node rows), plus 42 plugin Node rows: 117 before the comparator, 118 with
+it. Main has 65 compact descriptors and 64 Node rows. No guarded small-host
+exception activates. Unified declarations now has 38 files, including both
+declaration compiler fixtures, and retains the original Blacksmith 32-label.
+Neither the historical 80-file fit nor the intervening 47-file plan qualifies
+this workload on a smaller allocation.
+
+That integration also adds a baseline-ratchet prerequisite before nondist Node
+jobs. Both cron providers share it and retain their paired admission priority.
+The new dependency and changed inventories require fresh exact-head wall and
+cost measurements; earlier workflow timings do not qualify this revision.
 
 The four candidate walls were 743, 810, 740 and 992 seconds. All tests passed,
 but the last run fails the fifteen-minute requirement. Its Blacksmith cron
