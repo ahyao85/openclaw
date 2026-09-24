@@ -12,6 +12,8 @@ const SERVICE_INSPECTION_MESSAGES = {
     "The busctl executable is unavailable. Install the systemd package providing busctl and verify busctl --user list from the service account, then retry.",
   "service-manager-access-denied":
     "The service-manager probe could not start (EACCES/EPERM). Check executable permissions and directory access for the service account, then retry from an accessible directory.",
+  "windows-task-inspection-failed":
+    "Effective Scheduled Task service command could not be inspected. Verify that Windows Task Scheduler is available and that this account can query the task, then run openclaw gateway status --deep before retrying.",
   "launchd-gui-domain-unavailable":
     "The launchd GUI domain is unavailable for this account. Manage its LaunchAgent from the target user's logged-in macOS desktop session.",
   "launchd-system-domain-unavailable":
@@ -25,20 +27,30 @@ const EXTERNAL_SERVICE_RECOVERY =
 
 export type ServiceInspectionReason = keyof typeof SERVICE_INSPECTION_MESSAGES;
 
+export type ServiceInspectionDiagnostic =
+  | { kind: "timeout"; timeoutMs: number }
+  | { kind: "spawn"; errno?: number }
+  | { kind: "invalid-response" }
+  | { kind: "native"; exitCode: number | null; hresult?: number };
+
 export function isServiceInspectionReason(value: string): value is ServiceInspectionReason {
   return Object.hasOwn(SERVICE_INSPECTION_MESSAGES, value);
 }
 
 export function formatServiceInspectionReason(reason: ServiceInspectionReason): string {
   return reason === "service-manager-unavailable" ||
-    reason === "systemd-inspection-deadline-exceeded"
+    reason === "systemd-inspection-deadline-exceeded" ||
+    reason === "windows-task-inspection-failed"
     ? SERVICE_INSPECTION_MESSAGES[reason]
     : `${SERVICE_INSPECTION_MESSAGES[reason]} ${EXTERNAL_SERVICE_RECOVERY}`;
 }
 
 export class ServiceInspectionError extends Error {
-  constructor(readonly reason: ServiceInspectionReason) {
-    super(formatServiceInspectionReason(reason));
+  constructor(
+    readonly reason: ServiceInspectionReason,
+    diagnostic?: ServiceInspectionDiagnostic,
+  ) {
+    super(formatServiceInspectionReason(reason), diagnostic ? { cause: diagnostic } : undefined);
     this.name = "ServiceInspectionError";
   }
 }
