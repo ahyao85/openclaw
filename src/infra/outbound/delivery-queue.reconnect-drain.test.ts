@@ -362,9 +362,11 @@ describe("drainPendingDeliveriesCore for reconnect", () => {
       setQueuedEntryState(tmpDir, id, { retryCount: 0, enqueuedAt: index + 1 });
     }
     const pendingBefore = await loadPendingDeliveries(tmpDir);
+    const firstStarted = createDeferred();
     const { promise: firstBlocked, resolve: releaseFirst } = createDeferred();
     const deliver = vi.fn<DeliverFn>(async () => {
       if (deliver.mock.calls.length === 1) {
+        firstStarted.resolve();
         await firstBlocked;
       }
     });
@@ -380,14 +382,33 @@ describe("drainPendingDeliveriesCore for reconnect", () => {
       selectEntry: () => ({ match: true, bypassBackoff: false }),
       shouldContinue: () => shouldContinue,
     });
-    await vi.waitFor(() => expect(deliver).toHaveBeenCalledOnce());
+    const drainOutcome = drain.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    try {
+      await Promise.race([
+        firstStarted.promise,
+        drainOutcome.then((outcome) => {
+          if ("error" in outcome) {
+            throw outcome.error;
+          }
+          throw new Error("Reconnect drain settled before its first delivery started");
+        }),
+      ]);
+      expect(deliver).toHaveBeenCalledOnce();
 
-    shouldContinue = false;
-    releaseFirst();
-    await drain;
+      shouldContinue = false;
+      releaseFirst();
+      await drain;
 
-    expect(deliver).toHaveBeenCalledOnce();
-    expect(await loadPendingDeliveries(tmpDir)).toEqual(pendingBefore.slice(1));
+      expect(deliver).toHaveBeenCalledOnce();
+      expect(await loadPendingDeliveries(tmpDir)).toEqual(pendingBefore.slice(1));
+    } finally {
+      shouldContinue = false;
+      releaseFirst();
+      await drainOutcome;
+    }
   });
 
   it("rejects recovered delivery when the current channel config disables its account", async () => {
@@ -652,11 +673,13 @@ describe("drainPendingDeliveriesCore for reconnect", () => {
   it("does not re-deliver a stale startup snapshot after reconnect already acked it", async () => {
     const log = createRecoveryLog();
     const startupLog = createRecoveryLog();
+    const blockerStarted = createDeferred();
     const { promise: blocker, resolve: releaseBlocker } = createDeferred();
     const deliveredTargets: string[] = [];
     const deliver = vi.fn<DeliverFn>(async ({ to }) => {
       deliveredTargets.push(to);
       if (to === "+1000") {
+        blockerStarted.resolve();
         await blocker;
       }
     });
@@ -679,23 +702,39 @@ describe("drainPendingDeliveriesCore for reconnect", () => {
       stateDir: tmpDir,
     });
 
-    await vi.waitFor(() => {
+    const recoveryOutcome = startupRecovery.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    try {
+      await Promise.race([
+        blockerStarted.promise,
+        recoveryOutcome.then((outcome) => {
+          if ("error" in outcome) {
+            throw outcome.error;
+          }
+          throw new Error("Startup recovery settled before its blocker delivery started");
+        }),
+      ]);
       const deliveries = deliver.mock.calls.map(([delivery]) => requireRecord(delivery));
       expect(
         deliveries.some(
           (delivery) => delivery.channel === "demo-channel-a" && delivery.to === "+1000",
         ),
       ).toBe(true);
-    });
 
-    await drainAcct1DirectChatReconnect({ deliver, log, stateDir: tmpDir });
+      await drainAcct1DirectChatReconnect({ deliver, log, stateDir: tmpDir });
 
-    releaseBlocker!();
-    await startupRecovery;
+      releaseBlocker();
+      await startupRecovery;
 
-    expect(deliver).toHaveBeenCalledTimes(2);
-    expect(countMatching(deliveredTargets, (target) => target === "+1555")).toBe(1);
-    expectLogMessageWith(startupLog.info, "Recovery skipped for delivery");
+      expect(deliver).toHaveBeenCalledTimes(2);
+      expect(countMatching(deliveredTargets, (target) => target === "+1555")).toBe(1);
+      expectLogMessageWith(startupLog.info, "Recovery skipped for delivery");
+    } finally {
+      releaseBlocker();
+      await recoveryOutcome;
+    }
   });
   it("drains fresh pending entries for the reconnecting account", async () => {
     const log = createRecoveryLog();
