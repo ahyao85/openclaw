@@ -280,10 +280,10 @@ async function createHostedChildFixture(
       caller.operatorAuthority,
     );
     try {
-      const admitted = await nested.admit("embedded");
-      bindGatewayContextResolver(admitted, () => (gatewayCurrent ? context : undefined));
+      const nestedAdmission = await nested.admit("embedded");
+      bindGatewayContextResolver(nestedAdmission, () => (gatewayCurrent ? context : undefined));
       const nestedCaller = createAdmittedGatewayToolCallerIdentity({
-        admittedRunContext: admitted,
+        admittedRunContext: nestedAdmission,
         agentId: "main",
         sessionKey: childKey,
       });
@@ -310,7 +310,7 @@ async function createHostedChildFixture(
         : undefined;
     });
     releaseDispatch.resolve();
-    await Promise.all(drains);
+    await Promise.all(drains.filter((drain) => drain !== undefined));
   };
   return {
     send,
