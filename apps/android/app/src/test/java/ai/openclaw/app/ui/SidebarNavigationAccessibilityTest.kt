@@ -62,6 +62,7 @@ class SidebarNavigationAccessibilityTest {
   private val models = ViewModelStore()
   private val mounted = mutableStateOf(true)
   private val selections = mutableListOf<SidebarDestination>()
+  private val customPageOrder = listOf("settings", "work", "home", "skills", "threads")
   private lateinit var app: NodeApp
   private lateinit var prefs: SecurePrefs
   private lateinit var runtime: NodeRuntime
@@ -75,7 +76,7 @@ class SidebarNavigationAccessibilityTest {
   fun setUp() {
     app = RuntimeEnvironment.getApplication() as NodeApp
     prefs = newPrefs()
-    prefs.setSidebarPageOrder(defaultSidebarPageOrder)
+    prefs.setSidebarPageOrder(customPageOrder)
     prefs.setSidebarVisiblePages(defaultSidebarPageOrder)
     previousRuntime = app.peekRuntime()
     runtime = NodeRuntime(app, prefs, NodeRuntimeMode.ScreenshotFixture)
@@ -101,13 +102,34 @@ class SidebarNavigationAccessibilityTest {
   }
 
   @Test
+  fun resetRestoresHomeFirstAndSettingsLast() {
+    prefs.setSidebarPageOrder(emptyList())
+    showSidebar()
+    capture("default-sidebar")
+    val labels = listOf("Home", "Sessions", "Overview", "Skills", "Settings")
+
+    fun assertPageOrder() {
+      val positions = labels.map { row(it).fetchSemanticsNode().positionInRoot.y }
+      assertEquals(positions.sorted(), positions)
+    }
+    assertPageOrder()
+    composeRule.runOnIdle { model.setSidebarPageOrder(customPageOrder) }
+    composeRule.onNodeWithTag("sidebar-pages-menu").performClick()
+    composeRule.onNodeWithText("Edit pinned items").performClick()
+    editing = true
+    composeRule.onNodeWithText("Reset pinned items").performClick()
+    assertPersisted(listOf("home", "threads", "work", "skills", "settings"), defaultSidebarPageOrder)
+    assertPageOrder()
+  }
+
+  @Test
   fun visibleRowsSkipHiddenSlotsPersistMovesAndRetainNavigation() {
     prefs.setSidebarVisiblePages(listOf("settings", "home", "threads"))
     showSidebar()
     capture("normal-sidebar")
     assertActions("Settings", "Move down")
     assertActions("Home", "Move up", "Move down")
-    assertActions("Threads", "Move up")
+    assertActions("Sessions", "Move up")
     composeRule.onNodeWithText("Overview").assertDoesNotExist()
     composeRule.onNodeWithText("Skills").assertDoesNotExist()
     val home = composeRule.onNodeWithText("Home").assertIsSelected()
@@ -121,7 +143,7 @@ class SidebarNavigationAccessibilityTest {
     assertEquals(homeId, home.fetchSemanticsNode().id)
     home.assertIsSelected().assert(SemanticsMatcher.expectValue(SemanticsProperties.Focused, true))
     invokeMove("Home", "Move down")
-    assertPersisted(defaultSidebarPageOrder, listOf("settings", "home", "threads"))
+    assertPersisted(customPageOrder, listOf("settings", "home", "threads"))
     home.performClick()
     composeRule.runOnIdle { assertEquals(listOf(SidebarDestination.Home), selections) }
     capture("normal-sidebar-restored")
@@ -138,7 +160,7 @@ class SidebarNavigationAccessibilityTest {
     capture("editor", popup = true)
     assertActions("Settings", "Move down")
     assertActions("Overview", "Move up", "Move down")
-    assertActions("Threads", "Move up")
+    assertActions("Sessions", "Move up")
     invokeMove("Overview", "Move up")
     assertPersisted(listOf("work", "settings", "home", "skills", "threads"), listOf("home"))
     assertActions("Overview", "Move down")

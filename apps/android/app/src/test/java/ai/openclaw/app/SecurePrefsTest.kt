@@ -151,17 +151,21 @@ class SecurePrefsTest {
       .commit()
     val prefs = testPrefs(context)
 
-    assertEquals(defaultSidebarPageOrder, prefs.sidebarPageOrder.value)
+    assertEquals(listOf("home", "threads", "work", "skills", "settings"), prefs.sidebarPageOrder.value)
 
     prefs.setSidebarPageOrder(listOf("threads", "home", "threads", "unknown"))
 
-    val expected = listOf("threads", "home", "settings", "work", "skills")
+    val expected = listOf("threads", "home", "work", "skills", "settings")
     assertEquals(expected, prefs.sidebarPageOrder.value)
     assertEquals(expected, testPrefs(context).sidebarPageOrder.value)
     assertEquals(
       defaultSidebarPageOrder,
       sanitizeSidebarPageOrder(listOf("unknown", "unknown")),
     )
+
+    val savedOrder = listOf("settings", "work", "home", "skills", "threads")
+    prefs.setSidebarPageOrder(savedOrder)
+    assertEquals(savedOrder, testPrefs(context).sidebarPageOrder.value)
   }
 
   @Test

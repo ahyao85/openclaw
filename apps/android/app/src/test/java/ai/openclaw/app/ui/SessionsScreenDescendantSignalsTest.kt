@@ -43,16 +43,16 @@ class SessionsScreenDescendantSignalsTest {
     composeRule.onNodeWithContentDescription("Needs attention").assertDoesNotExist()
     composeRule.runOnIdle { compact.value = true }
     composeRule.onNodeWithContentDescription("Needs attention").assertExists()
-    composeRule.onNodeWithContentDescription("Thread failed").assertExists()
-    composeRule.onNodeWithContentDescription("Current thread").assertExists()
+    composeRule.onNodeWithContentDescription("Session failed").assertExists()
+    composeRule.onNodeWithContentDescription("Current session").assertExists()
     composeRule.onNodeWithContentDescription("Running").assertExists()
     composeRule.onNodeWithContentDescription("Unread").assertExists()
     composeRule.runOnIdle { assertEquals(iconNames.size, iconNames.distinct().size) }
 
     composeRule.runOnIdle { collapsedState.value = null }
     composeRule.onNodeWithContentDescription("Needs attention").assertDoesNotExist()
-    composeRule.onNodeWithContentDescription("Thread failed").assertDoesNotExist()
-    composeRule.onNodeWithContentDescription("Current thread").assertDoesNotExist()
+    composeRule.onNodeWithContentDescription("Session failed").assertDoesNotExist()
+    composeRule.onNodeWithContentDescription("Current session").assertDoesNotExist()
     composeRule.onNodeWithContentDescription("Running").assertDoesNotExist()
     composeRule.onNodeWithContentDescription("Unread").assertDoesNotExist()
   }

@@ -471,6 +471,14 @@ internal data class ChatActiveRunPresentation(
   val outputTokens: Long? = null,
 )
 
+/** Count of the admitted session-list scope, before presentation limits and main-row exclusion. */
+data class ChatSessionListCount(
+  val value: Long,
+  val isLowerBound: Boolean,
+  val agentId: String?,
+  val archived: Boolean,
+)
+
 /**
  * Stable session selector row; [key] is the gateway session key used in chat requests.
  */

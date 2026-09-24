@@ -17,7 +17,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 
@@ -39,10 +42,14 @@ internal fun resolveChatRealtimeTalkLaunch(
   }
 
 @Composable
-internal fun rememberChatRealtimeTalkLauncher(viewModel: MainViewModel): () -> Unit {
+internal fun rememberChatRealtimeTalkLauncher(
+  viewModel: MainViewModel,
+  onStartTalk: () -> Unit = { viewModel.setTalkModeEnabled(true) },
+): () -> Unit {
   val context = LocalContext.current
   val talkSetupReadiness by viewModel.talkSetupReadiness.collectAsState()
   val currentTalkSetup by rememberUpdatedState(talkSetupReadiness.realtimeTalk)
+  var pendingStart by remember { mutableStateOf<(() -> Unit)?>(null) }
   val failureNotice by viewModel.talkFailureNotice.collectAsState()
   val setupMessage by viewModel.pendingTalkSetupMessage.collectAsState()
   val showSetupMessage = {
@@ -69,24 +76,49 @@ internal fun rememberChatRealtimeTalkLauncher(viewModel: MainViewModel): () -> U
   }
   val requestMicPermission =
     rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-      if (!granted) return@rememberLauncherForActivityResult
+      val start = pendingStart
+      pendingStart = null
+      if (!granted || start == null) return@rememberLauncherForActivityResult
       if (currentTalkSetup.requiresSetup) {
         showSetupMessage()
       } else {
-        viewModel.setTalkModeEnabled(true)
+        start()
       }
     }
 
   return {
+    val gatewayId = viewModel.activeGatewayStableId.value
+    val selectionGeneration = viewModel.chatSelectionGeneration.value
+    val selectedKey = viewModel.chatSessionKey.value
+    val selectedAgent = viewModel.chatSessionOwnerAgentId.value
+    val start = {
+      // A permission result cannot start audio for a different conversation or Gateway.
+      if (viewModel.chatSelectionGeneration.value == selectionGeneration &&
+        viewModel.activeGatewayStableId.value == gatewayId &&
+        viewModel.chatSessionKey.value == selectedKey &&
+        viewModel.chatSessionOwnerAgentId.value == selectedAgent
+      ) {
+        onStartTalk()
+      }
+    }
     when (
       resolveChatRealtimeTalkLaunch(
         hasMicPermission = context.hasRecordAudioPermission(),
         requiresSetup = talkSetupReadiness.realtimeTalk.requiresSetup,
       )
     ) {
-      ChatRealtimeTalkLaunch.RequestPermission -> requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
-      ChatRealtimeTalkLaunch.ShowSetupMessage -> showSetupMessage()
-      ChatRealtimeTalkLaunch.StartTalk -> viewModel.setTalkModeEnabled(true)
+      ChatRealtimeTalkLaunch.RequestPermission -> {
+        pendingStart = start
+        requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
+      }
+
+      ChatRealtimeTalkLaunch.ShowSetupMessage -> {
+        showSetupMessage()
+      }
+
+      ChatRealtimeTalkLaunch.StartTalk -> {
+        start()
+      }
     }
   }
 }

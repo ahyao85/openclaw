@@ -5,6 +5,7 @@ import ai.openclaw.app.GatewayAgentSummary
 import ai.openclaw.app.GatewayChannelsSummary
 import ai.openclaw.app.GatewayConnectionDisplay
 import ai.openclaw.app.GatewayConnectionProblem
+import ai.openclaw.app.GatewayCronJobSummary
 import ai.openclaw.app.GatewayDreamingSummary
 import ai.openclaw.app.GatewayNodeCapabilityApproval
 import ai.openclaw.app.GatewayNodesDevicesSummary
@@ -23,22 +24,17 @@ import ai.openclaw.app.i18n.nativeString
 import ai.openclaw.app.i18n.nativeText
 import ai.openclaw.app.i18n.resolveNativeTextResource
 import ai.openclaw.app.i18n.verbatimText
+import ai.openclaw.app.resolveAgentIdFromMainSessionKey
 import ai.openclaw.app.systemagent.SystemAgentChatAccess
 import ai.openclaw.app.ui.design.AgentAvatarSource
-import ai.openclaw.app.ui.design.ClawAgentAvatar
 import ai.openclaw.app.ui.design.ClawDesignTheme
-import ai.openclaw.app.ui.design.ClawEmptyState
 import ai.openclaw.app.ui.design.ClawListItem
-import ai.openclaw.app.ui.design.ClawListPanel
 import ai.openclaw.app.ui.design.ClawPanel
 import ai.openclaw.app.ui.design.ClawPlainIconButton
-import ai.openclaw.app.ui.design.ClawPrimaryButton
 import ai.openclaw.app.ui.design.ClawScaffold
-import ai.openclaw.app.ui.design.ClawSecondaryButton
 import ai.openclaw.app.ui.design.ClawSeparatedColumn
 import ai.openclaw.app.ui.design.ClawStatus
 import ai.openclaw.app.ui.design.ClawTheme
-import ai.openclaw.app.ui.design.OpenClawMascot
 import ai.openclaw.app.ui.design.agentAvatarSource
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
@@ -53,8 +49,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -64,23 +58,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Cloud
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.outlined.ChatBubbleOutline
-import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Inventory2
-import androidx.compose.material.icons.outlined.MicNone
 import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -98,14 +82,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.window.layout.DisplayFeature
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -122,10 +103,6 @@ internal enum class Tab {
 
 private val shellContentInsets: WindowInsets
   @Composable get() = WindowInsets.safeDrawing
-
-private val overviewListRowMinHeight = 54.dp
-private const val overviewRecentSessionLimit = 50
-private const val overviewRecentSessionVisibleLimit = 3
 
 /** Main post-onboarding shell that owns top-level Android navigation state. */
 @Composable
@@ -235,11 +212,26 @@ fun ShellScreen(
         }
       val selectSidebarDestination: (SidebarDestination) -> Unit = { destination ->
         when (destination) {
-          SidebarDestination.Settings -> nav.openSettingsRoute(SettingsRoute.Home)
-          SidebarDestination.Work -> nav.selectTab(Tab.Overview)
-          SidebarDestination.Home -> nav.selectTab(Tab.Chat)
-          SidebarDestination.Skills -> nav.openSettingsRoute(SettingsRoute.Skills)
-          SidebarDestination.Threads -> nav.selectTab(Tab.Sessions)
+          SidebarDestination.Settings -> {
+            nav.openSettingsRoute(SettingsRoute.Home)
+          }
+
+          SidebarDestination.Work -> {
+            nav.selectTab(Tab.Overview)
+          }
+
+          SidebarDestination.Home -> {
+            viewModel.openMainChat()
+            nav.selectTab(Tab.Chat)
+          }
+
+          SidebarDestination.Skills -> {
+            nav.openSettingsRoute(SettingsRoute.Skills)
+          }
+
+          SidebarDestination.Threads -> {
+            nav.selectTab(Tab.Sessions)
+          }
         }
         closeSidebar()
       }
@@ -425,378 +417,6 @@ fun ShellScreen(
   }
 }
 
-@Composable
-private fun OverviewScreen(
-  viewModel: MainViewModel,
-  showSidebarButton: Boolean,
-  onOpenSidebar: () -> Unit,
-  onSelectTab: (Tab) -> Unit,
-  onOpenSettingsRoute: (SettingsRoute) -> Unit,
-  onOpenCommand: () -> Unit,
-) {
-  val sessions by viewModel.chatSessions.collectAsState()
-  val pendingRunCount by viewModel.pendingRunCount.collectAsState()
-  val gatewayConnectionDisplay by viewModel.gatewayConnectionDisplay.collectAsState()
-  val isConnected = gatewayConnectionDisplay.isConnected
-  val models by viewModel.providerModelCatalog.collectAsState()
-  val providers by viewModel.modelAuthProviders.collectAsState()
-  val approvalInbox by viewModel.execApprovalInbox.collectAsState()
-  val pendingToolCalls by viewModel.chatPendingToolCalls.collectAsState()
-  val cronStatus by viewModel.cronStatus.collectAsState()
-  val nodesDevicesSummary by viewModel.nodesDevicesSummary.collectAsState()
-  val channelsState by viewModel.channelsState.collectAsState()
-  val channelsSummary = channelsState.summary
-  val agents by viewModel.gatewayAgents.collectAsState()
-  val defaultAgentId by viewModel.gatewayDefaultAgentId.collectAsState()
-  val providerRows = providerRows(providers = providers, models = models)
-  val readyProviderCount = providerRows.count { it.ready }
-  val unknownProviderCount = providerRows.count { it.availability == ProviderAvailability.Unknown }
-  val pendingApprovalsCount = approvalInbox.approvals.size + pendingToolCalls.size
-  val attentionRows =
-    homeAttentionRows(
-      isConnected = isConnected,
-      pendingApprovals = pendingApprovalsCount,
-      channelsSummary = channelsSummary,
-      nodesDevicesSummary = nodesDevicesSummary,
-      readyProviderCount = readyProviderCount,
-      unknownProviderCount = unknownProviderCount,
-    )
-  val secondaryAttentionRows =
-    if (nodesDevicesSummary.hasNodeCapabilityApprovalPending()) {
-      attentionRows.filterNot { it.settingsRoute == SettingsRoute.NodesDevices }
-    } else {
-      attentionRows
-    }
-  val headerState = overviewHeaderState(isConnected = isConnected, hasAttention = attentionRows.isNotEmpty())
-  val headerRoute = overviewHeaderRoute(attentionRows)
-  val activeAgentName = overviewAgentName(agents = agents, defaultAgentId = defaultAgentId)
-  val activeAgentBadge = overviewAgentBadgeText(agents = agents, defaultAgentId = defaultAgentId)
-  val activeAgentAvatar = overviewAgentAvatar(agents = agents, defaultAgentId = defaultAgentId)
-  val overviewSessions = overviewRecentSessions(sessions)
-  val overviewSessionCount = overviewSessions.size
-  val candidateRecentRows =
-    remember(overviewSessions, channelsSummary) {
-      overviewRecentSessionRows(sessions = overviewSessions, channelsSummary = channelsSummary)
-    }
-  var recentRows by remember { mutableStateOf<List<RecentSessionListItem>>(emptyList()) }
-  val visibleRecentRows = recentRows.ifEmpty { candidateRecentRows }
-  val metricCards =
-    overviewMetricCardSpecs(
-      isConnected = isConnected,
-      hasAttention = attentionRows.isNotEmpty(),
-      nodesDevicesSummary = nodesDevicesSummary,
-      pendingApprovals = pendingApprovalsCount,
-      sessionCount = overviewSessionCount,
-    )
-
-  LaunchedEffect(candidateRecentRows) {
-    recentRows =
-      stableOverviewRecentRows(
-        previousRows = recentRows,
-        candidateRows = candidateRecentRows,
-      )
-  }
-
-  LaunchedEffect(isConnected) {
-    if (isConnected) {
-      viewModel.refreshChatSessions(limit = 20)
-      viewModel.refreshAgents()
-      viewModel.refreshModelCatalog()
-      viewModel.refreshProviderModels()
-      viewModel.refreshCronJobs()
-      viewModel.refreshNodesDevices()
-      viewModel.refreshChannels()
-      viewModel.refreshExecApprovals()
-    }
-  }
-
-  ClawScaffold(
-    contentPadding = PaddingValues(horizontal = ClawTheme.spacing.sm, vertical = ClawTheme.spacing.xxs),
-    contentWindowInsets = shellContentInsets,
-  ) {
-    Box(modifier = Modifier.fillMaxSize()) {
-      LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs), contentPadding = PaddingValues(bottom = 6.dp)) {
-        item {
-          OverviewHeader(
-            status = headerState,
-            showSidebarButton = showSidebarButton,
-            onOpenSidebar = onOpenSidebar,
-            onOpenStatus = { onOpenSettingsRoute(headerRoute) },
-            onOpenCommand = onOpenCommand,
-          )
-        }
-
-        item {
-          Text(
-            text = nativeString("Overview"),
-            style = ClawTheme.type.display,
-            color = ClawTheme.colors.text,
-          )
-        }
-
-        item {
-          OverviewPrimaryPanel(
-            agentName = activeAgentName,
-            agentBadge = activeAgentBadge,
-            agentAvatarSource = activeAgentAvatar,
-            statusText = gatewaySummary(gatewayConnectionDisplay),
-            isConnected = gatewayConnectionDisplay.isConnected,
-            pendingRunCount = pendingRunCount,
-            sessionCount = overviewSessionCount,
-            cronJobCount = cronStatus.jobs,
-            onOpenChat = { onSelectTab(Tab.Chat) },
-            onOpenVoice = { onSelectTab(Tab.Chat) },
-            onOpenAgent = { onOpenSettingsRoute(SettingsRoute.Agents) },
-            onOpenGateway = { onOpenSettingsRoute(SettingsRoute.Gateway) },
-          )
-        }
-
-        item {
-          OverviewMetricList(
-            cards = metricCards,
-            onOpen = { card ->
-              val route = card.settingsRoute
-              if (route == null) {
-                onSelectTab(card.tab)
-              } else {
-                onOpenSettingsRoute(route)
-              }
-            },
-          )
-        }
-
-        item {
-          TalkEntryPanel(onOpenVoice = { onSelectTab(Tab.Chat) }, onOpenVoiceSettings = { onOpenSettingsRoute(SettingsRoute.Voice) })
-        }
-
-        item { RecentSessionsHeader(onOpenSessions = { onSelectTab(Tab.Sessions) }) }
-
-        if (visibleRecentRows.isEmpty()) {
-          item {
-            ClawEmptyState(
-              title = nativeString("No recent threads"),
-              body = nativeString("Start a chat and your active OpenClaw conversations will appear here."),
-              action = { ClawSecondaryButton(text = nativeString("Start Chat"), onClick = { onSelectTab(Tab.Chat) }) },
-            )
-          }
-        } else {
-          item {
-            RecentSessionList(
-              rows = visibleRecentRows,
-              onOpen = { sessionKey, ownerAgentId ->
-                viewModel.switchChatSession(sessionKey, ownerAgentId)
-                onSelectTab(Tab.Chat)
-              },
-            )
-          }
-        }
-
-        if (secondaryAttentionRows.isNotEmpty()) {
-          item {
-            HomeAttentionPanel(rows = secondaryAttentionRows, onSelectTab = onSelectTab, onOpenSettingsRoute = onOpenSettingsRoute)
-          }
-        }
-      }
-    }
-  }
-}
-
-@Composable
-private fun OverviewHeader(
-  status: OverviewHeaderState,
-  showSidebarButton: Boolean,
-  onOpenSidebar: () -> Unit,
-  onOpenStatus: () -> Unit,
-  onOpenCommand: () -> Unit,
-) {
-  Row(
-    modifier = Modifier.fillMaxWidth(),
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs),
-  ) {
-    if (showSidebarButton) {
-      ClawPlainIconButton(
-        icon = Icons.Default.Menu,
-        contentDescription = nativeString("Show Sidebar"),
-        onClick = onOpenSidebar,
-        modifier = Modifier.testTag("sidebar-open-overview"),
-      )
-    }
-    OpenClawMascot(modifier = Modifier.size(25.dp))
-    Text(
-      text = nativeString("OpenClaw"),
-      style = ClawTheme.type.title,
-      color = ClawTheme.colors.text,
-      modifier = Modifier.weight(1f),
-      maxLines = 1,
-      overflow = TextOverflow.Ellipsis,
-    )
-    OverviewStatusPill(status = status, onClick = onOpenStatus)
-    ClawPlainIconButton(icon = Icons.Default.Search, contentDescription = nativeString("Search"), onClick = onOpenCommand)
-  }
-}
-
-@Composable
-private fun OverviewStatusPill(
-  status: OverviewHeaderState,
-  onClick: () -> Unit,
-) {
-  val colors = ClawTheme.colors
-  val (dotColor, backgroundColor) =
-    when (status.status) {
-      ClawStatus.Success -> colors.success to colors.successSoft
-      ClawStatus.Warning -> colors.warning to colors.warningSoft
-      ClawStatus.Danger -> colors.danger to colors.dangerSoft
-      ClawStatus.Neutral -> colors.textSubtle to colors.surfaceRaised
-    }
-  Surface(
-    onClick = onClick,
-    modifier = Modifier.heightIn(min = ClawTheme.spacing.touchTarget),
-    shape = RoundedCornerShape(ClawTheme.radii.control),
-    color = backgroundColor,
-    border = BorderStroke(1.dp, ClawTheme.colors.border.copy(alpha = 0.32f)),
-  ) {
-    Row(
-      modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-      Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(dotColor))
-      Text(text = nativeString(status.label), style = ClawTheme.type.caption, color = ClawTheme.colors.text, maxLines = 1)
-      Icon(imageVector = Icons.Default.ArrowDropDown, contentDescription = null, modifier = Modifier.size(15.dp), tint = ClawTheme.colors.textMuted)
-    }
-  }
-}
-
-@Composable
-private fun OverviewPrimaryPanel(
-  agentName: String,
-  agentBadge: String,
-  agentAvatarSource: AgentAvatarSource?,
-  statusText: String,
-  isConnected: Boolean,
-  pendingRunCount: Int,
-  sessionCount: Int,
-  cronJobCount: Int,
-  onOpenChat: () -> Unit,
-  onOpenVoice: () -> Unit,
-  onOpenAgent: () -> Unit,
-  onOpenGateway: () -> Unit,
-) {
-  ClawPanel(contentPadding = PaddingValues(ClawTheme.spacing.sm)) {
-    Column(verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xs)) {
-      Text(text = nativeString("ACTIVE AGENT"), style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)
-      Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-        OverviewAgentBadge(text = agentBadge, active = isConnected, avatarSource = agentAvatarSource)
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            Text(text = if (pendingRunCount > 0) nativeString("\$agentName is working", agentName) else agentName, style = ClawTheme.type.title, color = ClawTheme.colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-          }
-          Text(text = overviewAgentActivityText(isConnected = isConnected, pendingRunCount = pendingRunCount, sessionCount = sessionCount, cronJobCount = cronJobCount, statusText = statusText), style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        ClawSecondaryButton(text = nativeString("View"), onClick = onOpenAgent)
-      }
-      Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs)) {
-        OverviewStateChip(label = nativeString("Runs"), value = if (pendingRunCount > 0) nativeString("\$pendingRunCount active", pendingRunCount) else nativeString("Idle"), modifier = Modifier.weight(1f))
-        OverviewStateChip(label = nativeString("Threads"), value = if (sessionCount == 0) nativeString("None") else nativeString("\$sessionCount recent", sessionCount), modifier = Modifier.weight(1f))
-        OverviewStateChip(label = nativeString("Cron"), value = cronJobsSummary(cronJobCount), modifier = Modifier.weight(1f))
-      }
-      Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs)) {
-        ClawPrimaryButton(text = nativeString("Chat"), icon = Icons.Outlined.ChatBubbleOutline, onClick = onOpenChat, modifier = Modifier.weight(1f))
-        ClawSecondaryButton(text = nativeString("Talk"), icon = Icons.Outlined.MicNone, onClick = onOpenVoice, modifier = Modifier.weight(1f))
-      }
-      if (!isConnected) {
-        ClawSecondaryButton(text = nativeString("Reconnect gateway"), icon = Icons.Default.Cloud, onClick = onOpenGateway, modifier = Modifier.fillMaxWidth())
-      }
-    }
-  }
-}
-
-@Composable
-private fun OverviewAgentBadge(
-  text: String,
-  active: Boolean,
-  avatarSource: AgentAvatarSource?,
-) {
-  Surface(
-    modifier = Modifier.size(42.dp),
-    shape = CircleShape,
-    color = if (active) ClawTheme.colors.successSoft else ClawTheme.colors.surfacePressed,
-    contentColor = if (active) ClawTheme.colors.success else ClawTheme.colors.textMuted,
-  ) {
-    ClawAgentAvatar(source = avatarSource, size = 42.dp) {
-      Box(contentAlignment = Alignment.Center) {
-        Text(
-          text = text,
-          style = ClawTheme.type.title,
-          maxLines = 1,
-        )
-      }
-    }
-  }
-}
-
-@Composable
-private fun OverviewStateChip(
-  label: String,
-  value: String,
-  modifier: Modifier = Modifier,
-) {
-  Column(
-    modifier = modifier.padding(vertical = ClawTheme.spacing.xxxs),
-    verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxxs),
-  ) {
-    Text(text = localizedUppercase(label, currentAppLanguage().languageTag), style = ClawTheme.type.captionSmall, color = ClawTheme.colors.textSubtle)
-    Text(text = value, style = ClawTheme.type.caption, color = ClawTheme.colors.text)
-  }
-}
-
-@Composable
-private fun OverviewMetricList(
-  cards: List<OverviewMetricCardSpec>,
-  onOpen: (OverviewMetricCardSpec) -> Unit,
-) {
-  ClawListPanel(items = cards) { card ->
-    OverviewMetricRow(card = card, onClick = { onOpen(card) })
-  }
-}
-
-@Composable
-private fun OverviewMetricRow(
-  card: OverviewMetricCardSpec,
-  onClick: () -> Unit,
-) {
-  val tint =
-    when (card.status) {
-      ClawStatus.Success -> ClawTheme.colors.success
-      ClawStatus.Warning -> ClawTheme.colors.warning
-      ClawStatus.Danger -> ClawTheme.colors.danger
-      ClawStatus.Neutral -> ClawTheme.colors.textMuted
-    }
-  ClawListItem(
-    title = card.title,
-    subtitle = card.subtitle,
-    leading = {
-      Icon(imageVector = card.icon, contentDescription = null, modifier = Modifier.size(ClawTheme.spacing.icon), tint = tint)
-    },
-    trailing = {
-      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs)) {
-        Text(text = card.value, style = ClawTheme.type.label, color = ClawTheme.colors.text)
-        Icon(
-          imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-          contentDescription = nativeString("Open \${card.title}", card.title),
-          modifier = Modifier.size(ClawTheme.spacing.icon),
-          tint = ClawTheme.colors.textMuted,
-        )
-      }
-    },
-    onClick = onClick,
-  )
-  card.progressFraction?.let { progress ->
-    OverviewProgressBar(progress = progress, tint = tint)
-  }
-}
-
 internal fun localizedUppercase(
   value: String,
   languageTag: String?,
@@ -809,102 +429,18 @@ internal fun localizedInitial(
   fallbackLocale: Locale = Locale.getDefault(),
 ): String? = value.firstGraphemeOrNull()?.let { localizedUppercase(it, languageTag, fallbackLocale) }
 
-@Composable
-private fun OverviewProgressBar(
-  progress: Float,
-  tint: Color,
-) {
-  val visualProgress =
-    if (progress <= 0f) {
-      0f
-    } else {
-      progress.coerceIn(0.16f, 1f)
-    }
-  Box(
-    modifier =
-      Modifier
-        .fillMaxWidth()
-        .height(4.dp)
-        .clip(RoundedCornerShape(2.dp))
-        .background(ClawTheme.colors.surfacePressed),
-  ) {
-    Box(
-      modifier =
-        Modifier
-          .fillMaxWidth(visualProgress)
-          .height(4.dp)
-          .clip(RoundedCornerShape(2.dp))
-          .background(tint),
-    )
-  }
-}
-
-@Composable
-private fun TalkEntryPanel(
-  onOpenVoice: () -> Unit,
-  onOpenVoiceSettings: () -> Unit,
-) {
-  ClawPanel(contentPadding = PaddingValues(horizontal = ClawTheme.spacing.xs, vertical = ClawTheme.spacing.xxxs)) {
-    ClawListItem(
-      title = nativeString("Talk"),
-      subtitle = nativeString("Open Talk"),
-      leading = {
-        Icon(imageVector = Icons.Default.GraphicEq, contentDescription = null, modifier = Modifier.size(ClawTheme.spacing.icon), tint = ClawTheme.colors.textMuted)
-      },
-      trailing = {
-        ClawPlainIconButton(icon = Icons.Default.Tune, contentDescription = nativeString("Talk settings"), onClick = onOpenVoiceSettings)
-      },
-      onClick = onOpenVoice,
-    )
-  }
-}
-
-@Composable
-private fun RecentSessionsHeader(onOpenSessions: () -> Unit) {
-  SectionLabel(
-    title = nativeString("Recent Threads"),
-    action = {
-      Surface(
-        onClick = onOpenSessions,
-        modifier = Modifier.heightIn(min = ClawTheme.spacing.touchTarget),
-        color = Color.Transparent,
-        contentColor = ClawTheme.colors.textMuted,
-      ) {
-        Box(contentAlignment = Alignment.Center) {
-          Text(
-            text = nativeString("View all"),
-            style = ClawTheme.type.caption,
-            color = ClawTheme.colors.textMuted,
-          )
-        }
-      }
-    },
-  )
-}
-
-internal data class OverviewHeaderState(
-  val label: String,
-  val status: ClawStatus,
-)
-
-internal fun overviewHeaderState(
-  isConnected: Boolean,
-  hasAttention: Boolean,
-): OverviewHeaderState =
-  when {
-    !isConnected -> OverviewHeaderState("Offline", ClawStatus.Neutral)
-    hasAttention -> OverviewHeaderState("Needs attention", ClawStatus.Warning)
-    else -> OverviewHeaderState("Online", ClawStatus.Success)
-  }
-
-internal fun overviewHeaderRoute(attentionRows: List<HomeAttentionRow>): SettingsRoute = attentionRows.firstNotNullOfOrNull { it.settingsRoute } ?: SettingsRoute.Gateway
-
-internal fun overviewRecentSessionCount(sessions: List<ChatSessionEntry>): Int = overviewRecentSessions(sessions).size
-
-internal fun overviewRecentSessions(sessions: List<ChatSessionEntry>): List<ChatSessionEntry> =
+internal fun overviewRecentSessions(
+  sessions: List<ChatSessionEntry>,
+  mainSessionKey: String? = null,
+  agentId: String? = null,
+): List<ChatSessionEntry> =
   sessions
-    .withIndex()
-    .groupBy { entry -> entry.value.key }
+    .filter { session ->
+      val owner = session.ownerAgentId ?: resolveAgentIdFromMainSessionKey(session.key)
+      session.archived != true && session.isMain != true && (agentId == null || owner == null || owner == agentId) &&
+        (mainSessionKey == null || (session.key != mainSessionKey && session.key != "main"))
+    }.withIndex()
+    .groupBy { entry -> entry.value.ownerAgentId to entry.value.key }
     .values
     .map { entries ->
       entries
@@ -915,16 +451,13 @@ internal fun overviewRecentSessions(sessions: List<ChatSessionEntry>): List<Chat
     }.sortedWith(
       compareByDescending<IndexedValue<ChatSessionEntry>> { entry -> entry.value.overviewRecentSessionRecencyMs() }
         .thenBy { entry -> entry.value.key },
-    ).take(overviewRecentSessionLimit)
-    .map { entry -> entry.value }
+    ).map { entry -> entry.value }
 
 private fun ChatSessionEntry.overviewRecentSessionRecencyMs(): Long = lastActivityAt ?: updatedAtMs ?: Long.MIN_VALUE
 
 internal data class OverviewMetricCardSpec(
   val title: String,
   val value: String,
-  val subtitle: String,
-  val icon: ImageVector,
   val status: ClawStatus,
   val tab: Tab,
   val settingsRoute: SettingsRoute? = null,
@@ -932,84 +465,30 @@ internal data class OverviewMetricCardSpec(
 )
 
 internal fun overviewMetricCardSpecs(
-  isConnected: Boolean,
-  hasAttention: Boolean,
   nodesDevicesSummary: GatewayNodesDevicesSummary,
+  pendingRunCount: Int,
+  automationCount: Int,
   pendingApprovals: Int,
-  sessionCount: Int,
 ): List<OverviewMetricCardSpec> {
-  val onlineNodes = nodesDevicesSummary.nodes.count { it.connected }
-  val nodeCount = nodesDevicesSummary.nodes.size
+  val online = nodesDevicesSummary.nodes.count { it.connected }
+  val total = nodesDevicesSummary.nodes.size
   return listOf(
+    OverviewMetricCardSpec(nativeString("Runs"), pendingRunCount.toString(), ClawStatus.Neutral, Tab.Sessions),
+    OverviewMetricCardSpec(nativeString("Automations"), automationCount.toString(), ClawStatus.Neutral, Tab.Settings, SettingsRoute.CronJobs),
     OverviewMetricCardSpec(
-      title = nativeString("Gateway"),
-      value = if (isConnected) nativeString("Online") else nativeString("Offline"),
-      subtitle =
-        when {
-          !isConnected -> nativeString("Reconnect to continue")
-          hasAttention -> nativeString("Review highlighted items")
-          else -> nativeString("No highlighted items")
-        },
-      icon = Icons.Default.Favorite,
-      status =
-        when {
-          !isConnected -> ClawStatus.Neutral
-          hasAttention -> ClawStatus.Warning
-          else -> ClawStatus.Success
-        },
-      tab = Tab.Settings,
-      settingsRoute = SettingsRoute.Gateway,
+      nativeString("Devices"),
+      nativeString("\$online/\$total", online, total),
+      when {
+        nodesDevicesSummary.pendingDevices.isNotEmpty() || nodesDevicesSummary.hasNodeCapabilityApprovalPending() -> ClawStatus.Warning
+        online < total -> ClawStatus.Danger
+        online > 0 -> ClawStatus.Success
+        else -> ClawStatus.Neutral
+      },
+      Tab.Settings,
+      SettingsRoute.NodesDevices,
+      if (total > 0) online.toFloat() / total else null,
     ),
-    OverviewMetricCardSpec(
-      title = nativeString("Nodes"),
-      value = if (nodeCount == 0) nativeString("None") else nativeString("\$onlineNodes/\$nodeCount", onlineNodes, nodeCount),
-      subtitle =
-        if (nodesDevicesSummary.hasNodeCapabilityApprovalPending()) {
-          nativeString("Review node access")
-        } else if (nodeCount > 0) {
-          nativeString(
-            "\${nodeOnlinePercent(onlineNodes = onlineNodes, nodeCount = nodeCount)}% online",
-            nodeOnlinePercent(onlineNodes = onlineNodes, nodeCount = nodeCount),
-          )
-        } else {
-          nodesDevicesSummaryText(nodesDevicesSummary)
-        },
-      icon = Icons.Default.Cloud,
-      status =
-        when {
-          nodesDevicesSummary.pendingDevices.isNotEmpty() || nodesDevicesSummary.hasNodeCapabilityApprovalPending() -> ClawStatus.Warning
-          onlineNodes > 0 -> ClawStatus.Success
-          else -> ClawStatus.Neutral
-        },
-      tab = Tab.Settings,
-      settingsRoute = SettingsRoute.NodesDevices,
-      progressFraction = if (nodeCount > 0) onlineNodes.toFloat() / nodeCount.toFloat() else null,
-    ),
-    OverviewMetricCardSpec(
-      title = nativeString("Approvals"),
-      value = pendingApprovals.toString(),
-      subtitle = approvalsSummary(pendingApprovals),
-      icon = Icons.Default.Security,
-      status = if (pendingApprovals > 0) ClawStatus.Warning else ClawStatus.Neutral,
-      tab = Tab.Settings,
-      settingsRoute = SettingsRoute.Approvals,
-    ),
-    OverviewMetricCardSpec(
-      title = nativeString("Threads"),
-      value = sessionCount.toString(),
-      subtitle = if (sessionCount == 0) nativeString("No recent threads") else nativeString("Recent conversations"),
-      icon = Icons.Default.Groups,
-      status = if (sessionCount > 0) ClawStatus.Success else ClawStatus.Neutral,
-      tab = Tab.Sessions,
-    ),
-    OverviewMetricCardSpec(
-      title = nativeString("Files"),
-      value = if (isConnected) nativeString("Browse") else nativeString("Offline"),
-      subtitle = nativeString("Agent workspace files"),
-      icon = Icons.Outlined.Folder,
-      status = if (isConnected) ClawStatus.Success else ClawStatus.Neutral,
-      tab = Tab.Files,
-    ),
+    OverviewMetricCardSpec(nativeString("Approvals"), pendingApprovals.toString(), if (pendingApprovals > 0) ClawStatus.Warning else ClawStatus.Neutral, Tab.Settings, SettingsRoute.Approvals),
   )
 }
 
@@ -1018,7 +497,7 @@ internal fun overviewAgentName(
   defaultAgentId: String?,
 ): String {
   val agent = overviewAgent(agents = agents, defaultAgentId = defaultAgentId)
-  return agent?.name?.takeIf { it.isNotBlank() } ?: agent?.id?.takeIf { it.isNotBlank() } ?: nativeString("OpenClaw")
+  return agent?.name?.takeIf { it.isNotBlank() } ?: agent?.id?.takeIf { it.isNotBlank() } ?: defaultAgentId?.takeIf { it.isNotBlank() } ?: nativeString("OpenClaw")
 }
 
 internal fun overviewAgentBadgeText(
@@ -1049,43 +528,9 @@ private fun overviewAgent(
   return if (defaultId.isBlank()) {
     agents.firstOrNull()
   } else {
-    agents.firstOrNull { it.id == defaultId } ?: agents.firstOrNull()
+    agents.firstOrNull { it.id == defaultId }
   }
 }
-
-internal fun overviewAgentActivityText(
-  isConnected: Boolean,
-  pendingRunCount: Int,
-  sessionCount: Int,
-  cronJobCount: Int,
-  statusText: String,
-): String {
-  if (!isConnected) return statusText
-  if (pendingRunCount > 0) {
-    return if (pendingRunCount == 1) {
-      nativeString("Working · 1 active run")
-    } else {
-      nativeString("Working · \$pendingRunCount active runs", pendingRunCount)
-    }
-  }
-  return when {
-    sessionCount == 1 -> nativeString("Monitoring · 1 thread")
-    sessionCount > 1 -> nativeString("Monitoring · \$sessionCount threads", sessionCount)
-    cronJobCount == 1 -> nativeString("Monitoring · 1 scheduled job")
-    cronJobCount > 1 -> nativeString("Monitoring · \$cronJobCount scheduled jobs", cronJobCount)
-    else -> statusText
-  }
-}
-
-internal fun nodeOnlinePercent(
-  onlineNodes: Int,
-  nodeCount: Int,
-): Int =
-  if (nodeCount <= 0) {
-    0
-  } else {
-    ((onlineNodes.coerceAtLeast(0) * 100) + (nodeCount / 2)) / nodeCount
-  }
 
 private fun agentInitials(name: String): String =
   name
@@ -1139,6 +584,7 @@ internal data class HomeAttentionRow(
   val icon: ImageVector,
   val tab: Tab,
   val settingsRoute: SettingsRoute? = null,
+  val danger: Boolean = false,
 )
 
 internal fun homeAttentionRows(
@@ -1148,6 +594,9 @@ internal fun homeAttentionRows(
   nodesDevicesSummary: GatewayNodesDevicesSummary,
   readyProviderCount: Int,
   unknownProviderCount: Int = 0,
+  cronJobs: List<GatewayCronJobSummary> = emptyList(),
+  nowMs: Long = System.currentTimeMillis(),
+  gatewayWarning: String? = null,
 ): List<HomeAttentionRow> =
   listOfNotNull(
     if (!isConnected) {
@@ -1157,12 +606,20 @@ internal fun homeAttentionRows(
         Icons.Default.Cloud,
         Tab.Settings,
         SettingsRoute.Gateway,
+        danger = true,
       )
+    } else if (gatewayWarning != null) {
+      HomeAttentionRow(nativeString("Gateway"), gatewayWarning, Icons.Default.Cloud, Tab.Settings, SettingsRoute.Gateway)
     } else {
       null
     },
     if (pendingApprovals > 0) {
       HomeAttentionRow(nativeString("Approvals"), approvalsSummary(pendingApprovals), Icons.Default.Lock, Tab.Settings, SettingsRoute.Approvals)
+    } else {
+      null
+    },
+    if (cronJobs.any { it.enabled && (it.lastRunStatus == "error" || (it.nextRunAtMs != null && it.nextRunAtMs < nowMs)) }) {
+      HomeAttentionRow(nativeString("Automations"), nativeString("Failed or overdue runs"), Icons.Default.Notifications, Tab.Settings, SettingsRoute.CronJobs)
     } else {
       null
     },
@@ -1183,97 +640,15 @@ internal fun homeAttentionRows(
     },
   )
 
-@Composable
-private fun HomeAttentionPanel(
-  rows: List<HomeAttentionRow>,
-  onSelectTab: (Tab) -> Unit,
-  onOpenSettingsRoute: (SettingsRoute) -> Unit,
-) {
-  ClawPanel(contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-      Text(text = nativeString("Needs attention"), style = ClawTheme.type.caption.copy(fontSize = 12.5.sp, lineHeight = 16.sp), color = ClawTheme.colors.warning)
-      rows.forEach { row ->
-        HomeAttentionListRow(
-          row = row,
-          onClick = {
-            val route = row.settingsRoute
-            if (route == null) {
-              onSelectTab(row.tab)
-            } else {
-              onOpenSettingsRoute(route)
-            }
-          },
-        )
-      }
-    }
-  }
-}
-
-@Composable
-private fun SectionLabel(
-  title: String,
-  action: (@Composable () -> Unit)? = null,
-) {
-  val localizedTitle = nativeString(title)
-  Row(
-    modifier = Modifier.fillMaxWidth(),
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.SpaceBetween,
-  ) {
-    Text(
-      text = localizedUppercase(localizedTitle, currentAppLanguage().languageTag),
-      style = ClawTheme.type.caption.copy(fontSize = 12.5.sp, lineHeight = 16.sp),
-      color = ClawTheme.colors.textMuted,
-    )
-    action?.invoke()
-  }
-}
-
-@Composable
-private fun HomeAttentionListRow(
-  row: HomeAttentionRow,
-  onClick: () -> Unit,
-) {
-  val localizedTitle = nativeString(row.title)
-  Surface(color = Color.Transparent, contentColor = ClawTheme.colors.text) {
-    Row(
-      modifier =
-        Modifier
-          .fillMaxWidth()
-          .heightIn(min = 54.dp)
-          .clip(RoundedCornerShape(ClawTheme.radii.row))
-          .clickable(onClick = onClick)
-          .padding(horizontal = 0.dp, vertical = 6.dp),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(9.dp),
-    ) {
-      Icon(imageVector = row.icon, contentDescription = null, modifier = Modifier.size(20.dp), tint = ClawTheme.colors.text)
-      Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-        Text(
-          text = localizedTitle,
-          style = ClawTheme.type.body,
-          color = ClawTheme.colors.text,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-        )
-        Text(text = nativeString(row.subtitle), style = ClawTheme.type.caption.copy(fontSize = 12.5.sp, lineHeight = 16.sp), color = ClawTheme.colors.textSubtle, maxLines = 1, overflow = TextOverflow.Ellipsis)
-      }
-      Icon(
-        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-        contentDescription = settingsRowDisclosureDescription(localizedTitle, opensRoute = true),
-        modifier = Modifier.size(17.dp),
-        tint = ClawTheme.colors.textMuted,
-      )
-    }
-  }
-}
-
 internal data class RecentSessionListItem(
   val key: String,
   val title: String,
   val source: String,
   val metadata: String,
   val ownerAgentId: String? = null,
+  val color: String? = null,
+  val pinned: Boolean = false,
+  val unread: Boolean = false,
 )
 
 internal fun overviewRecentSessionRows(
@@ -1281,102 +656,19 @@ internal fun overviewRecentSessionRows(
   channelsSummary: GatewayChannelsSummary?,
 ): List<RecentSessionListItem> =
   sessions
-    .take(overviewRecentSessionVisibleLimit)
     .map { session ->
-      val title = sessionPresentationTitle(session) { nativeString("Main thread") }
+      val title = sessionPresentationTitle(session) { nativeString("Main session") }
       RecentSessionListItem(
         key = session.key,
         ownerAgentId = session.ownerAgentId,
+        color = session.color,
+        pinned = session.pinned == true,
+        unread = session.unread == true,
         title = title,
         source = sessionListSubtitle(session, sessionSourceLabel(session.key, channelsSummary)),
         metadata = (session.lastActivityAt ?: session.updatedAtMs)?.let(::relativeSessionTime) ?: "",
       )
     }
-
-internal fun stableOverviewRecentRows(
-  previousRows: List<RecentSessionListItem>,
-  candidateRows: List<RecentSessionListItem>,
-): List<RecentSessionListItem> {
-  val previousRowsByKey = previousRows.associateBy { row -> row.key }
-  return candidateRows.map { candidateRow ->
-    val previousRow = previousRowsByKey[candidateRow.key]
-    if (previousRow == null) candidateRow else candidateRow.withStableFieldsFrom(previousRow)
-  }
-}
-
-private fun RecentSessionListItem.withStableFieldsFrom(previousRow: RecentSessionListItem): RecentSessionListItem =
-  copy(
-    title = title.ifBlank { previousRow.title },
-    source = source.ifBlank { previousRow.source },
-    metadata = metadata.ifBlank { previousRow.metadata },
-  )
-
-/** Recent sessions panel that preserves the session key behind display labels. */
-@Composable
-private fun RecentSessionList(
-  rows: List<RecentSessionListItem>,
-  onOpen: (String, String?) -> Unit,
-) {
-  ClawPanel(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
-    Column {
-      rows.forEachIndexed { index, row ->
-        RecentSessionRowContent(
-          title = row.title,
-          source = row.source,
-          metadata = row.metadata,
-          onClick = { onOpen(row.key, row.ownerAgentId) },
-        )
-        if (index != rows.lastIndex) {
-          HorizontalDivider(color = ClawTheme.colors.border.copy(alpha = 0.48f), thickness = 1.dp)
-        }
-      }
-    }
-  }
-}
-
-@Composable
-private fun RecentSessionRowContent(
-  title: String,
-  source: String,
-  metadata: String,
-  onClick: () -> Unit,
-) {
-  Surface(color = Color.Transparent, contentColor = ClawTheme.colors.text) {
-    Row(
-      modifier =
-        Modifier
-          .fillMaxWidth()
-          .heightIn(min = overviewListRowMinHeight)
-          .clip(RoundedCornerShape(ClawTheme.radii.row))
-          .clickable(onClick = onClick)
-          .padding(horizontal = 0.dp, vertical = 5.dp),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-      Surface(
-        modifier = Modifier.size(30.dp),
-        shape = CircleShape,
-        color = ClawTheme.colors.canvas,
-        border = BorderStroke(1.dp, ClawTheme.colors.border.copy(alpha = 0.7f)),
-      ) {
-        Box(contentAlignment = Alignment.Center) {
-          Icon(imageVector = Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(14.dp), tint = ClawTheme.colors.text)
-        }
-      }
-      Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-        Text(text = title, style = ClawTheme.type.body, color = ClawTheme.colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text(text = source, style = ClawTheme.type.caption.copy(fontSize = 12.5.sp, lineHeight = 16.sp), color = ClawTheme.colors.textSubtle, maxLines = 1, overflow = TextOverflow.Ellipsis)
-      }
-      Text(text = metadata, style = ClawTheme.type.caption.copy(fontSize = 12.5.sp, lineHeight = 16.sp), color = ClawTheme.colors.textMuted)
-      Icon(
-        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-        contentDescription = nativeString("Open thread"),
-        modifier = Modifier.size(14.dp),
-        tint = ClawTheme.colors.textMuted,
-      )
-    }
-  }
-}
 
 @Composable
 private fun SettingsShellScreen(

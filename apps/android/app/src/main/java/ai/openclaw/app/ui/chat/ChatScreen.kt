@@ -481,7 +481,7 @@ internal fun ChatScreen(
   val activeAgentId = sessionAgentId
   val activeAgent = gatewayAgents.firstOrNull { it.id == activeAgentId }
   val headerCatalogState by viewModel.sessionCatalogState.collectAsState()
-  val activeSessionTitle = chatHeaderSessionTitle(activeSession) { nativeString("New chat") }
+  val activeSessionTitle = chatHeaderSessionTitle(activeSession) { nativeString("New session") }
   val activeProjectLabel = chatHeaderProjectLabel(sessionKey = sessionKey, catalogs = headerCatalogState.catalogs)
   val workspaceGit = activeAgent?.workspaceGit == true
   val context = LocalContext.current
@@ -1973,7 +1973,7 @@ private fun ChatMessageList(
 
             if (timeline.items.isEmpty()) {
               if (showChatLoadingPlaceholder(historyLoading = historyLoading, healthOk = healthOk, gatewayOffline = gatewayOffline)) {
-                ClawLoadingState(title = nativeString("Loading thread"), modifier = Modifier.align(Alignment.Center))
+                ClawLoadingState(title = nativeString("Loading session"), modifier = Modifier.align(Alignment.Center))
               } else {
                 EmptyChatHint(
                   healthOk = healthOk,
@@ -2156,8 +2156,8 @@ internal val starterPrompts =
     StarterPrompt(
       mark = "1",
       title = nativeText("Catch me up"),
-      subtitle = nativeText("Summarize recent threads and next steps."),
-      message = nativeText("Catch me up on my recent OpenClaw threads and suggest next steps."),
+      subtitle = nativeText("Summarize recent sessions and next steps."),
+      message = nativeText("Catch me up on my recent OpenClaw sessions and suggest next steps."),
     ),
     StarterPrompt(
       mark = "2",

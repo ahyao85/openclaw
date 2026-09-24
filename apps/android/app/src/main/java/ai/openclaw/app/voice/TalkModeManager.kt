@@ -346,6 +346,16 @@ class TalkModeManager internal constructor(
   // TTS creates an audio session conflict on some OEMs. Can be enabled via gateway talk config.
   private val interruptOnSpeech get() = configCache.get().value.interruptOnSpeech ?: false
   private var mainSessionKey: String = "main"
+
+  private data class ContinuousTalkTarget(
+    val requestKey: String,
+    val canonicalKey: String,
+  )
+
+  @Volatile private var continuousTarget: ContinuousTalkTarget? = null
+
+  private fun activeChatSessionKey(): String = continuousTarget?.requestKey ?: mainSessionKey.ifBlank { "main" }
+
   private val speechLocale get() = configCache.get().value.speechLocale
   private val realtimeRelayModelSupported get() = configCache.get().value.realtimeRelayModelSupported
 
@@ -469,10 +479,19 @@ class TalkModeManager internal constructor(
   }
 
   /** Starts or stops continuous realtime TalkMode capture. */
-  fun setEnabled(enabled: Boolean) {
+  fun setEnabled(
+    enabled: Boolean,
+    sessionKey: String? = null,
+    canonicalSessionKey: String? = sessionKey,
+  ) {
     if (_isEnabled.value == enabled) return
     _isEnabled.value = enabled
     if (enabled) {
+      // An explicit UI target belongs to this capture only; do not rebind device/PTT defaults.
+      continuousTarget =
+        sessionKey?.trim()?.takeIf { it.isNotEmpty() }?.let { key ->
+          ContinuousTalkTarget(key, canonicalSessionKey?.trim()?.takeIf { it.isNotEmpty() } ?: key)
+        }
       Log.d(tag, "enabled")
       start()
     } else {
@@ -942,7 +961,7 @@ class TalkModeManager internal constructor(
     state: String,
     message: JsonElement?,
   ) {
-    val activeSession = mainSessionKey.ifBlank { "main" }
+    val activeSession = continuousTarget?.canonicalKey ?: activeChatSessionKey()
     if (sessionKey != null && sessionKey != activeSession) return
 
     // If this is a response we initiated, handle normally below.
@@ -1070,6 +1089,7 @@ class TalkModeManager internal constructor(
     val cancelled =
       synchronized(realtimeCapturePauseLock) {
         stopRequested = true
+        continuousTarget = null
         listeningMode = false
         activePttCaptureId = null
         startGeneration.incrementAndGet()
@@ -1183,7 +1203,7 @@ class TalkModeManager internal constructor(
     val lease = change?.lease ?: session.captureRequestLease(gatewayStableId()) ?: error("Gateway not connected")
     val supportsVoiceSelection = listOf("talk.voice.get", "talk.voice.set", "talk.voice.complete").all(lease::supportsMethod)
     val transportGeneration = change?.gatewayGeneration ?: gatewayGeneration.get()
-    val sessionKey = change?.sessionKey ?: mainSessionKey.ifBlank { "main" }
+    val sessionKey = change?.sessionKey ?: activeChatSessionKey()
     val create: suspend (String?) -> String = { requestedLanguage ->
       val params =
         buildJsonObject {
@@ -1463,6 +1483,7 @@ class TalkModeManager internal constructor(
   private fun disableRealtimeModeLocked(): (() -> Unit)? {
     if (!_isEnabled.value) return null
     _isEnabled.value = false
+    continuousTarget = null
     _isListening.value = false
     val generation = startGeneration.get()
     val notify = relayStopNotification
@@ -2782,7 +2803,7 @@ class TalkModeManager internal constructor(
     armPendingRun(runId)
     val params =
       buildJsonObject {
-        put("sessionKey", JsonPrimitive(mainSessionKey.ifBlank { "main" }))
+        put("sessionKey", JsonPrimitive(activeChatSessionKey()))
         put("message", JsonPrimitive(message))
         put("timeoutMs", JsonPrimitive(30_000))
         put("idempotencyKey", JsonPrimitive(runId))
@@ -2892,7 +2913,7 @@ class TalkModeManager internal constructor(
   private suspend fun fetchLatestAssistantText(
     sinceSeconds: Double? = null,
   ): String? {
-    val key = mainSessionKey.ifBlank { "main" }
+    val key = activeChatSessionKey()
     val res = requestGateway("chat.history", "{\"sessionKey\":\"$key\"}")
     val root = json.parseToJsonElement(res).asObjectOrNull() ?: return null
     val messages = root["messages"] as? JsonArray ?: return null

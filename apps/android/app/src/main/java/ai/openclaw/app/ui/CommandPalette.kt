@@ -92,7 +92,7 @@ internal fun CommandPalette(
   val sessionRows =
     sessions
       .filter { session ->
-        val title = sessionPresentationTitle(session) { nativeString("Main thread") }
+        val title = sessionPresentationTitle(session) { nativeString("Main session") }
         commandSessionMatches(title = title, query = normalizedQuery)
       }.take(5)
 
@@ -135,7 +135,7 @@ internal fun CommandPalette(
           }
           item(key = "actions") {
             if (actionRows.isEmpty()) {
-              ClawEmptyState(title = nativeString("No actions found"), body = nativeString("Try Chat, Voice, Threads, Providers, or Settings."))
+              ClawEmptyState(title = nativeString("No actions found"), body = nativeString("Try Chat, Voice, Sessions, Providers, or Settings."))
             } else {
               CommandActionList(rows = actionRows, onOpen = onOpen)
             }
@@ -143,14 +143,14 @@ internal fun CommandPalette(
         }
 
         item(key = "threads-heading") {
-          CommandSectionLabel(title = nativeString("Threads"))
+          CommandSectionLabel(title = nativeString("Sessions"))
         }
 
         item(key = "threads") {
           if (sessionRows.isEmpty()) {
             ClawPanel {
               Text(
-                text = if (isConnected) nativeString("No matching threads yet.") else nativeString("Connect the Gateway to search threads."),
+                text = if (isConnected) nativeString("No matching sessions yet.") else nativeString("Connect the Gateway to search sessions."),
                 style = ClawTheme.type.body,
                 color = ClawTheme.colors.textMuted,
               )
@@ -162,8 +162,8 @@ internal fun CommandPalette(
                   CommandSessionRow(
                     key = session.key,
                     ownerAgentId = session.ownerAgentId,
-                    title = sessionPresentationTitle(session) { nativeString("Main thread") },
-                    subtitle = sessionListSubtitle(session, fallback = nativeString("OpenClaw thread"), activeRunLabel = nativeString("Assistant working")),
+                    title = sessionPresentationTitle(session) { nativeString("Main session") },
+                    subtitle = sessionListSubtitle(session, fallback = nativeString("OpenClaw session"), activeRunLabel = nativeString("Assistant working")),
                     metadata = session.updatedAtMs?.let(::relativeSessionTime) ?: nativeString("now"),
                   )
                 },
@@ -213,7 +213,7 @@ internal fun commandItems(
         }
 
         CommandAction.Sessions -> {
-          CommandItem(action, nativeText("Browse Threads"), nativeText("Find previous conversations"), Icons.Outlined.AccessTime)
+          CommandItem(action, nativeText("Browse Sessions"), nativeText("Find previous conversations"), Icons.Outlined.AccessTime)
         }
 
         is CommandAction.Settings -> {
@@ -342,7 +342,7 @@ private fun CommandSessionListRow(
         Text(text = row.subtitle, style = ClawTheme.type.caption, color = ClawTheme.colors.textSubtle, maxLines = 1, overflow = TextOverflow.Ellipsis)
       }
       Text(text = row.metadata, style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-      CommandRowChevron(contentDescription = nativeString("Open thread"))
+      CommandRowChevron(contentDescription = nativeString("Open session"))
     }
   }
 }

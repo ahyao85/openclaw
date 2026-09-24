@@ -11,6 +11,7 @@ import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.app.gateway.GatewayHelloSummary
 import ai.openclaw.app.gateway.GatewayRequestRejected
 import ai.openclaw.app.gateway.GatewaySession
+import ai.openclaw.app.gateway.GatewaySessionRouting
 import android.content.Context
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
@@ -692,6 +693,66 @@ class NodeRuntimeAgentSelectionTest {
       selectChatAgentSessionKey(candidates.take(1), "scout", null, "agent:scout:main"),
     )
   }
+
+  @Test
+  fun homeUsesCurrentAgentAndLiveGatewayRoutingWithoutRebindingDeviceSession() {
+    val app = RuntimeEnvironment.getApplication()
+    val prefs = SecurePrefs(app, app.getSharedPreferences("home-routing", Context.MODE_PRIVATE))
+    val runtime = NodeRuntime(app, prefs, NodeRuntimeMode.ScreenshotFixture)
+    val session = ReflectionHelpers.getField<GatewaySession>(runtime, "operatorSession")
+    val deviceSessionKey = runtime.mainSessionKey.value
+    try {
+      data class Case(
+        val agentId: String,
+        val routing: GatewaySessionRouting?,
+        val expectedKey: String,
+      )
+      val cases =
+        listOf(
+          Case("main", GatewaySessionRouting("agent:main:main", "main"), "agent:main:main"),
+          Case("scout", GatewaySessionRouting("agent:main:main", "main"), "agent:scout:main"),
+          Case("scout", GatewaySessionRouting("agent:main:primary", "primary"), "agent:scout:primary"),
+          Case("writer", GatewaySessionRouting("global", "primary"), "global"),
+          Case("scout", null, "agent:scout:main"),
+        )
+      for ((agentId, routing, expectedKey) in cases) {
+        ReflectionHelpers.setField(session, "sessionRouting", routing)
+        runtime.switchChatSession("agent:$agentId:secondary", agentId)
+        runtime.openMainChat()
+        assertEquals(expectedKey, runtime.chatSessionKey.value)
+        assertEquals(agentId, runtime.chatSessionOwnerAgentId.value)
+        assertEquals("Home must not replace the device-owned session binding", deviceSessionKey, runtime.mainSessionKey.value)
+      }
+    } finally {
+      closeNodeRuntimeTestFixture(runtime)
+    }
+  }
+
+  @Test
+  fun homeWinsOverLateAgentSessionLookup() =
+    runBlocking {
+      val runtime = createConnectedRuntime()
+      val requestStarted = CompletableDeferred<Job>()
+      val releaseResponse = CompletableDeferred<Unit>()
+      try {
+        stubAgentSessionLookup(runtime) {
+          requestStarted.complete(currentCoroutineContext().job)
+          releaseResponse.await()
+          """{"sessions":[{"key":"agent:scout:late","updatedAt":20}]}"""
+        }
+        runtime.selectChatAgent("scout")
+        val lookupJob = withTimeout(2_000) { requestStarted.await() }
+        val deviceSessionKey = runtime.mainSessionKey.value
+        runtime.openMainChat()
+        releaseResponse.complete(Unit)
+        withTimeout(2_000) { lookupJob.join() }
+        assertEquals("agent:scout:main", runtime.chatSessionKey.value)
+        assertEquals(deviceSessionKey, runtime.mainSessionKey.value)
+      } finally {
+        releaseResponse.complete(Unit)
+        closeNodeRuntimeTestFixture(runtime)
+      }
+    }
 
   @Test
   fun explicitSessionSelectionWinsOverLateAgentSessionLookup() =

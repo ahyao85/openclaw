@@ -459,6 +459,34 @@ class TalkModeManagerTest {
     }
 
   @Test
+  fun explicitGlobalTalkAcceptsCanonicalRepliesWithoutAcceptingAnotherSession() =
+    runTest {
+      val manager = createManager(scope = backgroundScope)
+      val final = CompletableDeferred<Boolean>()
+      manager.setMainSessionKey("agent:scout:node-phone")
+      // Keep startup queued: this case isolates the event boundary, not audio hardware.
+      manager.setEnabled(true, sessionKey = "agent:scout:primary", canonicalSessionKey = "global")
+      setPrivateField(manager, "pendingRunId", "run-talk")
+      setPrivateField(manager, "pendingFinal", final)
+
+      fun event(key: String) = """{"sessionKey":"$key","runId":"run-talk","state":"final","message":{"role":"assistant","content":"Owned reply"}}"""
+      manager.handleGatewayEvent("chat", event("agent:other:primary"))
+      assertFalse(final.isCompleted)
+      manager.handleGatewayEvent("chat", event("global"))
+      assertTrue("Canonical global reply must settle the selected Talk run", final.isCompleted)
+      assertEquals(true, final.await())
+      manager.stopAllCapture()
+      val deviceFinal = CompletableDeferred<Boolean>()
+      setPrivateField(manager, "pendingRunId", "run-talk")
+      setPrivateField(manager, "pendingFinal", deviceFinal)
+      manager.handleGatewayEvent("chat", event("global"))
+      assertFalse(deviceFinal.isCompleted)
+      manager.handleGatewayEvent("chat", event("agent:scout:node-phone"))
+      assertTrue("Stopping Talk restores the device reply target", deviceFinal.isCompleted)
+      assertEquals(true, deviceFinal.await())
+    }
+
+  @Test
   fun duplicateFinalForPendingTalkRunDoesNotStartAllResponseTts() {
     val manager = createManager()
     val final = CompletableDeferred<Boolean>()
@@ -2675,7 +2703,7 @@ class TalkModeManagerTest {
   @Test
   fun relayConsultReturnsCanonicalOwnedResultOverGatewayConnection() =
     runBlocking {
-      for ((voiceKey, agentKey) in listOf("main" to "agent:voice:main", "global" to "global")) {
+      for ((voiceKey, agentKey) in listOf("main" to "agent:voice:main", "global" to "global", "agent:voice:primary" to "global")) {
         for (early in listOf(false, true)) {
           val socket = CompletableDeferred<WebSocket>()
           val result = CompletableDeferred<JsonObject>()
@@ -2731,6 +2759,41 @@ class TalkModeManagerTest {
             assertFalse(proof.synthesizer.requested.isCompleted)
           }
         }
+      }
+    }
+
+  @Test
+  fun explicitTalkTargetReachesGatewayWithoutReplacingDeviceDefault() =
+    runBlocking {
+      val creates = ConcurrentLinkedQueue<String>()
+      withStartedTalk(
+        sessionKey = "agent:scout:node-phone",
+        explicitSessionKey = "agent:scout:primary",
+        interceptRequest = { request, _ ->
+          if (request["method"]?.jsonPrimitive?.content == "talk.session.create") {
+            creates +=
+              request
+                .getValue("params")
+                .jsonObject
+                .getValue("sessionKey")
+                .jsonPrimitive.content
+          }
+          false
+        },
+      ) { proof ->
+        assertEquals(listOf("agent:scout:primary"), creates.toList())
+        proof.manager.stopAllCapture()
+        proof.scheduler.runCurrent()
+        proof.drainCancelledCapture()
+        proof.scheduler.runCurrent()
+        proof.manager.setEnabled(true)
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (creates.size < 2) {
+          proof.scheduler.runCurrent()
+          check(System.nanoTime() < deadline) { "Default Talk capture did not restart" }
+          withContext(Dispatchers.Default) { delay(10) }
+        }
+        assertEquals(listOf("agent:scout:primary", "agent:scout:node-phone"), creates.toList())
       }
     }
 
@@ -2992,6 +3055,7 @@ class TalkModeManagerTest {
 
   private suspend fun withStartedTalk(
     sessionKey: String = "main",
+    explicitSessionKey: String? = null,
     captureRelayStopNotification: () -> ((() -> Boolean) -> Unit) = { {} },
     responseForRequest: (JsonObject, WebSocket) -> String? = { _, _ -> null },
     interceptRequest: (JsonObject, WebSocket) -> Boolean = { _, _ -> false },
@@ -3102,7 +3166,7 @@ class TalkModeManagerTest {
         )
         withContext(Dispatchers.Default) { withTimeout(5_000) { connected.await() } }
         manager.setMainSessionKey(sessionKey)
-        manager.setEnabled(true)
+        manager.setEnabled(true, sessionKey = explicitSessionKey)
         val deadline = System.nanoTime() + 5_000_000_000L
         while (!manager.isListening.value) {
           scheduler.runCurrent()

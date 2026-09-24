@@ -162,6 +162,7 @@ Shell and screens:
 - `app/src/main/java/ai/openclaw/app/ui/SidebarShell.kt`
 - `app/src/main/java/ai/openclaw/app/ui/SidebarContent.kt`
 - `app/src/main/java/ai/openclaw/app/ui/ShellScreen.kt`
+- `app/src/main/java/ai/openclaw/app/ui/OverviewScreen.kt`
 - `app/src/main/java/ai/openclaw/app/ui/SettingsScreens.kt`
 - `app/src/main/java/ai/openclaw/app/ui/OnboardingFlow.kt`
 - `app/src/main/java/ai/openclaw/app/MainViewModel.kt`

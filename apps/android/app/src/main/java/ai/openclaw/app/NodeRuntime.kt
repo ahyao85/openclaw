@@ -3263,6 +3263,7 @@ class NodeRuntime private constructor(
   val chatQuestions: StateFlow<List<ChatQuestionPrompt>> = chat.questions
   val chatProgressCard: StateFlow<ChatProgressCard?> = chat.progressCard
   val chatSessions: StateFlow<List<ChatSessionEntry>> = chat.sessions
+  val chatSessionListCount = chat.sessionListCount
   val chatSwarmGroups: StateFlow<List<ChatSwarmGroup>> = chat.swarmGroups
   val chatSessionBranches: StateFlow<List<SessionBranch>> = chat.sessionBranches
   val chatSessionBranchesLoading: StateFlow<Boolean> = chat.sessionBranchesLoading
@@ -4065,8 +4066,12 @@ class NodeRuntime private constructor(
     talkMode.acknowledgeFailure(notice)
   }
 
-  fun setTalkModeEnabled(value: Boolean) {
-    setVoiceCaptureMode(if (value) VoiceCaptureMode.TalkMode else VoiceCaptureMode.Off)
+  fun setTalkModeEnabled(
+    value: Boolean,
+    sessionKey: String? = null,
+    canonicalSessionKey: String? = sessionKey,
+  ) {
+    setVoiceCaptureMode(if (value) VoiceCaptureMode.TalkMode else VoiceCaptureMode.Off, talkSessionKey = sessionKey, talkCanonicalSessionKey = canonicalSessionKey)
   }
 
   private suspend fun handleTalkPttStart(): GatewaySession.InvokeResult =
@@ -4566,6 +4571,8 @@ class NodeRuntime private constructor(
   private fun setVoiceCaptureMode(
     mode: VoiceCaptureMode,
     persistManualMic: Boolean = true,
+    talkSessionKey: String? = null,
+    talkCanonicalSessionKey: String? = talkSessionKey,
   ) {
     var startAfterSuppression: VoiceCaptureMode? = null
     var ownershipEpoch = 0L
@@ -4652,7 +4659,7 @@ class NodeRuntime private constructor(
         if (voiceCaptureOwnershipEpoch.get() != ownershipEpoch || _voiceCaptureMode.value != startAfterSuppression) return@launch
         when (startAfterSuppression) {
           VoiceCaptureMode.ManualMic -> micCapture.setMicEnabled(true)
-          VoiceCaptureMode.TalkMode -> talkMode.setEnabled(true)
+          VoiceCaptureMode.TalkMode -> talkMode.setEnabled(true, sessionKey = talkSessionKey, canonicalSessionKey = talkCanonicalSessionKey)
           else -> Unit
         }
       }
@@ -5869,6 +5876,33 @@ class NodeRuntime private constructor(
     synchronized(gatewayDataScopeLock) {
       applyChatSessionSelection(sessionKey, ownerAgentId)
     }
+  }
+
+  /** Home selects the agent's Gateway main chat, not Android's device-owned session. */
+  fun openMainChat(startTalk: Boolean = false) {
+    synchronized(gatewayDataScopeLock) {
+      val agentId = mainChatAgentId()
+      val sessionKey = mainChatSessionKey()
+      // Use explicit selection so pending agent/catalog lookups cannot undo Home.
+      // Device-session adoption and Talk retain their existing main-session binding.
+      applyChatSessionSelection(sessionKey, agentId)
+      if (startTalk) {
+        // Talk has no agentId field: qualify the main alias before the Gateway
+        // canonicalizes global scope so it cannot select an ambient Talk owner.
+        val talkKey = "agent:$agentId:${normalizeMainKey(operatorSession.sessionRouting?.mainKey)}"
+        setTalkModeEnabled(false)
+        setTalkModeEnabled(true, sessionKey = talkKey, canonicalSessionKey = sessionKey)
+      }
+    }
+  }
+
+  private fun mainChatAgentId(): String =
+    chatSessionOwnerAgentId.value ?: gatewayDefaultAgentId.value
+      ?: resolveAgentIdFromMainSessionKey(operatorSession.sessionRouting?.mainSessionKey) ?: resolveActiveAgentId().ifEmpty { "main" }
+
+  fun mainChatSessionKey(): String {
+    val routing = operatorSession.sessionRouting
+    return if (routing?.mainSessionKey == "global") "global" else "agent:${mainChatAgentId()}:${normalizeMainKey(routing?.mainKey)}"
   }
 
   private fun applyChatSessionSelection(

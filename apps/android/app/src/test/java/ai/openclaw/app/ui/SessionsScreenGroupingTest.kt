@@ -20,7 +20,7 @@ class SessionsScreenGroupingTest {
           label = "Manual name",
           displayName = "Generated title",
         ),
-      ) { "Main thread" },
+      ) { "Main session" },
     )
     assertEquals(
       "OpenClaw App · Release planning",
@@ -31,13 +31,13 @@ class SessionsScreenGroupingTest {
           label = "OpenClaw App · Release planning",
           displayName = "Generated title",
         ),
-      ) { "Main thread" },
+      ) { "Main session" },
     )
     assertEquals(
       "Generated title",
       sessionPresentationTitle(
         ChatSessionEntry(key = dashboardKey, updatedAtMs = null, displayName = "Generated title", localFallbackTitle = "Local device"),
-      ) { "Main thread" },
+      ) { "Main session" },
     )
     assertEquals(
       "Generated title",
@@ -49,7 +49,7 @@ class SessionsScreenGroupingTest {
           displayName = "Generated title",
           localFallbackTitle = "Local device",
         ),
-      ) { "Main thread" },
+      ) { "Main session" },
     )
     assertEquals(
       "OpenClaw App · Pixel · 1234567890ab",
@@ -60,7 +60,7 @@ class SessionsScreenGroupingTest {
           autoLabel = "OpenClaw App · Pixel · 1234567890ab",
           localFallbackTitle = "Local device",
         ),
-      ) { "Main thread" },
+      ) { "Main session" },
     )
     assertEquals(
       "Local device",
@@ -89,20 +89,20 @@ class SessionsScreenGroupingTest {
             displayName = "Generated title",
             localFallbackTitle = "Local device",
           ),
-        ) { "Main thread" },
+        ) { "Main session" },
       )
     }
     assertEquals(
-      "New chat",
-      sessionPresentationTitle(ChatSessionEntry(key = dashboardKey, updatedAtMs = null)) { "Main thread" },
+      "New session",
+      sessionPresentationTitle(ChatSessionEntry(key = dashboardKey, updatedAtMs = null)) { "Main session" },
     )
     assertEquals(
-      "Main thread",
-      sessionPresentationTitle(ChatSessionEntry(key = "agent:main:main", updatedAtMs = null)) { "Main thread" },
+      "Main session",
+      sessionPresentationTitle(ChatSessionEntry(key = "agent:main:main", updatedAtMs = null)) { "Main session" },
     )
     assertEquals(
-      "New chat",
-      sessionPresentationTitle(ChatSessionEntry(key = "agent:main:main", updatedAtMs = null)) { "New chat" },
+      "New session",
+      sessionPresentationTitle(ChatSessionEntry(key = "agent:main:main", updatedAtMs = null)) { "New session" },
     )
   }
 
@@ -290,7 +290,7 @@ class SessionsScreenGroupingTest {
       rows.single().descendantState,
     )
     assertEquals(
-      "Needs attention · Thread failed · Current thread · Running · Unread",
+      "Needs attention · Session failed · Current session · Running · Unread",
       rows.single().descendantState.presentationLabel(),
     )
   }

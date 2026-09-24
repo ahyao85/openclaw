@@ -216,7 +216,7 @@ class CommandPaletteLogicTest {
         "Start or continue a conversation",
         "Start Voice",
         "Talk or dictate with OpenClaw",
-        "Browse Threads",
+        "Browse Sessions",
         "Find previous conversations",
         "Providers & Models",
         "Connect Gateway to view providers",
@@ -293,14 +293,14 @@ class CommandPaletteLogicTest {
       query.performTextReplacement("no-matching-result")
       emptyActions.assertIsDisplayed()
       actions.assertIsDisplayed()
-      composeRule.onNodeWithText(nativeString("No matching threads yet.")).assertIsDisplayed()
+      composeRule.onNodeWithText(nativeString("No matching sessions yet.")).assertIsDisplayed()
       query.assertIsFocused().assertTextEquals("no-matching-result")
 
       query.performTextReplacement(nativeString("Appearance"))
       emptyActions.assertDoesNotExist()
       actions.assertIsDisplayed()
       composeRule.onNode(hasText(nativeString("Appearance")) and hasClickAction() and hasSetTextAction().not() and hasAnyAncestor(searchResults)).assertIsDisplayed()
-      composeRule.onNodeWithText(nativeString("No matching threads yet.")).assertIsDisplayed()
+      composeRule.onNodeWithText(nativeString("No matching sessions yet.")).assertIsDisplayed()
 
       query.performTextReplacement("")
       actions.assertIsDisplayed()
@@ -319,7 +319,7 @@ class CommandPaletteLogicTest {
       composeRule.onNodeWithContentDescription(nativeString("Search settings")).performClick()
       composeRule.onNode(hasSetTextAction()).performTextReplacement("no-matching-result")
       composeRule.onNodeWithText(nativeString("No actions found")).assertIsDisplayed()
-      composeRule.onNodeWithText(nativeString("Connect the Gateway to search threads.")).assertIsDisplayed()
+      composeRule.onNodeWithText(nativeString("Connect the Gateway to search sessions.")).assertIsDisplayed()
       composeRule.onNode(hasSetTextAction()).assertIsFocused()
       assertRuntimeUnchanged()
     }
@@ -450,7 +450,7 @@ class CommandPaletteLogicTest {
 
         fun assertResultActivity() {
           val labels =
-            listOf("Activity active" to if (queued) "Waiting for a concurrency slot" else "Assistant working", "Activity idle" to "OpenClaw thread", "Activity finished" to "OpenClaw thread") +
+            listOf("Activity active" to if (queued) "Waiting for a concurrency slot" else "Assistant working", "Activity idle" to "OpenClaw session", "Activity finished" to "OpenClaw session") +
               if (queued) listOf("Activity queued" to "Waiting for a concurrency slot") else emptyList()
           for ((title, subtitle) in labels) {
             composeRule

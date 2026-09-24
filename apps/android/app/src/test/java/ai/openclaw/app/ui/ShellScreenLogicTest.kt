@@ -439,78 +439,45 @@ class ShellScreenLogicTest {
   }
 
   @Test
-  fun overviewHeaderStateReflectsGatewayConnectionAndAttention() {
-    assertEquals(OverviewHeaderState("Offline", ClawStatus.Neutral), overviewHeaderState(isConnected = false, hasAttention = true))
-    assertEquals(OverviewHeaderState("Needs attention", ClawStatus.Warning), overviewHeaderState(isConnected = true, hasAttention = true))
-    assertEquals(OverviewHeaderState("Online", ClawStatus.Success), overviewHeaderState(isConnected = true, hasAttention = false))
-  }
-
-  @Test
-  fun overviewHeaderRouteUsesFirstAttentionDestination() {
-    assertEquals(SettingsRoute.Gateway, overviewHeaderRoute(emptyList()))
-    assertEquals(
-      SettingsRoute.Approvals,
-      overviewHeaderRoute(
-        listOf(
-          HomeAttentionRow("Approvals", "2 pending", Icons.Default.Settings, Tab.Settings, SettingsRoute.Approvals),
-          HomeAttentionRow("Nodes & Devices", "Review node access", Icons.Default.Settings, Tab.Settings, SettingsRoute.NodesDevices),
-        ),
-      ),
-    )
-  }
-
-  @Test
-  fun overviewMetricCardsUseRealGatewayNodeApprovalAndSessionCounts() {
-    val cards =
-      overviewMetricCardSpecs(
-        isConnected = true,
-        hasAttention = true,
-        nodesDevicesSummary =
-          GatewayNodesDevicesSummary(
-            nodes =
-              listOf(
-                GatewayNodeSummary(
-                  id = "android-node",
-                  displayName = "Android",
-                  remoteIp = null,
-                  version = null,
-                  deviceFamily = "Android",
-                  paired = true,
-                  connected = true,
-                  approvalState = GatewayNodeCapabilityApproval.PendingReapproval("node-request"),
-                  capabilities = emptyList(),
-                  commands = emptyList(),
-                ),
-              ),
-            pendingDevices = emptyList(),
-            pairedDevices = emptyList(),
-          ),
-        pendingApprovals = 2,
-        sessionCount = 4,
-      )
-
-    assertEquals(listOf("Gateway", "Nodes", "Approvals", "Threads", "Files"), cards.map { it.title })
-    assertEquals("Online", cards.single { it.title == "Gateway" }.value)
-    assertEquals("Review highlighted items", cards.single { it.title == "Gateway" }.subtitle)
-    assertEquals("1/1", cards.single { it.title == "Nodes" }.value)
-    assertEquals("Review node access", cards.single { it.title == "Nodes" }.subtitle)
-    assertEquals(ClawStatus.Warning, cards.single { it.title == "Nodes" }.status)
-    assertEquals(1f, cards.single { it.title == "Nodes" }.progressFraction ?: 0f, 0.001f)
-    assertEquals("2", cards.single { it.title == "Approvals" }.value)
-    assertEquals("4", cards.single { it.title == "Threads" }.value)
-    assertEquals("Browse", cards.single { it.title == "Files" }.value)
-    assertEquals(Tab.Files, cards.single { it.title == "Files" }.tab)
-  }
-
-  @Test
-  fun overviewRecentSessionCountIgnoresRetainedRowsOutsideTheRecentWindow() {
+  fun overviewRecentSessionsAreNotCappedBeforeTheDisplayChoosesItsPreview() {
     val sessions =
       (1..51).map { index ->
         ChatSessionEntry(key = "session-$index", updatedAtMs = index.toLong())
       }
 
-    assertEquals(50, overviewRecentSessionCount(sessions))
-    assertEquals((51 downTo 2).map { "session-$it" }, overviewRecentSessions(sessions).map { it.key })
+    assertEquals(51, overviewRecentSessions(sessions).size)
+    assertEquals((51 downTo 1).map { "session-$it" }, overviewRecentSessions(sessions).map { it.key })
+  }
+
+  @Test
+  fun overviewRecentsExcludeCanonicalMainArchivedAndOtherAgents() {
+    val sessions =
+      listOf(
+        ChatSessionEntry(key = "agent:scout:primary", ownerAgentId = "scout", updatedAtMs = 100),
+        ChatSessionEntry(key = "main", ownerAgentId = "scout", updatedAtMs = 99),
+        ChatSessionEntry(key = "agent:scout:archived", archived = true, updatedAtMs = 98),
+        ChatSessionEntry(key = "agent:writer:other", ownerAgentId = "writer", updatedAtMs = 97),
+        ChatSessionEntry(key = "global", ownerAgentId = "writer", updatedAtMs = 96),
+        ChatSessionEntry(key = "agent:scout:node-phone", ownerAgentId = "scout", updatedAtMs = 2),
+        ChatSessionEntry(key = "agent:scout:recent", ownerAgentId = "scout", updatedAtMs = 1),
+      )
+    assertEquals(listOf("agent:scout:node-phone", "agent:scout:recent"), overviewRecentSessions(sessions, "agent:scout:primary", "scout").map { it.key })
+    assertEquals(emptyList<ChatSessionEntry>(), overviewRecentSessions(listOf(sessions[4]), "global", "writer"))
+  }
+
+  @Test
+  fun overviewWarningsIncludeAutomationFailuresWithoutDiscardingOtherWarnings() {
+    fun job(
+      id: String,
+      enabled: Boolean,
+      next: Long?,
+      status: String?,
+    ) = ai.openclaw.app.GatewayCronJobSummary(id, id, enabled, verbatimText("Daily"), verbatimText(""), next, status)
+    val jobs = listOf(job("failed", true, 200, "error"), job("overdue", true, 50, "ok"), job("disabled", false, 20, "error"))
+
+    fun rows(jobs: List<ai.openclaw.app.GatewayCronJobSummary>) = homeAttentionRows(true, 2, emptyChannels(), emptyNodesDevices(), 0, cronJobs = jobs, nowMs = 100)
+    assertEquals(listOf(SettingsRoute.Approvals, SettingsRoute.CronJobs, SettingsRoute.ProvidersModels), rows(jobs).map { it.settingsRoute })
+    assertEquals(listOf(SettingsRoute.Approvals, SettingsRoute.ProvidersModels), rows(jobs.takeLast(1)).map { it.settingsRoute })
   }
 
   @Test
@@ -578,104 +545,6 @@ class ShellScreenLogicTest {
   }
 
   @Test
-  fun stableOverviewRecentRowsKeepPreviousMetadataDuringPartialRefresh() {
-    val rows =
-      stableOverviewRecentRows(
-        previousRows =
-          listOf(
-            RecentSessionListItem(key = "main", title = "Main session", source = "OpenClaw", metadata = "1h"),
-          ),
-        candidateRows =
-          listOf(
-            RecentSessionListItem(key = "main", title = "Main session", source = "OpenClaw", metadata = ""),
-          ),
-      )
-
-    assertEquals("1h", rows.single().metadata)
-  }
-
-  @Test
-  fun stableOverviewRecentRowsFollowCandidateRows() {
-    val rows =
-      stableOverviewRecentRows(
-        previousRows =
-          listOf(
-            RecentSessionListItem(key = "main", title = "Main session", source = "OpenClaw", metadata = "1h"),
-            RecentSessionListItem(key = "discord", title = "Discord", source = "Discord", metadata = "2h"),
-          ),
-        candidateRows =
-          listOf(
-            RecentSessionListItem(key = "main", title = "Main session", source = "OpenClaw", metadata = "1h"),
-            RecentSessionListItem(key = "cron", title = "Cron", source = "Cron", metadata = "4h"),
-          ),
-      )
-
-    assertEquals(listOf("main", "cron"), rows.map { row -> row.key })
-  }
-
-  @Test
-  fun overviewNodeCardShowsRoundedOnlinePercentWhenNoNodeApprovalIsPending() {
-    val cards =
-      overviewMetricCardSpecs(
-        isConnected = true,
-        hasAttention = false,
-        nodesDevicesSummary =
-          GatewayNodesDevicesSummary(
-            nodes =
-              (1..3).map { index ->
-                GatewayNodeSummary(
-                  id = "node-$index",
-                  displayName = "Node $index",
-                  remoteIp = null,
-                  version = null,
-                  deviceFamily = null,
-                  paired = true,
-                  connected = index <= 2,
-                  approvalState = GatewayNodeCapabilityApproval.Approved,
-                  capabilities = emptyList(),
-                  commands = emptyList(),
-                )
-              },
-            pendingDevices = emptyList(),
-            pairedDevices = emptyList(),
-          ),
-        pendingApprovals = 0,
-        sessionCount = 0,
-      )
-
-    val nodes = cards.single { it.title == "Nodes" }
-    assertEquals("2/3", nodes.value)
-    assertEquals("67% online", nodes.subtitle)
-    assertEquals(2f / 3f, nodes.progressFraction ?: 0f, 0.001f)
-  }
-
-  @Test
-  fun overviewGatewayCardDoesNotClaimHealthWhenProviderAvailabilityIsUnknown() {
-    val attentionRows =
-      homeAttentionRows(
-        isConnected = true,
-        pendingApprovals = 0,
-        channelsSummary = emptyChannels(),
-        nodesDevicesSummary = emptyNodesDevices(),
-        readyProviderCount = 0,
-        unknownProviderCount = 1,
-      )
-    val cards =
-      overviewMetricCardSpecs(
-        isConnected = true,
-        hasAttention = attentionRows.isNotEmpty(),
-        nodesDevicesSummary = emptyNodesDevices(),
-        pendingApprovals = 0,
-        sessionCount = 0,
-      )
-
-    val gateway = cards.single { it.title == "Gateway" }
-    assertEquals("Online", gateway.value)
-    assertEquals("No highlighted items", gateway.subtitle)
-    assertEquals(ClawStatus.Success, gateway.status)
-  }
-
-  @Test
   fun overviewAgentNameUsesDefaultAgentWhenPresent() {
     val agents =
       listOf(
@@ -706,22 +575,6 @@ class ShellScreenLogicTest {
       ),
     )
     assertEquals("OC", overviewAgentBadgeText(agents = emptyList(), defaultAgentId = null))
-  }
-
-  @Test
-  fun overviewAgentActivityTextUsesRealRuntimeCounts() {
-    assertEquals(
-      "Working · 2 active runs",
-      overviewAgentActivityText(isConnected = true, pendingRunCount = 2, sessionCount = 50, cronJobCount = 19, statusText = "Online and ready"),
-    )
-    assertEquals(
-      "Monitoring · 50 threads",
-      overviewAgentActivityText(isConnected = true, pendingRunCount = 0, sessionCount = 50, cronJobCount = 19, statusText = "Online and ready"),
-    )
-    assertEquals(
-      "Gateway offline",
-      overviewAgentActivityText(isConnected = false, pendingRunCount = 0, sessionCount = 50, cronJobCount = 19, statusText = "Gateway offline"),
-    )
   }
 
   @Test

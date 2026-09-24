@@ -27,7 +27,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
@@ -40,15 +42,18 @@ import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isPopup
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Density
@@ -374,15 +379,36 @@ class ScreenTypographyLayoutTest {
   }
 
   @Test
-  fun threadsKeepPageHierarchyAndReadableRowCaptions() {
+  fun sessionsKeepHierarchyAndOptionsControlExistingSortAndLayout() {
     show { SessionsScreen(model, showSidebarButton = false, onOpenSidebar = {}, onOpenChat = {}) }
     capture("threads-dark")
-    assertTextStyle("Threads", type.display)
+    assertTextStyle("Sessions", type.display)
     assertPhoneGutter()
     composeRule.onNodeWithText(AndroidScreenshotFixture.primarySessionTitle).performScrollTo().assertIsDisplayed()
-    assertTextStyle(composeRule.onAllNodesWithText("OpenClaw thread", useUnmergedTree = true)[0], type.caption)
-    composeRule.onNodeWithContentDescription("Toggle thread layout").performScrollTo().performClick()
-    composeRule.onNodeWithText("Layout: Compact").assertIsDisplayed()
+    assertTextStyle(composeRule.onAllNodesWithText("OpenClaw session", useUnmergedTree = true)[0], type.caption)
+    composeRule.onNodeWithContentDescription("Session options").performScrollTo().performClick()
+    composeRule.onNodeWithText("Newest first").assertIsSelected()
+    composeRule.onNodeWithText("Detailed").assertIsSelected()
+    composeRule.onNodeWithText("Compact").performClick()
+    composeRule.onNodeWithContentDescription("Session options").performClick()
+    composeRule.onNodeWithText("Compact").assertIsSelected()
+    composeRule.onNodeWithText("Oldest first").performClick()
+    composeRule.onNodeWithContentDescription("Session options").performClick()
+    composeRule.onNodeWithText("Oldest first").assertIsSelected()
+    composeRule.onNodeWithText("Compact").assertIsSelected()
+    capture("sessions-options", popup = true)
+    composeRule.onNodeWithText("Detailed").performClick()
+    composeRule.onNodeWithText("Layout: Compact").assertDoesNotExist()
+    composeRule.onNodeWithContentDescription("Focus session search").assertDoesNotExist()
+    val search = composeRule.onNodeWithTag("session-search").getUnclippedBoundsInRoot()
+    val recent = composeRule.onNodeWithText("Recent").getUnclippedBoundsInRoot()
+    assertTrue("Filters follow the search row", recent.top >= search.bottom)
+    composeRule.onNodeWithTag("session-search").performTextInput("Android release")
+    composeRule.onNodeWithContentDescription("Clear session search").performClick()
+    composeRule.onNode(hasText("Current") and SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Tab)).performClick().assertIsSelected()
+    composeRule.onNodeWithText("Archived").performClick().assertIsSelected()
+    composeRule.onNodeWithText("Recent").performClick()
+    capture("sessions-header")
   }
 
   @Test
@@ -412,7 +438,7 @@ class ScreenTypographyLayoutTest {
   fun threadsRetainHeadingHierarchyInLightMode() {
     show(dark = false) { SessionsScreen(model, showSidebarButton = false, onOpenSidebar = {}, onOpenChat = {}) }
     capture("threads-light")
-    assertTextStyle("Threads", type.display)
+    assertTextStyle("Sessions", type.display)
   }
 
   @Test
@@ -453,13 +479,20 @@ class ScreenTypographyLayoutTest {
     assertEquals("Locale cleanup must restore the following screens' language", "Health", nativeString("Health"))
   }
 
-  private fun capture(name: String) {
+  private fun capture(
+    name: String,
+    popup: Boolean = false,
+  ) {
     val directory = System.getenv("OPENCLAW_TYPOGRAPHY_PROOF_DIR") ?: return
     val target = File(directory, "$name.png")
     check(!target.exists()) { "Proof captures must not overwrite an earlier image" }
     requireNotNull(target.parentFile).mkdirs()
-    val image = composeRule.onRoot().captureToImage().asAndroidBitmap()
-    assertTrue("Capture must contain the full phone viewport", image.width in listOf(320, 360) && image.height > 600)
+    val image = (if (popup) composeRule.onNode(isPopup()) else composeRule.onRoot()).captureToImage().asAndroidBitmap()
+    if (popup) {
+      assertTrue("Capture must contain the options menu", image.width > 0 && image.height > 0)
+    } else {
+      assertTrue("Capture must contain the full phone viewport", image.width in listOf(320, 360) && image.height > 600)
+    }
     target.outputStream().use { assertTrue(image.compress(Bitmap.CompressFormat.PNG, 100, it)) }
   }
 

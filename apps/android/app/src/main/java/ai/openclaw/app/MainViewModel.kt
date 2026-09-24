@@ -692,6 +692,7 @@ class MainViewModel private constructor(
   val chatQuestions: StateFlow<List<ChatQuestionPrompt>> = runtimeState(initial = emptyList()) { it.chatQuestions }
   val chatProgressCard: StateFlow<ChatProgressCard?> = runtimeState(initial = null) { it.chatProgressCard }
   val chatSessions: StateFlow<List<ChatSessionEntry>> = runtimeState(initial = emptyList()) { it.chatSessions }
+  val chatSessionListCount = runtimeState<ai.openclaw.app.chat.ChatSessionListCount?>(initial = null) { it.chatSessionListCount }
   val chatSwarmGroups: StateFlow<List<ChatSwarmGroup>> = runtimeState(initial = emptyList()) { it.chatSwarmGroups }
   val chatSessionBranches: StateFlow<List<SessionBranch>> = runtimeState(initial = emptyList()) { it.chatSessionBranches }
   val chatSessionBranchesLoading: StateFlow<Boolean> = runtimeState(initial = false) { it.chatSessionBranchesLoading }
@@ -2054,6 +2055,12 @@ class MainViewModel private constructor(
       ?.takeIf { it.isNotEmpty() }
       ?.let(::selectChatAgent)
     handleAssistantLaunch(AssistantLaunchRequest(source = "system-agent", prompt = null, autoSend = false))
+  }
+
+  fun mainChatSessionKey(): String? = runtimeRef.value?.mainChatSessionKey()
+
+  fun openMainChat(startTalk: Boolean = false) {
+    ensureRuntime().openMainChat(startTalk)
   }
 
   fun selectChatAgent(agentId: String) {

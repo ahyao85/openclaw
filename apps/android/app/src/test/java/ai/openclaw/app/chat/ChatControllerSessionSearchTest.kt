@@ -55,6 +55,112 @@ class ChatControllerSessionSearchTest {
       ?.content
 
   @Test
+  fun sessionCountUsesDistinctRowsAuthoritativeTotalsAndHonestPartialBounds() =
+    runTest {
+      val gateway = ScriptedGateway(json)
+      var response = ""
+      gateway.respond("sessions.list") { response }
+      val controller = newController(gateway)
+
+      fun page(
+        size: Int,
+        total: Long? = null,
+        hasMore: Boolean? = null,
+        duplicate: Boolean = false,
+      ): String =
+        buildJsonObject {
+          val rows = (1..size).map { sessionRowJson("agent:main:row-$it", it.toLong()) }
+          put("sessions", JsonArray(if (duplicate) rows + rows.first() else rows))
+          total?.let { put("totalCount", JsonPrimitive(it)) }
+          hasMore?.let { put("hasMore", JsonPrimitive(it)) }
+        }.toString()
+      for ((payload, expected) in listOf(
+        page(75, duplicate = true) to ChatSessionListCount(75, false, "main", false),
+        page(200, hasMore = true) to ChatSessionListCount(200, true, "main", false),
+        page(200) to ChatSessionListCount(200, true, "main", false),
+        page(200, total = 420, hasMore = true) to ChatSessionListCount(420, false, "main", false),
+        page(200, hasMore = false) to ChatSessionListCount(200, false, "main", false),
+      )) {
+        response = payload
+        controller.refreshSessions(limit = SESSION_LIST_FETCH_LIMIT)
+        advanceUntilIdle()
+        assertEquals(expected, controller.sessionListCount.value)
+      }
+    }
+
+  @Test
+  fun loadedCountIncludesRetainedSelectedRowButDoesNotAddItToServerTotal() =
+    runTest {
+      val gateway = ScriptedGateway(json)
+      val selected = "agent:main:selected"
+      gateway.respondWith("chat.history", """{"sessionId":"selected-id","messages":[],"sessionInfo":{"key":"$selected"}}""")
+      var response = sessionsListJson(sessionRowJson(selected, 100))
+      gateway.respond("sessions.list") { response }
+      val controller = newController(gateway)
+      controller.load(selected)
+      advanceUntilIdle()
+      val page = listOf(sessionRowJson("agent:main:one", 2), sessionRowJson("agent:main:two", 1))
+      response =
+        buildJsonObject {
+          put("sessions", JsonArray(page))
+          put("hasMore", JsonPrimitive(false))
+        }.toString()
+      controller.refreshSessions(limit = 200)
+      advanceUntilIdle()
+      assertEquals(3, controller.sessions.value.size)
+      assertEquals(ChatSessionListCount(3, false, "main", false), controller.sessionListCount.value)
+      response =
+        buildJsonObject {
+          put("sessions", JsonArray(page))
+          put("hasMore", JsonPrimitive(true))
+          put("totalCount", JsonPrimitive(500))
+        }.toString()
+      controller.refreshSessions(limit = 2)
+      advanceUntilIdle()
+      assertEquals(ChatSessionListCount(500, false, "main", false), controller.sessionListCount.value)
+    }
+
+  @Test
+  fun sessionCountRejectsLateListFromPreviousAgentAndGateway() =
+    runTest {
+      var owner = ChatCacheScope("gateway-a", 1)
+      val release = CompletableDeferred<Unit>()
+      val started = CompletableDeferred<Unit>()
+      var first = true
+      val controller =
+        backgroundScope.createChatController(
+          requestGateway = { method, _ ->
+            if (method == "sessions.list") {
+              if (first) {
+                first = false
+                started.complete(Unit)
+                release.await()
+                """{"sessions":[],"totalCount":900,"hasMore":true}"""
+              } else {
+                """{"sessions":[],"totalCount":7,"hasMore":true}"""
+              }
+            } else {
+              "{}"
+            }
+          },
+          cacheScope = { owner },
+        )
+      controller.switchSession("agent:scout:main", "scout")
+      runCurrent()
+      controller.refreshSessions(limit = SESSION_LIST_FETCH_LIMIT)
+      runCurrent()
+      started.await()
+      owner = ChatCacheScope("gateway-b", 2)
+      controller.onGatewayScopeChanging()
+      controller.switchSession("agent:writer:main", "writer")
+      controller.refreshSessions(limit = SESSION_LIST_FETCH_LIMIT)
+      runCurrent()
+      release.complete(Unit)
+      runCurrent()
+      assertEquals(ChatSessionListCount(7, false, "writer", false), controller.sessionListCount.value)
+    }
+
+  @Test
   fun filterSessionEntriesMatchesDisplayNameLabelCategoryKeyAndLocalTitle() {
     val sessions =
       listOf(

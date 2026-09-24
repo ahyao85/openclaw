@@ -1,6 +1,7 @@
 package ai.openclaw.app.ui
 
 import ai.openclaw.app.MainViewModel
+import ai.openclaw.app.R
 import ai.openclaw.app.chat.ChatSessionEntry
 import ai.openclaw.app.chat.isSessionRunActive
 import ai.openclaw.app.i18n.nativeString
@@ -19,6 +20,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -28,7 +30,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -39,17 +40,14 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.StarBorder
-import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.outlined.AccessTime
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
-import androidx.compose.material.icons.outlined.MicNone
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -72,12 +70,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.vectorResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
@@ -96,8 +96,6 @@ internal fun SessionsScreen(
   val activeGatewayStableId by viewModel.activeGatewayStableId.collectAsState()
   val isConnected by viewModel.isConnected.collectAsState()
   val coroutineScope = rememberCoroutineScope()
-  val searchFocusRequester = remember { FocusRequester() }
-  val keyboardController = LocalSoftwareKeyboardController.current
   var filter by rememberSaveable { mutableStateOf(SessionFilter.Recent) }
   var compactLayout by rememberSaveable { mutableStateOf(false) }
   var recentFirst by rememberSaveable { mutableStateOf(true) }
@@ -194,111 +192,77 @@ internal fun SessionsScreen(
               modifier = Modifier.testTag("sidebar-open-sessions"),
             )
           }
-          Text(text = nativeString("Threads"), style = ClawTheme.type.display, color = ClawTheme.colors.text, modifier = Modifier.weight(1f))
-          ClawPlainIconButton(
-            icon = Icons.Default.Search,
-            contentDescription = nativeString("Focus thread search"),
-            onClick = {
-              searchFocusRequester.requestFocus()
-              keyboardController?.show()
+          Text(text = nativeString("Sessions"), style = ClawTheme.type.display, color = ClawTheme.colors.text, modifier = Modifier.weight(1f))
+        }
+      }
+
+      item {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs)) {
+          OutlinedTextField(
+            value = searchText,
+            onValueChange = { searchText = it },
+            modifier = Modifier.weight(1f).testTag("session-search"),
+            placeholder = { Text(text = nativeString("Search sessions"), style = ClawTheme.type.body, color = ClawTheme.colors.textMuted) },
+            singleLine = true,
+            trailingIcon = {
+              if (searchText.isNotEmpty()) {
+                IconButton(onClick = { searchText = "" }) {
+                  Icon(imageVector = Icons.Default.Close, contentDescription = nativeString("Clear session search"))
+                }
+              }
             },
           )
-        }
-      }
-
-      item {
-        Row(horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxxs)) {
-          FilterPill(text = nativeString("Recent"), icon = Icons.Outlined.AccessTime, active = filter == SessionFilter.Recent, onClick = { filter = SessionFilter.Recent })
-          FilterPill(text = nativeString("Current"), icon = Icons.Outlined.MicNone, active = filter == SessionFilter.Current, showDot = sessions.any { it.key == chatSessionKey }, onClick = { filter = SessionFilter.Current })
-          FilterPill(text = nativeString("Archived"), icon = Icons.Outlined.Archive, active = filter == SessionFilter.Archived, onClick = { filter = SessionFilter.Archived })
-        }
-      }
-
-      item {
-        OutlinedTextField(
-          value = searchText,
-          onValueChange = { searchText = it },
-          modifier = Modifier.fillMaxWidth().focusRequester(searchFocusRequester),
-          placeholder = { Text(text = nativeString("Search threads"), style = ClawTheme.type.body, color = ClawTheme.colors.textMuted) },
-          singleLine = true,
-          trailingIcon = {
-            if (searchText.isNotEmpty()) {
-              IconButton(onClick = { searchText = "" }) {
-                Icon(imageVector = Icons.Default.Close, contentDescription = nativeString("Clear thread search"))
-              }
-            }
-          },
-        )
-      }
-
-      item {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
-          Surface(
-            modifier = Modifier.widthIn(min = 140.dp, max = 180.dp).heightIn(min = 36.dp),
-            shape = RoundedCornerShape(ClawTheme.radii.row),
-            color = Color.Transparent,
-            contentColor = ClawTheme.colors.textMuted,
-            border = BorderStroke(1.dp, ClawTheme.colors.border),
-          ) {
-            Column {
-              Surface(
-                onClick = { sortMenuExpanded = !sortMenuExpanded },
-                color = Color.Transparent,
-                contentColor = ClawTheme.colors.textMuted,
-              ) {
-                Row(
-                  modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxxs),
-                ) {
-                  val sortOrder =
-                    if (recentFirst) {
-                      nativeString("Newest first")
-                    } else {
-                      nativeString("Oldest first")
-                    }
-                  Text(
-                    text = nativeString("Sort: \$sortOrder", sortOrder),
-                    style = ClawTheme.type.body,
-                    color = ClawTheme.colors.textMuted,
-                  )
-                  Icon(
-                    imageVector = if (sortMenuExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                    contentDescription = null,
-                    modifier = Modifier.size(13.dp),
-                    tint = ClawTheme.colors.textMuted,
-                  )
-                }
-              }
-              if (sortMenuExpanded) {
-                HorizontalDivider(color = ClawTheme.colors.border, thickness = 1.dp)
-                listOf(true to nativeString("Newest first"), false to nativeString("Oldest first")).forEach { (value, label) ->
-                  Surface(
-                    onClick = {
-                      recentFirst = value
-                      sortMenuExpanded = false
+          Box {
+            ClawPlainIconButton(
+              icon = ImageVector.vectorResource(R.drawable.ic_web_sliders_horizontal),
+              contentDescription = nativeString("Session options"),
+              onClick = { sortMenuExpanded = !sortMenuExpanded },
+            )
+            AppDropdownMenu(expanded = sortMenuExpanded, onDismissRequest = { sortMenuExpanded = false }) {
+              Text(nativeString("Sort"), Modifier.padding(horizontal = 12.dp, vertical = 8.dp), style = ClawTheme.type.section, color = ClawTheme.colors.textMuted)
+              listOf(true to nativeString("Newest first"), false to nativeString("Oldest first")).forEach { (value, label) ->
+                DropdownMenuItem(
+                  text = { Text(label, style = ClawTheme.type.body) },
+                  trailingIcon = { if (recentFirst == value) Icon(Icons.Default.Check, null) },
+                  modifier =
+                    Modifier.semantics {
+                      selected = recentFirst == value
+                      role = Role.RadioButton
                     },
-                    modifier = Modifier.fillMaxWidth(),
-                    color = Color.Transparent,
-                    contentColor = if (recentFirst == value) ClawTheme.colors.text else ClawTheme.colors.textMuted,
-                  ) {
-                    Text(
-                      text = label,
-                      modifier = Modifier.padding(horizontal = 9.dp, vertical = 8.dp),
-                      style = ClawTheme.type.body,
-                      color = if (recentFirst == value) ClawTheme.colors.text else ClawTheme.colors.textMuted,
-                    )
-                  }
-                }
+                  onClick = {
+                    recentFirst = value
+                    sortMenuExpanded = false
+                  },
+                )
+              }
+              HorizontalDivider(color = ClawTheme.colors.border)
+              Text(nativeString("Layout"), Modifier.padding(horizontal = 12.dp, vertical = 8.dp), style = ClawTheme.type.section, color = ClawTheme.colors.textMuted)
+              listOf(true to nativeString("Compact"), false to nativeString("Detailed")).forEach { (value, label) ->
+                DropdownMenuItem(
+                  text = { Text(label, style = ClawTheme.type.body) },
+                  trailingIcon = { if (compactLayout == value) Icon(Icons.Default.Check, null) },
+                  modifier =
+                    Modifier.semantics {
+                      selected = compactLayout == value
+                      role = Role.RadioButton
+                    },
+                  onClick = {
+                    compactLayout = value
+                    sortMenuExpanded = false
+                  },
+                )
               }
             }
           }
-          SessionOutlineIconButton(icon = Icons.Default.Storage, contentDescription = nativeString("Toggle thread layout"), onClick = { compactLayout = !compactLayout })
         }
       }
 
       item {
-        Text(text = if (compactLayout) nativeString("Layout: Compact") else nativeString("Layout: Detailed"), style = ClawTheme.type.caption, color = ClawTheme.colors.textSubtle)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxxs), verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxxs)) {
+          FilterPill(text = nativeString("Recent"), icon = Icons.Outlined.AccessTime, active = filter == SessionFilter.Recent, onClick = { filter = SessionFilter.Recent })
+          FilterPill(text = nativeString("Current"), icon = ImageVector.vectorResource(R.drawable.ic_web_radio), active = filter == SessionFilter.Current, showDot = sessions.any { it.key == chatSessionKey }, onClick = { filter = SessionFilter.Current })
+          FilterPill(text = nativeString("Archived"), icon = Icons.Outlined.Archive, active = filter == SessionFilter.Archived, onClick = { filter = SessionFilter.Archived })
+        }
       }
 
       if (visibleSessions.isEmpty()) {
@@ -309,12 +273,12 @@ internal fun SessionsScreen(
           ) {
             when (sessionEmptyMode(searchState.query, searchState.loading)) {
               SessionEmptyMode.SearchLoading -> {
-                ClawLoadingState(title = nativeString("Searching threads"))
+                ClawLoadingState(title = nativeString("Searching sessions"))
               }
 
               SessionEmptyMode.SearchNoMatches -> {
                 ClawEmptyState(
-                  title = nativeString("No matching threads"),
+                  title = nativeString("No matching sessions"),
                   body = nativeString("Try a different search or clear the current query."),
                   action = { ClawPrimaryButton(text = nativeString("Clear Search"), onClick = { searchText = "" }) },
                 )
@@ -360,12 +324,12 @@ internal fun SessionsScreen(
               treeEntry.descendantState.presentationLabel().takeIf { descendantsCollapsed }
             SessionRow(
               session = session,
-              title = sessionPresentationTitle(session) { nativeString("Main thread") },
+              title = sessionPresentationTitle(session) { nativeString("Main session") },
               subtitle =
                 collapsedDescendantLabel
                   ?: sessionListSubtitle(
                     session,
-                    fallback = if (active) nativeString("Current thread") else nativeString("OpenClaw thread"),
+                    fallback = if (active) nativeString("Current session") else nativeString("OpenClaw session"),
                     nowMs = sessionStatusNowMs,
                   ),
               metadata = (session.lastActivityAt ?: session.updatedAtMs)?.let(::relativeSessionTime) ?: nativeString("now"),
@@ -455,7 +419,7 @@ internal fun SessionsScreen(
 
   renameSessionTarget?.let { session ->
     SessionTextDialog(
-      title = nativeString("Rename thread"),
+      title = nativeString("Rename session"),
       stateKey = session.stateKey,
       initialValue = session.label ?: session.displayName.orEmpty(),
       confirmLabel = nativeString("Rename"),
@@ -535,7 +499,7 @@ internal fun SessionsScreen(
       onDismissRequest = { deleteGroupName = null },
       containerColor = ClawTheme.colors.surfaceRaised,
       title = { Text(nativeString("Delete group?"), style = ClawTheme.type.section, color = ClawTheme.colors.text) },
-      text = { Text(nativeString("Threads in \"\$group\" are kept and move back to Ungrouped.", group), style = ClawTheme.type.body, color = ClawTheme.colors.textMuted) },
+      text = { Text(nativeString("Sessions in \"\$group\" are kept and move back to Ungrouped.", group), style = ClawTheme.type.body, color = ClawTheme.colors.textMuted) },
       confirmButton = {
         TextButton(
           onClick = {
@@ -558,8 +522,8 @@ internal fun SessionsScreen(
     AppAlertDialog(
       onDismissRequest = { deleteSessionTarget = null },
       containerColor = ClawTheme.colors.surfaceRaised,
-      title = { Text(nativeString("Delete thread?"), style = ClawTheme.type.section, color = ClawTheme.colors.text) },
-      text = { Text(nativeString("This permanently deletes the thread and its transcript."), style = ClawTheme.type.body, color = ClawTheme.colors.textMuted) },
+      title = { Text(nativeString("Delete session?"), style = ClawTheme.type.section, color = ClawTheme.colors.text) },
+      text = { Text(nativeString("This permanently deletes the session and its transcript."), style = ClawTheme.type.body, color = ClawTheme.colors.textMuted) },
       confirmButton = {
         TextButton(
           onClick = {
@@ -590,6 +554,11 @@ private fun FilterPill(
   onClick: (() -> Unit)? = null,
 ) {
   Surface(
+    modifier =
+      Modifier.semantics {
+        selected = active
+        role = Role.Tab
+      },
     onClick = onClick ?: {},
     enabled = onClick != null,
     shape = RoundedCornerShape(7.dp),
@@ -952,26 +921,6 @@ private fun SessionTextDialog(
 }
 
 @Composable
-private fun SessionOutlineIconButton(
-  icon: ImageVector,
-  contentDescription: String,
-  onClick: () -> Unit,
-) {
-  Surface(
-    onClick = onClick,
-    modifier = Modifier.size(ClawTheme.spacing.touchTarget),
-    shape = RoundedCornerShape(7.dp),
-    color = Color.Transparent,
-    contentColor = ClawTheme.colors.text,
-    border = BorderStroke(1.dp, ClawTheme.colors.borderStrong),
-  ) {
-    Box(contentAlignment = Alignment.Center) {
-      Icon(imageVector = icon, contentDescription = contentDescription, modifier = Modifier.size(14.dp))
-    }
-  }
-}
-
-@Composable
 private fun SessionMiniTag(text: String) {
   Surface(
     shape = RoundedCornerShape(5.dp),
@@ -1137,9 +1086,9 @@ internal data class SessionDescendantState(
       if (hasAttention) {
         add(SessionDescendantSignal(nativeString("Needs attention"), Icons.Default.ErrorOutline, ClawTheme.colors.warning))
       }
-      if (hasFailure) add(SessionDescendantSignal(nativeString("Thread failed"), Icons.Default.Close, ClawTheme.colors.danger))
+      if (hasFailure) add(SessionDescendantSignal(nativeString("Session failed"), Icons.Default.Close, ClawTheme.colors.danger))
       if (containsCurrent) {
-        add(SessionDescendantSignal(nativeString("Current thread"), Icons.Default.StarBorder, ClawTheme.colors.success))
+        add(SessionDescendantSignal(nativeString("Current session"), Icons.Default.StarBorder, ClawTheme.colors.success))
       }
       if (hasRunning) add(SessionDescendantSignal(nativeString("Running"), Icons.Default.PlayArrow, ClawTheme.colors.success))
       if (hasUnread) {
@@ -1150,8 +1099,8 @@ internal data class SessionDescendantState(
   private fun presentationLabels(): List<String> =
     buildList {
       if (hasAttention) add(nativeString("Needs attention"))
-      if (hasFailure) add(nativeString("Thread failed"))
-      if (containsCurrent) add(nativeString("Current thread"))
+      if (hasFailure) add(nativeString("Session failed"))
+      if (containsCurrent) add(nativeString("Current session"))
       if (hasRunning) add(nativeString("Running"))
       if (hasUnread) add(nativeString("Unread"))
     }
@@ -1410,17 +1359,17 @@ internal fun sessionEmptyMode(
 /** Empty-state title selected by the active session browser filter. */
 private fun emptySessionTitle(filter: SessionFilter): String =
   when (filter) {
-    SessionFilter.Recent -> nativeString("No threads yet")
-    SessionFilter.Current -> nativeString("No current thread")
-    SessionFilter.Archived -> nativeString("No archived threads")
+    SessionFilter.Recent -> nativeString("No sessions yet")
+    SessionFilter.Current -> nativeString("No current session")
+    SessionFilter.Archived -> nativeString("No archived sessions")
   }
 
 /** Empty-state body selected by the active session browser filter. */
 private fun emptySessionBody(filter: SessionFilter): String =
   when (filter) {
     SessionFilter.Recent -> nativeString("Start a new conversation and it will show up here.")
-    SessionFilter.Current -> nativeString("Open Chat to start or resume the current thread.")
-    SessionFilter.Archived -> nativeString("Archived threads will show up here.")
+    SessionFilter.Current -> nativeString("Open Chat to start or resume the current session.")
+    SessionFilter.Archived -> nativeString("Archived sessions will show up here.")
   }
 
 /** Formats session timestamps for compact mobile metadata. */

@@ -232,10 +232,10 @@ class ChatScreenTest {
 
   @Test
   fun headerSessionTitleNeverExposesRoutingKeys() {
-    assertEquals("New chat", chatHeaderSessionTitle(session = null) { "New chat" })
+    assertEquals("New session", chatHeaderSessionTitle(session = null) { "New session" })
     assertEquals(
-      "New chat",
-      chatHeaderSessionTitle(ChatSessionEntry(key = "agent:main:main", updatedAtMs = null)) { "New chat" },
+      "New session",
+      chatHeaderSessionTitle(ChatSessionEntry(key = "agent:main:main", updatedAtMs = null)) { "New session" },
     )
     assertEquals(
       "Release planning",
@@ -246,7 +246,7 @@ class ChatScreenTest {
           displayName = "Release planning",
         ),
       ) {
-        "New chat"
+        "New session"
       },
     )
   }

@@ -133,7 +133,7 @@ internal fun SidebarDestination.localizedLabel(): String =
     SidebarDestination.Work -> nativeString("Overview")
     SidebarDestination.Home -> nativeString("Home")
     SidebarDestination.Skills -> nativeString("Skills")
-    SidebarDestination.Threads -> nativeString("Threads")
+    SidebarDestination.Threads -> nativeString("Sessions")
   }
 
 private enum class SidebarPagesMenuMode {
@@ -145,7 +145,7 @@ private enum class SidebarPagesMenuMode {
 internal fun orderedSidebarDestinations(pageIds: List<String>): List<SidebarDestination> {
   val byId = SidebarDestination.entries.associateBy(SidebarDestination::stableId)
   val supplied = pageIds.mapNotNull(byId::get).distinct()
-  return supplied + SidebarDestination.entries.filterNot(supplied::contains)
+  return supplied + defaultSidebarPageOrder.mapNotNull(byId::get).filterNot(supplied::contains)
 }
 
 internal fun moveSidebarDestination(
@@ -249,7 +249,7 @@ internal fun sessionPresentationTitle(
   if (localFallbackTitle != null) {
     return localFallbackTitle
   }
-  return nativeString("New chat").takeIf { session.isDashboardSession() } ?: unnamedTitle()
+  return nativeString("New session").takeIf { session.isDashboardSession() } ?: unnamedTitle()
 }
 
 private fun ChatSessionEntry.isDashboardSession(): Boolean {
@@ -679,11 +679,11 @@ internal fun OpenClawSidebar(
             }.verticalScroll(scrollState),
       ) {
         if (searchState.query.isNotEmpty()) {
-          SidebarSectionTitle(nativeString("Threads"), palette)
+          SidebarSectionTitle(nativeString("Sessions"), palette)
           when (sessionEmptyMode(searchState.query, searchState.loading)) {
             SessionEmptyMode.SearchLoading -> {
               Text(
-                text = nativeString("Searching threads"),
+                text = nativeString("Searching sessions"),
                 style = ClawTheme.type.caption,
                 color = palette.muted,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
@@ -693,7 +693,7 @@ internal fun OpenClawSidebar(
             else -> {
               if (searchResults.isEmpty()) {
                 Text(
-                  text = nativeString("No matching threads"),
+                  text = nativeString("No matching sessions"),
                   style = ClawTheme.type.caption,
                   color = palette.muted,
                   modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),

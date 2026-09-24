@@ -561,6 +561,8 @@ class ChatController internal constructor(
   private val _sessions = MutableStateFlow<List<ChatSessionEntry>>(emptyList())
   private val presentedSessions = MutableStateFlow<List<ChatSessionEntry>>(emptyList())
   val sessions: StateFlow<List<ChatSessionEntry>> = presentedSessions.asStateFlow()
+  private val _sessionListCount = MutableStateFlow<ChatSessionListCount?>(null)
+  val sessionListCount: StateFlow<ChatSessionListCount?> = _sessionListCount.asStateFlow()
 
   private fun projectLocalSessionTitles(
     entries: List<ChatSessionEntry>,
@@ -576,6 +578,26 @@ class ChatController internal constructor(
     synchronized(gatewayScopeApplyLock) {
       // Keep rejected device metadata out of raw entries/cache; all native title consumers
       // share a local fallback bound to this gateway and exact session key.
+      val agentId = resolveAgentIdForSessionKey(_sessionKey.value)
+      val count = _sessionListCount.value
+
+      // Metadata-only updates preserve an admitted total. Membership changes (including
+      // cache hydration, archive, deletion, or a different owner) retire its exactness.
+      fun identities(rows: List<ChatSessionEntry>) = rows.map { Triple(it.ownerAgentId, it.key, it.archived == true) }.toSet()
+      if (entries.isEmpty() || count?.agentId != agentId || identities(entries) != identities(_sessions.value)) {
+        _sessionListCount.value =
+          ChatSessionListCount(
+            value =
+              entries
+                .filter { it.archived != true }
+                .distinctBy { it.ownerAgentId to it.key }
+                .size
+                .toLong(),
+            isLowerBound = true,
+            agentId = agentId,
+            archived = false,
+          )
+      }
       _sessions.value = entries
       val binding = currentCacheScope()?.let { desiredMainSessions[it.gatewayId] }
       presentedSessions.value = projectLocalSessionTitles(entries, binding)
@@ -5056,6 +5078,23 @@ class ChatController internal constructor(
                   }?.takeIf { result.sessions.none { row -> row.key == activeSessionKey } }
               val sessions = if (selected == null) result.sessions else result.sessions + selected
               publishSessions(sessions)
+              val loadedCount =
+                sessions
+                  .filter { (it.archived == true) == archived }
+                  .distinctBy { it.key }
+                  .size
+                  .toLong()
+              val total = result.totalCount?.takeIf { it >= loadedCount }
+              val mayHaveMore =
+                result.isTruncated ||
+                  (total == null && result.hasMore != false && requestLimit != null && result.sessions.size >= requestLimit)
+              _sessionListCount.value =
+                ChatSessionListCount(
+                  value = total ?: loadedCount,
+                  isLowerBound = total == null && (mayHaveMore || result.totalCount != null),
+                  agentId = requestAgentId,
+                  archived = archived,
+                )
               result.sessions.forEach { observeSessionSettings(it) }
               sessionsListArchived = archived
               sessionsListLimit = requestLimit
@@ -7820,6 +7859,8 @@ class ChatController internal constructor(
   private data class SessionListResult(
     val sessions: List<ChatSessionEntry>,
     val isTruncated: Boolean,
+    val totalCount: Long? = null,
+    val hasMore: Boolean? = null,
   )
 
   private data class SessionSettingsPatchResolution(
@@ -7844,7 +7885,7 @@ class ChatController internal constructor(
     val isTruncated =
       root["hasMore"].asBooleanOrNull() == true ||
         (totalCount != null && totalCount > sessions.size)
-    return SessionListResult(sessions, isTruncated)
+    return SessionListResult(sessions, isTruncated, totalCount?.takeIf { it >= 0L }, root["hasMore"].asBooleanOrNull())
   }
 
   private fun parseSessionEntry(
