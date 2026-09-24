@@ -558,7 +558,7 @@ merge_run() {
   local body_path="${5:-}" captured_body="" merge_body_snapshot=""
   local legacy_directory="${6:-}" legacy_refusal="" legacy_captures=()
   local cancel_auto="${7:-false}" suspend_auto="${9:-false}"
-  local recovery_mode=none MERGE_ADMISSION_ACTIVE=false
+  local recovery_mode=none MERGE_ADMISSION_ACTIVE=false MERGE_HEAD_FENCE=""
   local refusal_directory="${8:-}" refusal="" qualified_refusal=false
   local MERGE_REFUSAL_DIRECTORY=""
   [ -z "$refusal_directory" ] || refusal_directory=$(node -e 'process.stdout.write(require("node:path").resolve(process.argv[1]))' -- "$refusal_directory") || return 1
@@ -599,14 +599,20 @@ merge_run() {
       return 1
     fi
     recovery_record="$MERGE_OUTCOME_RECORD"
-    if printf '%s\n' "$recovery_record" | jq -e '.suspension.state == "confirmed" or .phase == "ready"' >/dev/null; then
+    if printf '%s\n' "$recovery_record" | jq -e '.suspension.state == "confirmed" or .phase == "ready" or has("headFence")' >/dev/null; then
       [ -n "$recovery_artifact_head" ] || recovery_artifact_head=$(printf '%s\n' "$recovery_record" | jq -r .head) || return 1
-      if [ "$(printf '%s\n' "$recovery_record" | jq -r .phase)" = intent ]; then
+      if [ "$(printf '%s\n' "$recovery_record" | jq -r .suspension.state)" = confirmed ]; then
         recovery_mode=suspension
       else
         recovery_mode=ready
         if [ -n "$replacement_head" ] && [ "$replacement_head" != "$(printf '%s\n' "$recovery_record" | jq -r .head)" ]; then
-          merge_outcome_stop "ready recovery cannot replace the released head; reconcile its existing request"; return 1
+          if printf '%s\n' "$MERGE_ENTRY_OBSERVATION" | jq -e --arg head "$replacement_head" '
+            .state == "OPEN" and .isDraft == true and .headRefOid == $head
+          ' >/dev/null; then
+            recovery_mode=suspension
+          else
+            merge_outcome_stop "ready recovery cannot replace the released head without a fresh draft barrier"; return 1
+          fi
         fi
         if [ "$(printf '%s\n' "$MERGE_ENTRY_OBSERVATION" | jq -r .state)" = MERGED ]; then
           merge_outcome_resume "$pr"; return
@@ -704,6 +710,9 @@ merge_run() {
     '{replacementHead:$replacementHead,autoMergeRequested:$autoMergeRequested,qualifiedRefusal:$qualifiedRefusal,recoveryMode:$recoveryMode,observation:$observation}') || return 1
   merge_verify "$pr" "$verify_options" || return 1
   MERGE_ENTRY_OBSERVATION="$PR_HEAD_OBSERVATION"
+  if [ "$recovery_mode" = ready ]; then
+    merge_outcome_head_fence "$pr" "$recovery_artifact_head" "$(printf '%s\n' "$recovery_record" | jq -c .headFence)" || return 1
+  fi
   # shellcheck disable=SC1091
   source .local/prep.env
 
@@ -994,6 +1003,7 @@ merge_run() {
     require_correction_publication_gates "$pr" "$(pr_git rev-parse HEAD)" || return 1
   fi
   if [ "$recovery_mode" = ready ]; then
+    merge_outcome_head_fence "$pr" "$PREP_HEAD_SHA" "$(printf '%s\n' "$recovery_record" | jq -c .headFence)" || return 1
     [ "$recovery_actor" = "$(merge_outcome_recovery_writer)" ] || return 1
   fi
   local intent attempt
@@ -1016,6 +1026,9 @@ merge_run() {
       --argjson previous "$recovery_record" --arg actor "$recovery_actor" --arg replacement "$replacement_head" \
       '.recovery=({outcome:$outcome,attempt:$previous.attempt,actor:$actor,reason:"explicit-operator-recovery"} +
         if $replacement == "" then {} else {replacementHead:$replacement} end)') || return 1
+  fi
+  if [ "$recovery_mode" = ready ]; then
+    intent=$(printf '%s\n' "$intent" | jq -c --argjson fence "$MERGE_HEAD_FENCE" '.headFence=$fence') || return 1
   fi
   if [ -n "$refusal" ]; then
     intent=$(printf '%s\n' "$intent" | jq -c --argjson refusal "$refusal" '.recovery.preDispatchRefusal=$refusal') || return 1
@@ -1077,7 +1090,10 @@ merge_run() {
   # Only this uninterrupted completion path owns cleanup. The exact-head lease
   # protects advanced/different-head recreations, but cannot detect same-SHA recreation.
   local MERGE_HEAD_REF MERGE_HEAD_REPO cleanup_complete=true
-  if merge_outcome_head_branch "$pr"; then
+  if printf '%s\n' "$MERGE_OUTCOME_RECORD" | jq -e 'has("headFence")' >/dev/null; then
+    cleanup_complete=false
+    echo "Merge confirmed; preserve the head fence until operator-owned protection restoration and exact-head remote cleanup. No policy or protected branch deletion attempted."
+  elif merge_outcome_head_branch "$pr"; then
     local cleanup_error ref_status=0
     if ! cleanup_error=$(pr_git push --force-with-lease="refs/heads/$MERGE_HEAD_REF:$PREP_HEAD_SHA" \
       "https://$MERGE_REPO_HOST/$MERGE_HEAD_REPO.git" ":refs/heads/$MERGE_HEAD_REF" 2>&1); then

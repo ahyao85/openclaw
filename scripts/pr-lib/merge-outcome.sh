@@ -163,6 +163,10 @@ merge_outcome_load_local() {
       select(.version == 1 and ($repo == null or .repo == $repo) and .pr == $pr and .base == "main" and
         (.prId | type == "string" and length > 0) and (.head | oid) and (.main | oid) and
         (if has("localHead") then (.localHead | oid) else true end) and
+        (if has("headFence") then .route == "immediate" and .method == "squash" and
+          (.headFence | keys == ["policy","ref"] and (.policy | oid) and
+            (.ref | type == "string" and startswith("refs/heads/") and length > 11))
+         else true end) and
         (.attempt | attempt) and recovery and
         (if has("cancellation") then .accepted == true and .route == "auto" and
           (.cancellation | keys == ["actor","outcome","state"] and (.outcome | oid) and
@@ -184,7 +188,7 @@ merge_outcome_load_local() {
         (.route == "immediate" or .route == "admin" or .route == "auto" or .route == "queue") and
         (if has("transport") then .transport == "rest" and .method == "squash" and .route == "immediate" else true end) and
         (.accepted | type == "boolean") and
-        (if .phase == "ready" then .landed == null and .accepted == false and .route == "immediate" and .method == "squash" and has("recovery")
+        (if .phase == "ready" then .landed == null and .accepted == false and .route == "immediate" and .method == "squash" and has("recovery") and has("headFence")
          elif .phase == "intent" then .landed == null else
           (.phase == "merged" or .phase == "commenting" or .phase == "commented" or .phase == "complete") and (.landed | oid) end))
     ') || { merge_outcome_stop "corrupt or mismatched retained record"; return 1; }
@@ -223,7 +227,12 @@ merge_outcome_load_local() {
               ($next.recovery.preDispatchRefusal != null or
                (.suspension.state == "confirmed" and $next.phase != "intent"))) or
              (.accepted == true and .route == "auto" and .cancellation.state == "confirmed")))) and
-          (if $next.phase == "ready" then .suspension.state == "confirmed" else true end) and
+          (if $next.phase == "ready" then .suspension.state == "confirmed" or
+             (has("headFence") and $next.recovery.replacementHead == $next.head) else true end) and
+          (if has("headFence") then .headFence == $next.headFence and
+             (.head == $next.head or ($next.phase != "intent" and $next.recovery.replacementHead == $next.head))
+           elif $next | has("headFence") then .suspension.state == "confirmed" and $next.phase != "intent"
+           else true end) and
           .repo == $next.repo and .pr == $next.pr and .prId == $next.prId and
           .base == $next.base and .method == $next.method and .attempt == $next.recovery.attempt and
           $next.route == "immediate" and (.head == $next.head or $next.recovery.replacementHead == $next.head)
@@ -654,8 +663,60 @@ merge_outcome_suspend_auto() {
   echo "Keep the PR draft while repairing, reviewing and completing exact-head CI. Explicit recovery owns release."
 }
 
+# GitHub's ready mutation has no expected-head precondition. Observation cannot
+# close that window: an operator-owned, admin-enforced branch lock must reject
+# every head update until the uncertain request and explicit recovery settle.
+# This owner only reads protection; it never creates, relaxes or removes policy.
+merge_outcome_head_fence() {
+  local pr="$1" head="$2" expected="${3:-}" source branch encoded protection current fence policy query repo_id
+  source=$(pr_gh_plain pr view "$pr" --repo "$MERGE_REPO_URL" \
+    --json headRefOid,headRefName,headRepository,headRepositoryOwner) || return 1
+  branch=$(printf '%s\n' "$source" | jq -er --arg head "$head" --arg repo "$MERGE_REPO_NAME" '
+    select(.headRefOid == $head and (.headRepositoryOwner.login + "/" + .headRepository.name) == $repo) |
+    .headRefName | select(type == "string" and length > 0)
+  ') || { merge_outcome_stop "head fence requires the exact same-repository PR head"; return 1; }
+  pr_git check-ref-format "refs/heads/$branch" || return 1
+  encoded=$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' -- "$branch") || return 1
+  # REST branch-protection reads require Administration(read). This ref-scoped
+  # GraphQL contract is available to the unchanged maintainer writer instead.
+  # Bind to the authoritative node ID even when the retained repo uses a numeric ID.
+  repo_id=$(printf '%s\n' "$MERGE_ENTRY_OBSERVATION" | jq -er '.baseRepository.id | select(type == "string" and length > 0)') || return 1
+  query='query($owner:String!,$name:String!,$ref:String!){repository(owner:$owner,name:$name){id nameWithOwner url viewerPermission ref(qualifiedName:$ref){name prefix target{oid} branchProtectionRule{id pattern isAdminEnforced lockBranch lockAllowsFetchAndMerge allowsForcePushes allowsDeletions}}}}'
+  protection=$(pr_gh_quota_read api graphql --hostname "$MERGE_REPO_HOST" -H 'Cache-Control: max-age=0' \
+    -f "owner=${MERGE_REPO_NAME%/*}" -f "name=${MERGE_REPO_NAME#*/}" -f "ref=refs/heads/$branch" -f "query=$query") || {
+    merge_outcome_stop "head write fence unavailable; keep the draft barrier and inspect the writer's protection query for $MERGE_REPO_NAME:$branch"; return 1;
+  }
+  protection=$(printf '%s\n' "$protection" | jq -ce --arg id "$repo_id" --arg repo "$MERGE_REPO_NAME" \
+    --arg url "$MERGE_REPO_URL" --arg branch "$branch" --arg head "$head" '
+    select(.errors == null) | .data.repository |
+    select(.id == $id and .nameWithOwner == $repo and .url == $url and
+      (.viewerPermission | IN("WRITE","MAINTAIN","ADMIN"))) | .ref |
+    select(.prefix == "refs/heads/" and .name == $branch and .target.oid == $head) |
+    .branchProtectionRule | select(type == "object" and
+      (.id | type == "string" and length > 0) and .pattern == $branch and
+      .lockBranch == true and .isAdminEnforced == true and
+      .allowsForcePushes == false and .allowsDeletions == false and .lockAllowsFetchAndMerge == false)
+  ') || {
+    merge_outcome_stop "head write fence unavailable or invalid; require the exact repository/ref/head, current writer authority and an exact admin-enforced read-only rule"; return 1;
+  }
+  # Pin the effective rule identity and fence flags, not an authorization to edit
+  # policy. Administrator-owned cleanup must preserve unrelated rule settings.
+  policy=$(printf '%s\n' "$protection" | jq -Sc . | pr_git hash-object --stdin) || return 1
+  fence=$(jq -cn --arg ref "refs/heads/$branch" --arg policy "$policy" '{ref:$ref,policy:$policy}') || return 1
+  [ -z "$expected" ] || [ "$fence" = "$expected" ] || { merge_outcome_stop "retained head protection changed; do not release or retry"; return 1; }
+  # Read the branch after its protection. PR projections alone are insufficient
+  # when protection was just established or the head moved before it existed.
+  current=$(pr_gh_plain api --hostname "$MERGE_REPO_HOST" -H 'Cache-Control: max-age=0' \
+    "repos/$MERGE_REPO_NAME/git/ref/heads/$encoded") || return 1
+  printf '%s\n' "$current" | jq -e --arg ref "refs/heads/$branch" --arg head "$head" '
+    .ref == $ref and .object.type == "commit" and .object.sha == $head
+  ' >/dev/null || { merge_outcome_stop "protected branch does not name the reviewed head"; return 1; }
+  MERGE_HEAD_FENCE="$fence"
+}
+
 merge_outcome_release_suspension() {
   local pr="$1" expected_oid="$2" previous="$3" replacement="$4" artifacts="$5" actor attempt next candidate_tree observed_main
+  local MERGE_HEAD_FENCE="" fence
   shift 5
   [ "$MERGE_USE_CRABBOX_ADMIN_BYPASS" = false ] || { merge_outcome_stop "draft release cannot use admin bypass"; return 1; }
   actor=$(merge_outcome_recovery_writer) || return 1
@@ -671,6 +732,8 @@ merge_outcome_release_suspension() {
   [ "$candidate_tree" != "$(pr_git rev-parse "$observed_main^{tree}")" ] || {
     merge_outcome_stop "NO NET CHANGE: keep the draft barrier and inspect main history"; return 1;
   }
+  merge_outcome_head_fence "$pr" "$PREP_HEAD_SHA" "$(printf '%s\n' "$previous" | jq -c 'if has("headFence") then .headFence else empty end')" || return 1
+  fence="$MERGE_HEAD_FENCE"
   # Ready can permit a late original auto request to complete. Require exact-head
   # review and completed CI before releasing, not merely before our later merge.
   require_clawsweeper_review "$pr" "$PREP_HEAD_SHA" "$MERGE_REPO_NAME" "$MERGE_REPO_HOST" || return 1
@@ -680,18 +743,19 @@ merge_outcome_release_suspension() {
   merge_outcome_stable "$pr" || return 1
   [ "$artifacts" = "$(pr_git hash-object --no-filters -- "$@")" ] || { merge_outcome_stop "recovery artifacts changed during draft release"; return 1; }
   verify_prep_branch_matches_prepared_head "$pr" "$LOCAL_PREP_HEAD_SHA" || return 1
-  [ "$actor" = "$(merge_outcome_recovery_writer)" ] || return 1
   verify_correction_review_snapshot "$pr" "$correction_authority" || return 1
   if [ -n "$correction_authority" ]; then
     require_correction_publication_gates "$pr" "$(pr_git rev-parse HEAD)" || return 1
   fi
+  merge_outcome_head_fence "$pr" "$PREP_HEAD_SHA" "$fence" || return 1
+  [ "$actor" = "$(merge_outcome_recovery_writer)" ] || return 1
   attempt=$(node -e 'process.stdout.write(require("node:crypto").randomUUID())') || return 1
   next=$(printf '%s\n' "$MERGE_OBSERVATION" | jq -c --argjson repo "$MERGE_REPO" --arg attempt "$attempt" \
     --arg localHead "$LOCAL_PREP_HEAD_SHA" --arg outcome "$expected_oid" --arg actor "$actor" \
-    --argjson previous "$previous" --arg replacement "$replacement" --argjson review "$CLAWSWEEPER_REVIEW_EVIDENCE" '
+    --argjson previous "$previous" --arg replacement "$replacement" --argjson review "$CLAWSWEEPER_REVIEW_EVIDENCE" --argjson fence "$fence" '
     {version:1,repo:$repo,pr:.pr.number,prId:.pr.id,base:.pr.baseRefName,head:.pr.headRefOid,localHead:$localHead,
      main:.main,method:"squash",route:"immediate",attempt:$attempt,phase:"ready",accepted:false,landed:null,
-     clawsweeperReview:$review,recovery:({outcome:$outcome,attempt:$previous.attempt,actor:$actor,reason:"explicit-operator-recovery"} +
+     headFence:$fence,clawsweeperReview:$review,recovery:({outcome:$outcome,attempt:$previous.attempt,actor:$actor,reason:"explicit-operator-recovery"} +
        if $replacement == "" then {} else {replacementHead:$replacement} end)}
   ') || return 1
   merge_outcome_write "$next" || return 1
@@ -707,6 +771,7 @@ merge_outcome_release_suspension() {
     .pr.isInMergeQueue == false and .pr.isMergeQueueEnabled == false
   ' >/dev/null || { merge_outcome_stop "ready transition unresolved or auto request observed; reconcile without another write"; return 1; }
   merge_outcome_stable "$pr" || return 1
+  merge_outcome_head_fence "$pr" "$PREP_HEAD_SHA" "$fence" || return 1
   echo "Reviewed draft barrier released; no merge request dispatched. Outcome: $MERGE_OUTCOME_OID"
   echo "Recheck completed CI and explicitly merge-recover this outcome for one immediate attempt."
 }

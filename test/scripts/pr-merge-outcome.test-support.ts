@@ -6,7 +6,7 @@ import { resolveVitestNodeArgs } from "../../scripts/lib/vitest-process-env.mts"
 import { requireNodeTool } from "../helpers/node-toolchain.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { createMergeGitFixtureFactory } from "./pr-merge-fixture-git.test-support.js";
-import { landingSnapshotQuery } from "./pr-merge-snapshot.test-support.js";
+import { headFenceQuery, landingSnapshotQuery } from "./pr-merge-snapshot.test-support.js";
 import { validReview, writeReviewArtifacts } from "./pr-review-artifact-fixture.js";
 
 export function createMergeOutcomeFixtureHarness() {
@@ -201,6 +201,24 @@ export function createMergeOutcomeFixtureHarness() {
       readyTransitions: 0,
       draftResponse: "success",
       readyResponse: "success",
+      headProtection: null as null | {
+        id: string;
+        pattern: string;
+        lockBranch: boolean;
+        isAdminEnforced: boolean;
+        allowsForcePushes: boolean;
+        allowsDeletions: boolean;
+        lockAllowsFetchAndMerge: boolean;
+      },
+      protectionReads: 0,
+      protectionReadFault: "",
+      replaceProtectionAt: 0,
+      dropProtectionAt: 0,
+      protectedHeadOverride: "",
+      collaboratorHead: "",
+      collaboratorRole: "write",
+      rejectedHeadWrites: 0,
+      acceptedHeadWrites: 0,
       writerPermission: "write",
       permissionReads: 0,
       revokePermissionAt: 0,
@@ -389,6 +407,34 @@ else if(args[0]==="api"&&args.some(arg=>new RegExp("^repos/[^/]+/[^/]+$").test(a
   }
   out(args.includes("--include")?"HTTP/2.0 200 OK\\n\\n"+JSON.stringify(s.repoAuthority):s.repoAuthority);
 }
+else if(args.includes("repos/fixture/repo/branches/"+encodeURIComponent(s.pr.headRefName)+"/protection")) {
+  fail("REST branch protection requires Administration(read); fixture operator is a maintainer");
+}
+else if(args.includes("graphql")&&args.some(arg=>arg.includes("branchProtectionRule{"))) {
+  if(args.find(arg=>arg.startsWith("query="))!==${JSON.stringify(headFenceQuery)}||!args.includes("ref=refs/heads/"+s.pr.headRefName)||
+    !args.includes("owner=fixture")||!args.includes("name=repo")||!args.includes("Cache-Control: max-age=0")||!args.includes("--include")) fail("unbound or non-writer protection query");
+  s.protectionReads++;
+  if(s.dropProtectionAt&&s.protectionReads>=s.dropProtectionAt) s.headProtection=null;
+  if(s.replaceProtectionAt&&s.protectionReads>=s.replaceProtectionAt&&s.headProtection) s.headProtection.id="replacement-rule";
+  save();
+  if(s.protectionReadFault==="forbidden") {
+    out("HTTP/2.0 403 Forbidden\\n\\n"+JSON.stringify({message:"Resource not accessible by integration"}));
+    fail("GraphQL protection read forbidden");
+  }
+  const repo={id:s.repoGraphql.id,nameWithOwner:s.repoGraphql.nameWithOwner,url:s.repoGraphql.url,viewerPermission:s.protectionReadFault==="viewer"?"READ":"MAINTAIN",
+    ref:{name:s.pr.headRefName,prefix:"refs/heads/",target:{oid:s.pr.headRefOid},branchProtectionRule:s.headProtection}};
+  if(s.protectionReadFault==="repo-id") repo.id="other-repo";
+  if(s.protectionReadFault==="repo-name") repo.nameWithOwner="fixture/other";
+  if(s.protectionReadFault==="repo-url") repo.url="https://elsewhere.invalid/fixture/repo";
+  if(s.protectionReadFault==="ref-name") repo.ref.name="other";
+  if(s.protectionReadFault==="ref-prefix") repo.ref.prefix="refs/tags/";
+  if(s.protectionReadFault==="head") repo.ref.target.oid=main();
+  out({data:{repository:repo},...(s.protectionReadFault==="errors"?{errors:[{message:"partial protection error"}]}:{})});
+}
+else if(args.includes("repos/fixture/repo/git/ref/heads/"+encodeURIComponent(s.pr.headRefName))) {
+  if(!args.includes("Cache-Control: max-age=0")) fail("missing fresh head observation");
+  out({ref:"refs/heads/"+s.pr.headRefName,object:{type:"commit",sha:s.protectedHeadOverride||git(["--git-dir="+process.env.FIXTURE_REMOTE,"rev-parse","refs/heads/"+s.pr.headRefName])}});
+}
 else if(args.some(arg=>arg.includes("/collaborators/")&&arg.endsWith("/permission"))) {
   s.permissionReads++; save();
   out(s.revokePermissionAt&&s.permissionReads>=s.revokePermissionAt?"read":s.writerPermission);
@@ -510,6 +556,16 @@ else if(args[0]==="pr"&&args[1]==="view") {
   const response=draft?s.draftResponse:s.readyResponse;
   save();
   if(response==="rejected") fail("draft transition refused");
+  // Model the server's head-write gate, not a post-effect client check. This
+  // attempted collaborator write lands in the final observation/ready gap.
+  if(!draft&&s.collaboratorHead) {
+    if(s.headProtection?.lockBranch&&(s.collaboratorRole!=="admin"||s.headProtection.isAdminEnforced)) {
+      s.rejectedHeadWrites++;
+    } else {
+      git(["push","-q","--force","origin",s.collaboratorHead+":refs/heads/topic",s.collaboratorHead+":refs/pull/123/head"]);
+      s.pr.headRefOid=s.collaboratorHead;s.acceptedHeadWrites++;
+    }
+  }
   s.pr.isDraft=draft;
   if(response==="merged") {
     const parent=main();
@@ -668,7 +724,7 @@ pr_gh() {
 pr_gh_plain() {
   if [ "$1" = repo-authority ] || [ "$1" = issue-comments ] || [ "$1" = writer-login ]; then
     pr_gh_run plain "$@"
-  elif { [ "$1" = pr ] && [ "$2" = view ]; } ||
+  elif [[ " $* " == *"branchProtectionRule{"* ]] || { [ "$1" = pr ] && [ "$2" = view ]; } ||
     { [ "$FIXTURE_REAL_GH" = true ] && { [ "$1" = pr ] && { [ "$2" = checks ] || [ "$2" = merge ]; } || [[ " $* " == *" graphql "* ]]; }; }; then
     pr_gh_run "\${pr_gh_quota_route:-plain}" "$@"
   else
@@ -887,6 +943,19 @@ fi
       cancel: (oid: string) => run(false, repo, "squash", oid, "", "", "", "", true),
       suspend: (oid: string) =>
         run(false, repo, "squash", oid, "", "", "", "", false, "", false, true),
+      protectHead: () =>
+        save({
+          ...state(),
+          headProtection: {
+            id: "fixture-head-lock",
+            pattern: "topic",
+            lockBranch: true,
+            isAdminEnforced: true,
+            allowsForcePushes: false,
+            allowsDeletions: false,
+            lockAllowsFetchAndMerge: false,
+          },
+        }),
       recover,
       advance,
       record,

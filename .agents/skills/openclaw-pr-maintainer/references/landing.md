@@ -156,15 +156,36 @@ its exact-SHA release-gate workflow on a same-repository draft; skipped draft
 checks and `github_pending` do not count as completed proof. A completed
 ClawSweeper review must name the exact release head. Do not manually mark ready.
 
+Before releasing that draft, an authorized repository administrator must lock the
+exact same-repository head branch read-only, with enforcement for admins and
+custom bypass roles and no force-push, deletion, or fork-sync allowance. Inspect
+and preserve existing protection; the wrapper only reads policy and does not
+create, weaken, or remove it. Evidence comes from the maintainer-readable,
+writer-bound GraphQL `ref.branchProtectionRule` query, with exact repository,
+ref, rule ID/pattern, permission and lock-flag checks, followed by a canonical
+Git-ref read. The live protected branch must still name the reviewed head. Missing or bypassable protection is a blocker, not risk approval.
+
 Explicit `merge-recover` with the suspension OID and `--replacement-head <SHA>`
 validates that evidence and records a new `ready` outcome **before** one ready
 request. It does not submit a merge. Read the new OID and explicitly recover it
 for ordinary immediate admission. A lost draft/ready response is never blindly
 repeated. Reconcile any concurrent auto request or merge instead of dispatching.
-The old uncertainty and capture remain retained: draft is a no-merge barrier,
-not proof of non-execution or a generation fence against late auto enablement.
-Release can therefore result in the already-reviewed, CI-proven candidate merging;
-the replacement-bound receipt verifies that result without another merge request.
+The outcome retains the head branch and protection fingerprint; every subsequent
+recovery revalidates that fence. Keep it held through a verified merge. Cleanup
+never deletes protected branches or restores policy: the operator restores the
+previously inspected protection only after settlement, then performs exact-head
+branch cleanup. If a new fix is needed before merge, first re-establish and
+observe the draft barrier while the lock remains held, then relax only the
+task-owned lock for editing, retaining its rule ID and preexisting restrictions.
+Reinstate the same fence after review and completed CI; explicit
+replacement recovery requires the PR to be draft before it can release again.
+
+The old uncertainty and capture remain retained. Draft alone is not a generation
+fence against late auto enablement; readiness has no atomic expected-head input.
+The server-enforced head lock prevents a collaborator push from replacing the
+reviewed candidate during release or settlement. A late auto request can merge
+only that candidate while the fence remains held; the replacement-bound receipt
+then verifies the result without another merge request.
 
 A failed operation can retain a lock. Verify no owned child tools remain, then
 recover only with the exact token and command the wrapper printed. Never remove

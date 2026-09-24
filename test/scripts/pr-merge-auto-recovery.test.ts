@@ -61,6 +61,7 @@ describePosix("native auto-merge recovery", () => {
     expect(f.run().status).toBe(1); // Routine reconciliation never dispatches.
     f.recover();
     const replacement = f.replacePreparedHead();
+    f.protectHead();
     f.save({
       ...f.state(),
       mode: "success",
@@ -83,7 +84,7 @@ describePosix("native auto-merge recovery", () => {
     const recovered = f.run(false, f.repo, "squash", ready);
     expect(recovered.status, recovered.output).toBe(0);
     expect(f.record()).toMatchObject({
-      phase: "complete",
+      phase: "commented",
       head: replacement,
       route: "immediate",
       recovery: { outcome: ready },
@@ -186,6 +187,7 @@ describePosix("native auto-merge recovery", () => {
     expect(f.suspend(requested).status).toBe(0);
     const suspended = f.git(["rev-parse", outcomeRef]);
     const replacement = f.replacePreparedHead();
+    f.protectHead();
     f.save({
       ...f.state(),
       readyResponse: "rejected",
@@ -218,6 +220,7 @@ describePosix("native auto-merge recovery", () => {
     expect(f.suspend(f.git(["rev-parse", outcomeRef])).status).toBe(0);
     const suspended = f.git(["rev-parse", outcomeRef]);
     const replacement = f.replacePreparedHead();
+    f.protectHead();
     const baseline = f.state();
     const gatesPath = join(f.worktree, ".local/gates.env");
     const gates = readFileSync(gatesPath, "utf8");
@@ -298,6 +301,7 @@ describePosix("native auto-merge recovery", () => {
       if (stage === "ready") {
         const original = f.git(["rev-parse", outcomeRef]);
         const replacement = f.replacePreparedHead();
+        f.protectHead();
         f.save({
           ...f.state(),
           readyResponse: "merged",
@@ -310,6 +314,228 @@ describePosix("native auto-merge recovery", () => {
       expect(f.state()).toMatchObject({ mutations: 1, posts: 0 });
     },
   );
+
+  it("never sends ready without an admin-enforced fence, before an unreviewed final effect", () => {
+    const f = fixture();
+    f.save({
+      ...f.state(),
+      mode: "unapplied",
+      pr: { ...f.state().pr, mergeStateStatus: "BLOCKED" },
+    });
+    expect(f.run(true).status).toBe(1);
+    f.recover();
+    expect(f.suspend(f.git(["rev-parse", outcomeRef])).status).toBe(0);
+    const suspended = f.git(["rev-parse", outcomeRef]);
+    const replacement = f.replacePreparedHead();
+    const unreviewed = f.commit(f.tree("UNREVIEWED\n"), [replacement], "Collaborator change\n");
+    f.save({
+      ...f.state(),
+      readyResponse: "merged",
+      collaboratorHead: unreviewed,
+      pr: { ...f.state().pr, mergeStateStatus: "CLEAN" },
+    });
+    const main = f.git(["--git-dir=" + f.remote, "rev-parse", "main"]);
+    const result = f.run(false, f.repo, "squash", suspended, replacement);
+    expect(result.status, result.output).toBe(1);
+    expect(result.output).toContain("head write fence unavailable");
+    expect(f.state()).toMatchObject({
+      readyTransitions: 0,
+      acceptedHeadWrites: 0,
+      pr: { state: "OPEN", isDraft: true, headRefOid: replacement },
+    });
+    expect(f.git(["--git-dir=" + f.remote, "rev-parse", "main"])).toBe(main);
+    expect(f.git(["rev-parse", outcomeRef])).toBe(suspended);
+  });
+
+  it.each(["write", "admin"])(
+    "the server fence rejects a %s collaborator head at the final ready/late-auto effect",
+    (role) => {
+      const f = fixture();
+      f.save({
+        ...f.state(),
+        mode: "unapplied",
+        pr: { ...f.state().pr, mergeStateStatus: "BLOCKED" },
+      });
+      expect(f.run(true).status).toBe(1);
+      f.recover();
+      expect(f.suspend(f.git(["rev-parse", outcomeRef])).status).toBe(0);
+      const suspended = f.git(["rev-parse", outcomeRef]);
+      const replacement = f.replacePreparedHead();
+      f.protectHead();
+      const protection = f.state().headProtection;
+      const unreviewed = f.commit(f.tree("UNREVIEWED\n"), [replacement], "Collaborator change\n");
+      f.save({
+        ...f.state(),
+        collaboratorHead: unreviewed,
+        collaboratorRole: role,
+        readyResponse: "merged",
+        pr: { ...f.state().pr, mergeStateStatus: "CLEAN" },
+      });
+      const result = f.run(false, f.repo, "squash", suspended, replacement);
+      expect(result.status, result.output).toBe(0);
+      expect(f.state()).toMatchObject({
+        readyTransitions: 1,
+        rejectedHeadWrites: 1,
+        acceptedHeadWrites: 0,
+        mutations: 1,
+        pr: { state: "MERGED", headRefOid: replacement },
+      });
+      expect(f.record()).toMatchObject({
+        phase: "merged",
+        head: replacement,
+        headFence: { ref: "refs/heads/topic" },
+      });
+      expect(f.git(["show", f.record().landed + ":owner.txt"])).toBe("reviewed replacement");
+      expect(f.git(["--git-dir=" + f.remote, "rev-parse", "refs/heads/topic"])).toBe(replacement);
+      expect(f.state().headProtection).toEqual(protection);
+    },
+  );
+
+  it("refuses bypasses, stale branch identity, changed protection and revoked recovery fences", () => {
+    const f = fixture();
+    f.save({
+      ...f.state(),
+      mode: "unapplied",
+      pr: { ...f.state().pr, mergeStateStatus: "BLOCKED" },
+    });
+    expect(f.run(true).status).toBe(1);
+    f.recover();
+    expect(f.suspend(f.git(["rev-parse", outcomeRef])).status).toBe(0);
+    const suspended = f.git(["rev-parse", outcomeRef]);
+    const replacement = f.replacePreparedHead();
+    f.protectHead();
+    const baseline = f.state();
+    for (const fault of [
+      "unlocked",
+      "admin-bypass",
+      "force",
+      "delete",
+      "sync",
+      "branch",
+      "revoked",
+      "forbidden",
+      "errors",
+      "repo-id",
+      "repo-name",
+      "repo-url",
+      "viewer",
+      "ref-name",
+      "ref-prefix",
+      "query-head",
+      "wrong-rule",
+      "missing-rule-id",
+      "replaced-rule",
+    ]) {
+      const next = structuredClone(baseline);
+      const protection = next.headProtection!;
+      if (fault === "unlocked") {
+        protection.lockBranch = false;
+      }
+      if (fault === "admin-bypass") {
+        protection.isAdminEnforced = false;
+      }
+      if (fault === "force") {
+        protection.allowsForcePushes = true;
+      }
+      if (fault === "delete") {
+        protection.allowsDeletions = true;
+      }
+      if (fault === "sync") {
+        protection.lockAllowsFetchAndMerge = true;
+      }
+      if (fault === "branch") {
+        next.protectedHeadOverride = f.head;
+      }
+      if (fault === "revoked") {
+        next.dropProtectionAt = 2;
+      }
+      if (
+        [
+          "forbidden",
+          "errors",
+          "repo-id",
+          "repo-name",
+          "repo-url",
+          "viewer",
+          "ref-name",
+          "ref-prefix",
+        ].includes(fault)
+      ) {
+        next.protectionReadFault = fault;
+      }
+      if (fault === "query-head") {
+        next.protectionReadFault = "head";
+      }
+      if (fault === "wrong-rule") {
+        protection.pattern = "other-branch";
+      }
+      if (fault === "missing-rule-id") {
+        protection.id = "";
+      }
+      if (fault === "replaced-rule") {
+        next.replaceProtectionAt = 2;
+      }
+      f.save(next);
+      const result = f.run(false, f.repo, "squash", suspended, replacement);
+      expect(result.status, fault + ": " + result.output).toBe(1);
+      expect(f.state()).toMatchObject({ readyTransitions: 0, mutations: 1 });
+      expect(f.git(["rev-parse", outcomeRef])).toBe(suspended);
+      f.recover();
+    }
+    f.save(baseline);
+    const released = f.run(false, f.repo, "squash", suspended, replacement);
+    expect(released.status, released.output).toBe(0);
+    const ready = f.git(["rev-parse", outcomeRef]);
+    f.save({ ...f.state(), headProtection: null });
+    const retry = f.run(false, f.repo, "squash", ready);
+    expect(retry.status, retry.output).toBe(1);
+    expect(f.state()).toMatchObject({ readyTransitions: 1, mutations: 1 });
+    expect(f.git(["rev-parse", outcomeRef])).toBe(ready);
+  });
+
+  it("requires a new draft barrier before changing a previously released fenced head", () => {
+    const f = fixture();
+    f.save({
+      ...f.state(),
+      mode: "unapplied",
+      pr: { ...f.state().pr, mergeStateStatus: "BLOCKED" },
+    });
+    expect(f.run(true).status).toBe(1);
+    f.recover();
+    expect(f.suspend(f.git(["rev-parse", outcomeRef])).status).toBe(0);
+    const suspended = f.git(["rev-parse", outcomeRef]);
+    const firstHead = f.replacePreparedHead();
+    f.protectHead();
+    const first = f.run(false, f.repo, "squash", suspended, firstHead);
+    expect(first.status, first.output).toBe(0);
+    const ready = f.git(["rev-parse", outcomeRef]);
+    const fence = f.record().headFence;
+    // The operator drafts before relaxing the task-owned lock for repair,
+    // preserving the rule ID. Native release must still observe that barrier.
+    const drafting = f.state();
+    drafting.headProtection!.lockBranch = false;
+    f.save({ ...drafting, pr: { ...drafting.pr, isDraft: true } });
+    const replacement = f.replacePreparedHead();
+    f.protectHead();
+    const next = f.state();
+    next.issueComments[0]!.body = next.issueComments[0]!.body.replace(firstHead, replacement);
+    f.save({ ...next, pr: { ...next.pr, isDraft: false } });
+    const refused = f.run(false, f.repo, "squash", ready, replacement);
+    expect(refused.status, refused.output).toBe(1);
+    expect(f.state().readyTransitions).toBe(1);
+    f.recover();
+    f.save({ ...f.state(), pr: { ...f.state().pr, isDraft: true } });
+    const second = f.run(false, f.repo, "squash", ready, replacement);
+    expect(second.status, second.output).toBe(0);
+    expect(f.record()).toMatchObject({
+      phase: "ready",
+      head: replacement,
+      headFence: fence,
+      recovery: { outcome: ready, replacementHead: replacement },
+    });
+    expect(f.state()).toMatchObject({ readyTransitions: 2, mutations: 1 });
+    expect(f.run().status).toBe(1); // A readable successor is still reconciliation-only.
+  });
 
   it.each([false, true])("does not suspend a known accepted intent (auto=%s)", (auto) => {
     const f = fixture();
