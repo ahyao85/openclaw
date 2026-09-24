@@ -39,7 +39,6 @@ type PluginRegistryLifecycleStore = {
   registryLoads?: WeakMap<PluginCache, PluginLoaderCacheState<PluginRegistry>>;
   registryResourceOwners?: WeakMap<PluginRegistry, PluginRegistry>;
   registryLifetimes?: WeakMap<PluginRegistry, PluginRegistryLifetime>;
-  gatewaySuccessors?: WeakMap<PluginRegistry, () => PluginRegistry | undefined>;
 };
 
 const lifecycle = resolveGlobalSingleton<PluginRegistryLifecycleStore>(
@@ -58,7 +57,6 @@ const loaderCaches = (lifecycle.loaderCaches ??= new WeakMap());
 const registryLoads = (lifecycle.registryLoads ??= new WeakMap());
 const registryResourceOwners = (lifecycle.registryResourceOwners ??= new WeakMap());
 const registryLifetimes = (lifecycle.registryLifetimes ??= new WeakMap());
-const gatewaySuccessors = (lifecycle.gatewaySuccessors ??= new WeakMap());
 const loadRegistryDisposer = (lifecycle.loadRegistryDisposer ??= createLazyRuntimeNamedExport(
   () => import("./runtime.js"),
   "disposePluginRegistryInstances",
@@ -83,24 +81,6 @@ export function bindPluginRegistryResourceOwner(
 
 export function getPluginRegistryResourceOwner(registry: PluginRegistry): PluginRegistry {
   return registryResourceOwners.get(registry) ?? registry;
-}
-
-/** Records the Gateway owner that published a registry; the latest publisher wins. */
-export function bindPluginRegistryGatewayOwner(
-  registry: PluginRegistry,
-  current: () => PluginRegistry | undefined,
-): void {
-  gatewaySuccessors.set(getPluginRegistryResourceOwner(registry), current);
-}
-
-/**
- * The current registry of the Gateway that published `registry`, while that
- * Gateway owner stays open. Other Gateways' registries are never successors.
- */
-export function getPluginRegistryGatewaySuccessor(
-  registry: PluginRegistry,
-): PluginRegistry | undefined {
-  return gatewaySuccessors.get(getPluginRegistryResourceOwner(registry))?.();
 }
 
 /** The creation owner lends existing custody; lookup never takes ownership of an external host. */

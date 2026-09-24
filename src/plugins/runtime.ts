@@ -34,7 +34,6 @@ import { settlePreparedMessageToolCatalog } from "./prepared-message-tool-catalo
 import { createEmptyPluginRegistry } from "./registry-empty.js";
 import {
   adoptPluginRegistryRecords,
-  bindPluginRegistryGatewayOwner,
   getPluginRegistryResourceOwner,
   markPluginRegistryActive,
   markPluginRegistryRetired,
@@ -422,9 +421,6 @@ export function createPluginRegistryOwner(registry: PluginRegistry, workspaceDir
     activeRegistry: registry,
   };
   registryOwners.add(owner);
-  const currentWhileOpen = () =>
-    registryOwners.has(owner) && !owner.closing ? owner.activeRegistry : undefined;
-  bindPluginRegistryGatewayOwner(registry, currentWhileOpen);
   return {
     get registry() {
       return owner.activeRegistry;
@@ -435,7 +431,6 @@ export function createPluginRegistryOwner(registry: PluginRegistry, workspaceDir
       }
       const previous = owner.activeRegistry;
       Object.assign(owner, captureActivePluginRegistrySnapshot());
-      bindPluginRegistryGatewayOwner(next, currentWhileOpen);
       retirePluginRegistryIfUnused(previous, () =>
         registryOwners.has(owner) ? owner.activeRegistry : null,
       );
