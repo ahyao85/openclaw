@@ -104,11 +104,30 @@ private final class GatewayHTTPFixture {
 
 @Suite(.serialized)
 struct GatewayTLSRequestTests {
-    private static func session() -> GatewayTLSPinningSession {
+    private static func session(allowsRedirects: Bool = false) -> GatewayTLSPinningSession {
         GatewayTLSPinningSession(
             params: GatewayTLSParams(required: false, expectedFingerprint: nil, allowTOFU: false, storeKey: nil),
-            allowsRedirects: false,
+            allowsRedirects: allowsRedirects,
             allowsStoredCredentials: false)
+    }
+
+    @Test @MainActor func `header-only probe preserves enabled redirects`() async throws {
+        let destination = try GatewayHTTPFixture(reply: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+        defer { destination.stop() }
+        let destinationURL = try await destination.readyURL()
+        let source = try GatewayHTTPFixture(
+            reply: "HTTP/1.1 302 Found\r\nLocation: \(destinationURL)\r\nContent-Length: 0\r\n\r\n")
+        defer { source.stop() }
+        let session = Self.session(allowsRedirects: true)
+        defer { session.finishTasksAndInvalidate() }
+        let request = try await URLRequest(url: source.readyURL())
+        let response = try await AsyncTimeout.withTimeout(seconds: 3, onTimeout: { URLError(.timedOut) }) {
+            try await session.response(for: request)
+        }
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        #expect(response.url == destinationURL)
+        #expect(source.requests.count == 1)
+        #expect(destination.requests.count == 1)
     }
 
     @Test(arguments: [200, 302])
@@ -120,14 +139,21 @@ struct GatewayTLSRequestTests {
         let destinationURL = try await destination.readyURL()
         let source =
             try GatewayHTTPFixture(
-                reply: "HTTP/1.1 \(statusCode) Test\r\nLocation: \(destinationURL)\r\nContent-Length: 10\r\n\r\n")
+                reply: """
+                HTTP/1.1 \(statusCode) Test\r
+                Location: \(destinationURL)\r
+                Content-Type: text/html; charset=utf-8\r
+                Content-Length: 10\r
+                \r
+                <
+                """)
         defer { source.stop() }
         let session = Self.session()
         defer { session.finishTasksAndInvalidate() }
         var request = try await URLRequest(url: source.readyURL())
         request.setValue("test-only-ingress-grant", forHTTPHeaderField: "Cf-Access-Token")
-        // The fixture keeps the connection open without sending any declared body bytes.
-        // A full-body implementation must time out instead of satisfying this assertion.
+        // URLSession can wait for initial body data before delivering a response.
+        // Keep nine declared bytes outstanding so a full-body implementation times out.
         let response = try await AsyncTimeout.withTimeout(seconds: 3, onTimeout: { URLError(.timedOut) }) { [request] in
             try await session.response(for: request)
         }
@@ -147,13 +173,20 @@ struct GatewayTLSRequestTests {
         await #expect(throws: GatewayBoundedDataError.self) { try await session.data(for: request, maximumBytes: 2) }
     }
 
-    @Test @MainActor func `cancellation interrupts a stalled body`() async throws {
-        let server = try GatewayHTTPFixture(reply: "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\na")
+    @Test(arguments: [true, false])
+    @MainActor func `cancellation interrupts incomplete HTTP responses`(headerOnly: Bool) async throws {
+        let server = try GatewayHTTPFixture(reply: headerOnly ? "" : "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\na")
         defer { server.stop() }
         let session = Self.session()
         defer { session.finishTasksAndInvalidate() }
         let request = try await URLRequest(url: server.readyURL())
-        let pending = Task { try await session.data(for: request, maximumBytes: 20) }
+        let pending = Task {
+            if headerOnly {
+                _ = try await session.response(for: request)
+            } else {
+                _ = try await session.data(for: request, maximumBytes: 20)
+            }
+        }
         defer { pending.cancel() }
         do {
             try await server.waitForRequest()
@@ -170,7 +203,7 @@ struct GatewayTLSRequestTests {
             await pending.result
         }
         switch result {
-        case .success: Issue.record("cancelled request returned a body")
+        case .success: Issue.record("cancelled request completed successfully")
         case .failure: break
         }
     }
