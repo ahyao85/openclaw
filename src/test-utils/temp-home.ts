@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { captureEnv, deleteTestEnvValue, setTestEnvValue } from "./env.js";
-import { cleanupSessionStateForTest } from "./session-state-cleanup.js";
 
 const HOME_ENV_KEYS = [
   "HOME",
@@ -22,6 +21,7 @@ export type TempHomeEnv = {
 
 /** Creates a temporary OpenClaw home and process env override for stateful tests. */
 export async function createTempHomeEnv(prefix: string): Promise<TempHomeEnv> {
+  const { cleanupSessionStateForTest } = await import("./session-state-cleanup.js");
   const home = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   const stateDir = path.join(home, ".openclaw");
   const snapshot = captureEnv([...HOME_ENV_KEYS]);
