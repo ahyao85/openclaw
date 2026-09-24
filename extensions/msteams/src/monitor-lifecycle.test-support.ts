@@ -148,7 +148,9 @@ vi.mock("./sso-token-store.js", () => ({
   createMSTeamsSsoTokenStoreFs: () => ssoTokenStore,
 }));
 
-export { monitorMSTeamsProvider } from "./monitor.js";
+import { monitorMSTeamsProvider } from "./monitor.js";
+
+export { monitorMSTeamsProvider };
 
 export async function waitForMSTeamsTestState(
   assertion: () => void | Promise<void>,
