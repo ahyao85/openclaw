@@ -34,7 +34,8 @@ import { waitForChatAbortControllerRemoval } from "../chat-abort-lifecycle-inter
 import { createChatAbortOps } from "../chat-abort-ops.js";
 import type { AgentTerminalSessionDrain } from "../terminal/session-manager.types.js";
 import {
-  beginWorkerInferenceSessionDrain,
+  reserveWorkerInferenceSessionDrain,
+  type AcceptedWorkerInferenceSessionDrain,
   type WorkerInferenceSessionDrain,
 } from "../worker-environments/inference-control-internal.js";
 import { asWorkerInferenceControl } from "../worker-environments/inference-control.js";
@@ -122,7 +123,8 @@ export async function prepareSessionLifecycleDrain(
   );
   const workerService = params.context.workerEnvironmentService;
   const workerControl = asWorkerInferenceControl(workerService);
-  let workerDrain: WorkerInferenceSessionDrain | undefined;
+  let workerDrain: AcceptedWorkerInferenceSessionDrain | undefined;
+  let workerStartFailure: { error: unknown; drained: Promise<void> } | undefined;
   let terminalDrain: AgentTerminalSessionDrain | undefined;
   let reclaimed: Promise<void> | undefined;
   let releaseAdmissions = () => {};
@@ -158,9 +160,33 @@ export async function prepareSessionLifecycleDrain(
           reason: createAgentRunDirectAbortError(),
         });
         if (params.sessionId) {
-          workerDrain = beginWorkerInferenceSessionDrain(workerService, params.sessionId);
+          const reservation = reserveWorkerInferenceSessionDrain(workerService, params.sessionId);
+          try {
+            workerDrain = reservation?.accept();
+          } catch (error) {
+            try {
+              reservation?.release();
+            } catch (releaseError) {
+              if (releaseError !== error) {
+                throw new AggregateError([error, releaseError], "Worker drain reservation failed", {
+                  cause: releaseError,
+                });
+              }
+            }
+            throw error;
+          }
           if (!workerDrain && workerControl?.hasInferenceForSession(params.sessionId) === true) {
             throw new Error("Worker inference drain is unavailable");
+          }
+          if (workerDrain) {
+            const drained = workerDrain.drained;
+            void drained.catch(() => {});
+            try {
+              workerDrain.start();
+            } catch (error) {
+              workerStartFailure = { error, drained };
+              throw error;
+            }
           }
           terminalDrain = params.context.terminalSessions?.beginAgentSessionDrain({
             kind: "agent",
@@ -320,6 +346,25 @@ export async function prepareSessionLifecycleDrain(
     };
   } catch (error) {
     await reclaimed?.catch(() => {});
+    if (workerStartFailure) {
+      // Acceptance retains raw work even when start throws; this join is outside the mutex.
+      const failures = new Set([error, workerStartFailure.error]);
+      const [settled] = await Promise.allSettled([workerStartFailure.drained]);
+      if (settled.status === "rejected") {
+        failures.add(settled.reason);
+      }
+      try {
+        release();
+      } catch (releaseError) {
+        failures.add(releaseError);
+      }
+      if (failures.size > 1) {
+        throw new AggregateError([...failures], "Worker drain start and settlement failed", {
+          cause: error,
+        });
+      }
+      throw error;
+    }
     release();
     throw error;
   }

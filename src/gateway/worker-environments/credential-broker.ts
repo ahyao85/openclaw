@@ -40,7 +40,7 @@ type WorkerCredentialBrokerOptions = {
   placementStore?: WorkerSessionPlacementGate;
   now: () => number;
   isStopping: () => boolean;
-  cancelInferenceEnvironment: (environmentId: string) => void;
+  cancelInferenceEnvironment: (environmentId: string) => Promise<void>;
   inState: (record: WorkerEnvironmentRecord, ...states: WorkerEnvironmentState[]) => boolean;
   move: (
     record: WorkerEnvironmentRecord,
@@ -106,7 +106,7 @@ export function createWorkerCredentialBroker(options: WorkerCredentialBrokerOpti
   ): Promise<{ credentialHash: string; grant: MintedWorkerCredential }> => {
     const previous = store.getCredential(request.environmentId);
     if (previous) {
-      inference.cancelEnvironment(request.environmentId);
+      await inference.cancelEnvironment(request.environmentId);
     }
     const material = credentialMaterial(claim);
     const credential = {
