@@ -3212,6 +3212,12 @@ const WHOLE_CONFIG_SPLIT_FILE_LISTERS = new Map<string, () => string[]>([
 
 const wholeConfigSplitFileCache = new Map<string, string[]>();
 
+// Release shards split by file only when a whole-config lister owns the shard;
+// main keeps this predicate in its test inventory module.
+function canSplitWholeConfigGroup(shardName: string): boolean {
+  return WHOLE_CONFIG_SPLIT_FILE_LISTERS.has(shardName);
+}
+
 function listWholeConfigSplitFiles(shardName: string): string[] | undefined {
   const listFiles = WHOLE_CONFIG_SPLIT_FILE_LISTERS.get(shardName);
   if (!listFiles) {
