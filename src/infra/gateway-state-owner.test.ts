@@ -392,7 +392,9 @@ describe("Gateway state ownership", () => {
       fs.writeFileSync(owner.path, original);
       try {
         expect(() => assertStateDatabaseAccessAllowed(databasePath)).toThrow("offline maintenance");
-        expect(() => acquireStateDatabaseSchemaLease(databasePath)).toThrow("offline maintenance");
+        expect(() => acquireStateDatabaseSchemaLease(databasePath)).toThrow(
+          GatewayStateOwnerContentionError,
+        );
       } finally {
         fs.rmSync(owner.path, { force: true });
       }

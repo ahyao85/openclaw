@@ -339,7 +339,9 @@ export function acquireStateDatabaseSchemaLease(databasePath: string): StateData
   if (owner && (!owner.accepting || !hasPhysicalOwnership(owner))) {
     throw new GatewayStateOwnerContentionError(databasePath);
   }
-  assertStateDatabaseAccessAllowed(databasePath);
+  if (owner) {
+    assertStateDatabaseAccessAllowed(databasePath);
+  }
   const payload = owner?.payload ?? defaultPayload(databasePath);
   const lock = acquireOwnerFile(
     databasePath,
