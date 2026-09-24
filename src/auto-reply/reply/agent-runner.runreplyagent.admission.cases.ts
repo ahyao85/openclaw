@@ -8,6 +8,7 @@ import {
   updateSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import { getSessionWorkAdmissionRelease } from "../../sessions/session-lifecycle-admission.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { observeMainThreadSql } from "../../test-utils/main-thread-sql-spies.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -190,7 +191,11 @@ export function registerReplyAdmissionCases({
                 agentId: "main",
                 env: state.env,
               });
-              const sessionEntry: SessionEntry = { ...initial, incognito: true, updatedAt: 1 };
+              const sessionEntry: SessionEntry = {
+                ...initial,
+                incognito: true,
+                updatedAt: Date.now(),
+              };
               await replaceSessionEntry({ sessionKey, storePath, env: state.env }, sessionEntry);
               return { sessionEntry, sessionStore: { [sessionKey]: sessionEntry }, storePath };
             })()
@@ -353,7 +358,12 @@ export function registerReplyAdmissionCases({
         try {
           await settleClaimedFixture();
         } finally {
+          const released = getSessionWorkAdmissionRelease({
+            scope: storePath,
+            identities: [sessionKey],
+          });
           admittedOperation?.complete();
+          await released;
           restoreBinding?.();
           admission.mockRestore();
           waiting.restore();

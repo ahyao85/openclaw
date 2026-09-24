@@ -16,6 +16,7 @@ import type { ReplyFollowupAdmissionBarrierTimeoutPolicy } from "./reply-dispatc
 import type { ReplyOperationStaleReason } from "./reply-run-finalization-lease.js";
 import {
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
+  REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS,
   ReplyRunAlreadyActiveError,
   ReplyRunSuccessorAdmissionBlockedError,
   type ReplyBackendHandle,
@@ -205,6 +206,7 @@ export function hasReplyOperationExecutionStarted(operation: ReplyOperation): bo
 }
 export const abortFrozenOperations = new WeakSet<ReplyOperation>();
 export const operationsByUpstreamAbortSignal = new WeakMap<AbortSignal, ReplyOperation>();
+export const producerCompletionByOperation = new WeakMap<ReplyOperation, Promise<void>>();
 export const retainStateUntilCompleteOperations = new WeakSet<ReplyOperation>();
 type ReplyOperationAfterClear = {
   callbacks: Set<(sessionId: string) => void>;
@@ -287,9 +289,14 @@ export function isReplyRunAbortableForSignal(signal: AbortSignal): boolean {
 }
 
 /** Resolve only the live operation admitted with this exact upstream signal. */
-export function resolveActiveReplyRunOwnerForSignal(
-  signal: AbortSignal,
-): { sessionId: string; sessionKey: string; abort: () => boolean } | undefined {
+export function resolveActiveReplyRunOwnerForSignal(signal: AbortSignal):
+  | {
+      sessionId: string;
+      sessionKey: string;
+      abort: () => boolean;
+      handoff: (settle: (producerCompleted: Promise<void>) => Promise<void>) => boolean;
+    }
+  | undefined {
   const operation = operationsByUpstreamAbortSignal.get(signal);
   if (!operation) {
     return undefined;
@@ -309,6 +316,20 @@ export function resolveActiveReplyRunOwnerForSignal(
     sessionKey,
     // A retained selector must never cancel the operation that replaced this owner.
     abort: () => isCurrent() && operation.abortByUser(),
+    handoff: (settle) => {
+      const producerCompleted = producerCompletionByOperation.get(operation);
+      if (!isCurrent() || !producerCompleted) {
+        return false;
+      }
+      const settlement = settle(producerCompleted);
+      registerReplyOperationSuccessorBarrier({
+        operation,
+        sessionId,
+        sessionKeys: [sessionKey],
+        start: () => settlement,
+      });
+      return true;
+    },
   };
 }
 
@@ -658,4 +679,33 @@ export function isReplyRunEvidenceStale(operation: ReplyOperation): boolean {
       resolveRunStaleThresholdMs(activity, Date.now() - operation.lastActivityAtMs) &&
     !recoveryBlocked
   );
+}
+
+export function expireVisibleStaleOperation(operation: ReplyOperation | undefined): boolean {
+  if (!operation) {
+    return false;
+  }
+  const idleMs = Date.now() - operation.lastActivityAtMs;
+  if (operation.result) {
+    return (
+      idleMs >= REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS &&
+      expireStaleReplyOperation(operation, "terminal_unreleased")
+    );
+  }
+  return isReplyRunEvidenceStale(operation) && expireStaleReplyOperation(operation, "no_activity");
+}
+
+export function resolveVisibleActiveWaitMs(operation: ReplyOperation | undefined): number {
+  if (!operation || isReplyRunRecoveryBlocked(operation)) {
+    return REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS;
+  }
+  const ageMs = Date.now() - operation.lastActivityAtMs;
+  const activity = getDiagnosticSessionActivitySnapshot({
+    sessionId: operation.sessionId,
+    sessionKey: operation.key,
+  });
+  const remainingMs = operation.result
+    ? REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS - ageMs
+    : resolveRunStaleThresholdMs(activity, ageMs) - ageMs;
+  return Math.min(REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS, Math.max(1, remainingMs));
 }

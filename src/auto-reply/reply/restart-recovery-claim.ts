@@ -123,6 +123,7 @@ export function createReplyRestartRecoveryClaimController(params: {
 }): ReplyRestartRecoveryClaimController {
   let recoveryRunId: string = randomUUID();
   let recoverySourceRunId: string | undefined;
+  let trackedSessionId: string | undefined;
   let tracked = false;
   let confirmedArmed = false;
   const assertReadCurrent = () => {
@@ -277,6 +278,7 @@ export function createReplyRestartRecoveryClaimController(params: {
       params.setEntry(adopted);
       recoveryRunId = admissionRunId;
       recoverySourceRunId = normalizeOptionalString(adopted.restartRecoveryDeliverySourceRunId);
+      trackedSessionId = adopted.sessionId;
       tracked = true;
       return "admitted";
     }
@@ -354,6 +356,7 @@ export function createReplyRestartRecoveryClaimController(params: {
     params.setEntry(persisted);
     recoverySourceRunId = normalizeOptionalString(persisted.restartRecoveryDeliverySourceRunId);
     tracked = persisted.restartRecoveryDeliveryRunId === recoveryRunId;
+    trackedSessionId = tracked ? persisted.sessionId : undefined;
     return "admitted";
   };
 
@@ -543,8 +546,19 @@ export function createReplyRestartRecoveryClaimController(params: {
         assertReadCurrent,
       );
       assertReadCurrent();
-      confirmedArmed =
-        persisted?.abortedLastRun === true || params.getEntry()?.abortedLastRun === true;
+      const isTrackedClaim = (entry: SessionEntry | undefined) =>
+        Boolean(
+          entry &&
+          entry.sessionId === trackedSessionId &&
+          entry.restartRecoveryDeliveryRunId === recoveryRunId &&
+          normalizeOptionalString(entry.restartRecoveryDeliverySourceRunId) === recoverySourceRunId,
+        );
+      if (!confirmedArmed) {
+        const current = params.getEntry();
+        confirmedArmed =
+          (isTrackedClaim(persisted) && persisted?.abortedLastRun === true) ||
+          (isTrackedClaim(current) && current?.abortedLastRun === true);
+      }
       return confirmedArmed;
     } catch (error) {
       if (isAgentRunStaleLifecycleError(error) && isRetiredRestart()) {

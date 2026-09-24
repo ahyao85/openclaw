@@ -146,6 +146,43 @@ it.each([
   },
 );
 
+it("does not arm an old claim from a same-generation successor row", async () => {
+  await withTrackedReply(async ({ controller, operation, replaceWithSuccessor, readEntry }) => {
+    const read = entryReads.readSessionEntryInWorker;
+    const reads = vi
+      .spyOn(entryReads, "readSessionEntryInWorker")
+      .mockImplementationOnce(async (...args) => {
+        const result = await read(...args);
+        await replaceWithSuccessor();
+        return result;
+      });
+    try {
+      operation.abortForRestart();
+      const reply = await handleReplyAgentRunError(new Error("Backend stopped"), {
+        resolveVisibleReplyDelivery: async () => false,
+        isHeartbeat: false,
+        replyExpectation: "required",
+        isRestartRecoveryArmed: controller.isArmed,
+        replyOperation: operation,
+        resolvedVerboseLevel: "off",
+        returnWithQueuedFollowupDrain: (value) => value,
+        sessionCtx: {},
+      });
+      expect(reply?.text).toBe(
+        "⚠️ Gateway is restarting. Please wait a few seconds and try again.",
+      );
+      expect(reads).toHaveBeenCalledOnce();
+      expect(readEntry()).toMatchObject({
+        sessionId: "successor-session",
+        restartRecoveryDeliveryRunId: "successor-recovery",
+        abortedLastRun: true,
+      });
+    } finally {
+      reads.mockRestore();
+    }
+  });
+});
+
 it.each([false, true])(
   "settles restart and drains followups when lifecycle retires during cold registration (confirmed=%s)",
   async (confirmed) => {
