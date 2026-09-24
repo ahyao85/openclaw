@@ -9,6 +9,7 @@ import {
   markPluginRegistryRetired,
   revokePluginRecord,
 } from "../plugins/registry-lifecycle.js";
+import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import {
   DetachedTaskRuntimeOwnerRetiredError,
@@ -223,6 +224,42 @@ describe("detached-task-runtime", () => {
     mockCreateRunningTaskRunCore.mockReset();
     mockCreateRunningTaskRunCoreWithReceiptAsync.mockReset();
   });
+
+  it.each([
+    { successor: "core-owned", settles: true },
+    { successor: "plugin-owned", settles: false },
+  ])(
+    "settles work from a replaced plugin generation only while core still owns tasks ($successor)",
+    async ({ settles }) => {
+      const task = createFakeTaskRecord();
+      const transition = vi
+        .spyOn(taskTransitions, "transitionTaskRecordsByRunAsync")
+        .mockResolvedValue([task]);
+      const spawning = createEmptyPluginRegistry();
+      setActivePluginRegistry(spawning);
+      try {
+        // A plugin reload publishes a successor and retires the admitting generation.
+        setActivePluginRegistry(createEmptyPluginRegistry());
+        markPluginRegistryRetired(spawning);
+        if (!settles) {
+          setDetachedTaskLifecycleRuntime({ ...getDetachedTaskLifecycleRuntime() });
+        }
+        const settlement = withPluginRuntimeRegistryScope(spawning, () =>
+          finalizeTaskRunByRunIdAsync({ runId: task.runId!, status: "succeeded", endedAt: 200 }),
+        );
+        if (settles) {
+          await expect(settlement).resolves.toEqual([task]);
+          expect(transition).toHaveBeenCalledOnce();
+        } else {
+          await expect(settlement).rejects.toBeInstanceOf(DetachedTaskRuntimeOwnerRetiredError);
+          expect(transition).not.toHaveBeenCalled();
+        }
+      } finally {
+        transition.mockRestore();
+        resetPluginRuntimeStateForTest();
+      }
+    },
+  );
 
   describe("awaited creation", () => {
     async function withRuntimeOwner(

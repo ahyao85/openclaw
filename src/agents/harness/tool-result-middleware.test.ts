@@ -1,5 +1,7 @@
 // Verifies tool-result middleware validation, sanitization, and fail-closed behavior.
 import { describe, expect, it } from "vitest";
+import type { AgentToolResultMiddleware } from "../../plugins/agent-tool-result-middleware-types.js";
+import { PluginInstance } from "../../plugins/plugin-instance.js";
 import { createAgentToolResultMiddlewareRunner } from "./tool-result-middleware.js";
 
 describe("createAgentToolResultMiddlewareRunner", () => {
@@ -30,6 +32,34 @@ describe("createAgentToolResultMiddlewareRunner", () => {
         status: "error",
         middlewareError: true,
       },
+    });
+  });
+
+  it("keeps the tool result when a middleware plugin retires during the run", async () => {
+    // A run resolves its middleware once; a plugin uninstalled mid-run keeps a stale entry.
+    const instance = new PluginInstance("retired-middleware");
+    const retired = instance.wrap<AgentToolResultMiddleware>((event) => ({
+      result: { ...event.result, content: [{ type: "text", text: "compacted" }] },
+    }));
+    const runner = createAgentToolResultMiddlewareRunner({ runtime: "openclaw" }, [
+      retired,
+      (event) => ({ result: { ...event.result, details: { tagged: true } } }),
+    ]);
+    const event = {
+      toolCallId: "call-1",
+      toolName: "exec",
+      args: {},
+      result: { content: [{ type: "text" as const, text: "exit 0" }], details: {} },
+    };
+    expect((await runner.applyToolResultMiddleware(event)).content).toEqual([
+      { type: "text", text: "compacted" },
+    ]);
+
+    await instance.dispose();
+
+    expect(await runner.applyToolResultMiddleware(event)).toEqual({
+      content: [{ type: "text", text: "exit 0" }],
+      details: { tagged: true },
     });
   });
 

@@ -10,6 +10,7 @@ import type {
   AgentToolResultMiddlewareEvent,
   OpenClawAgentToolResult,
 } from "../../plugins/agent-tool-result-middleware-types.js";
+import { PluginInstanceUnavailableError } from "../../plugins/plugin-instance-error.js";
 import { createLazyPromiseLoader } from "../../shared/lazy-promise.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import { readEmbeddedMessageDeliveryFact } from "../embedded-agent-message-delivery.js";
@@ -461,7 +462,13 @@ export function createAgentToolResultMiddlewareRunner(
               deliveredMessagingFallback,
             );
           }
-        } catch {
+        } catch (error) {
+          if (error instanceof PluginInstanceUnavailableError) {
+            // A plugin removed or reloaded during this run no longer owns
+            // post-processing; its absence must not erase the tool's own result.
+            log.debug(`[${ctx.runtime}] skipped tool result middleware from a retired plugin`);
+            continue;
+          }
           log.warn(
             `[${ctx.runtime}] tool result middleware failed for ${truncateUtf16Safe(
               event.toolName,

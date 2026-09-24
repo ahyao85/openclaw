@@ -1,8 +1,13 @@
 import {
   capturePluginLifecycleAuthority,
   getPluginRecordRegistry,
+  isPluginRegistryRetired,
 } from "../plugins/registry-lifecycle.js";
-import { getPluginRegistryForContext, requireActivePluginRegistry } from "../plugins/runtime.js";
+import {
+  getActivePluginRegistry,
+  getPluginRegistryForContext,
+  requireActivePluginRegistry,
+} from "../plugins/runtime.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import {
   DetachedTaskRuntimeOwnerRetiredError,
@@ -15,12 +20,24 @@ export function getRegisteredDetachedTaskLifecycleRuntime():
   return requireActivePluginRegistry().detachedTaskRuntimes[0]?.runtime;
 }
 
-/** Core creation retains its scoped owner; plugin work follows its exact live instance. */
+/** Core work retains its scoped owner until that generation retires; plugin work follows its exact live instance. */
 export function captureDetachedTaskRuntimeOwner(): {
   runtime: DetachedTaskLifecycleRuntime | undefined;
   assertCurrent: () => void;
 } {
-  const registry = requireActivePluginRegistry();
+  const scoped = requireActivePluginRegistry();
+  const live = getActivePluginRegistry();
+  // Detached work can outlive the plugin generation that admitted it. Core owns
+  // settlement in both generations, so a retired scope settles on the live one.
+  const adopted =
+    live &&
+    isPluginRegistryRetired(scoped) &&
+    !scoped.detachedTaskRuntimes[0] &&
+    !live.detachedTaskRuntimes[0]
+      ? live
+      : undefined;
+  const registry = adopted ?? scoped;
+  const currentRegistry = adopted ? getActivePluginRegistry : getPluginRegistryForContext;
   const registration = registry.detachedTaskRuntimes[0];
   const runtime = registration?.runtime;
   const pluginId = registration?.pluginId;
@@ -49,7 +66,7 @@ export function captureDetachedTaskRuntimeOwner(): {
         }
       } else if (
         authority?.() &&
-        getPluginRegistryForContext() === registry &&
+        currentRegistry() === registry &&
         registry.detachedTaskRuntimes[0] === undefined
       ) {
         return;
