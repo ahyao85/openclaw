@@ -703,7 +703,7 @@ export function markReplyRunDiagnosticProgress(params: {
   });
 }
 
-export function isReplyRunRecoveryBlocked(operation: ReplyOperation): boolean {
+function isReplyRunRecoveryBlocked(operation: ReplyOperation): boolean {
   const backend = getAttachedBackend(operation);
   const blocker =
     !operation.result && backend

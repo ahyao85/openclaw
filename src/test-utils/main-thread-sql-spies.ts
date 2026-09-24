@@ -23,3 +23,5 @@ export function observeMainThreadSql() {
     },
   };
 }
+
+export type MainThreadSqlObserver = ReturnType<typeof observeMainThreadSql>;

@@ -10,7 +10,10 @@ import {
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { getSessionWorkAdmissionRelease } from "../../sessions/session-lifecycle-admission.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
-import { observeMainThreadSql } from "../../test-utils/main-thread-sql-spies.js";
+import {
+  observeMainThreadSql,
+  type MainThreadSqlObserver,
+} from "../../test-utils/main-thread-sql-spies.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { ReplyPayload } from "../types.js";
@@ -268,7 +271,7 @@ export function registerReplyAdmissionCases({
           expect(published.mainRestartRecovery).toBeUndefined();
         }
       };
-      let observer: ReturnType<typeof observeMainThreadSql> | undefined;
+      let observer: MainThreadSqlObserver | undefined;
       const restoreObserver = () => {
         observer?.restore();
         observer = undefined;

@@ -25,10 +25,6 @@ import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { emitAgentRunStatusEvent } from "../../infra/agent-run-status-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import {
-  getDiagnosticSessionActivitySnapshot,
-  resolveRunStaleThresholdMs,
-} from "../../logging/diagnostic-run-activity.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   bindGatewayContextResolver,
@@ -45,11 +41,8 @@ import type { OpenClawAgentDatabaseClaim } from "../../state/openclaw-agent-db-i
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "../../state/openclaw-state-db-contract.js";
 import {
   createReplyOperation,
-  expireStaleReplyOperation,
   isReplyRunSuccessorAdmissionBlocked,
-  isReplyRunEvidenceStale,
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
-  REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS,
   replyRunRegistry,
   ReplyRunAlreadyActiveError,
   ReplyRunFollowupAdmissionBlockedError,
@@ -63,8 +56,9 @@ import {
   waitForReplyRunSuccessorAdmission,
 } from "./reply-run-registry.js";
 import {
-  isReplyRunRecoveryBlocked,
+  expireVisibleStaleOperation,
   lifecycleAdmissionByOperation,
+  resolveVisibleActiveWaitMs,
 } from "./reply-run-registry.state.js";
 import { waitForRestartRecoveryProgress } from "./reply-turn-recovery-wait.js";
 import { createReplyTurnRotationEvidence } from "./reply-turn-rotation.js";
@@ -144,35 +138,6 @@ function rejectLifecycleInvalidatedWork(params: {
 
 function isAbortSignalAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
-}
-
-function expireVisibleStaleOperation(operation: ReplyOperation | undefined): boolean {
-  if (!operation) {
-    return false;
-  }
-  const idleMs = Date.now() - operation.lastActivityAtMs;
-  if (operation.result) {
-    return (
-      idleMs >= REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS &&
-      expireStaleReplyOperation(operation, "terminal_unreleased")
-    );
-  }
-  return isReplyRunEvidenceStale(operation) && expireStaleReplyOperation(operation, "no_activity");
-}
-
-function resolveVisibleActiveWaitMs(operation: ReplyOperation | undefined): number {
-  if (!operation || isReplyRunRecoveryBlocked(operation)) {
-    return REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS;
-  }
-  const ageMs = Date.now() - operation.lastActivityAtMs;
-  const activity = getDiagnosticSessionActivitySnapshot({
-    sessionId: operation.sessionId,
-    sessionKey: operation.key,
-  });
-  const remainingMs = operation.result
-    ? REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS - ageMs
-    : resolveRunStaleThresholdMs(activity, ageMs) - ageMs;
-  return Math.min(REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS, Math.max(1, remainingMs));
 }
 
 type ReplyTurnAdmissionParams = {
