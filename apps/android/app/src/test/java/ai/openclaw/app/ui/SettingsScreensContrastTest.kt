@@ -9,6 +9,8 @@ import ai.openclaw.app.SecurePrefs
 import ai.openclaw.app.bindNodeRuntimeTestFixture
 import ai.openclaw.app.closeNodeRuntimeTestFixture
 import ai.openclaw.app.gateway.GatewayEndpoint
+import ai.openclaw.app.gateway.GatewayRegistryEntry
+import ai.openclaw.app.gateway.GatewayRegistryEntryKind
 import ai.openclaw.app.i18n.NativeStringResources
 import ai.openclaw.app.i18n.nativeString
 import ai.openclaw.app.ui.chat.ChatScreen
@@ -261,7 +263,7 @@ class SettingsScreensContrastTest {
         }
       }
       val failures = mutableListOf<String>()
-      for (text in listOf(nativeString("Connection"), nativeString("Instance ID"), model.instanceId.value)) {
+      for (text in listOf(nativeString("Status"), nativeString("Offline"), nativeString("Instance ID"), model.instanceId.value)) {
         if (text == nativeString("Instance ID")) {
           composeRule.onNodeWithText(nativeString("Diagnostics")).performScrollTo().performClick()
         }
@@ -329,7 +331,7 @@ class SettingsScreensContrastTest {
   @Config(qualifiers = "fr-rFR-w320dp-h800dp-mdpi")
   fun gatewayExplanationAndSecurityKeepCompleteTextAndTlsRestriction() {
     try {
-      val model = offlineTypographyModel()
+      val model = offlineTypographyModel(paired = true)
       val fontScale = mutableStateOf(2f)
       composeRule.setContent {
         DeviceConfigurationOverride(DeviceConfigurationOverride.FontScale(fontScale.value)) {
@@ -340,12 +342,12 @@ class SettingsScreensContrastTest {
       }
       for (key in listOf("Reconnect", "Disconnect")) {
         val label = nativeString(key)
-        val node = composeRule.onNodeWithText(label, useUnmergedTree = true)
-        node.assertCompleteText(label)
+        val node = composeRule.onNodeWithText(label, useUnmergedTree = true).performScrollTo()
         captureTypography("gateway-$key")
         val layouts = mutableListOf<TextLayoutResult>()
         node.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { assertTrue(it(layouts)) }
         val layout = layouts.single()
+        node.assertCompleteText(label)
         assertTrue(
           "$label must move below its peer rather than break inside its action word",
           (0 until layout.lineCount - 1).none { line ->
@@ -380,7 +382,7 @@ class SettingsScreensContrastTest {
     }
   }
 
-  private fun offlineTypographyModel(): MainViewModel {
+  private fun offlineTypographyModel(paired: Boolean = false): MainViewModel {
     app = RuntimeEnvironment.getApplication() as NodeApp
     previousRuntime = app.peekRuntime()
     NativeStringResources.install(app)
@@ -389,6 +391,18 @@ class SettingsScreensContrastTest {
     prefs.setManualHost("wss://gateway.example.test")
     prefs.setManualPort(443)
     prefs.setManualTls(false)
+    if (paired) {
+      prefs.gatewayRegistry.upsert(
+        GatewayRegistryEntry(
+          stableId = "manual|gateway.example.test|443",
+          kind = GatewayRegistryEntryKind.MANUAL,
+          name = "Typography Gateway",
+          host = "gateway.example.test",
+          port = 443,
+          tls = true,
+        ),
+      )
+    }
     runtime = NodeRuntime(app, prefs, NodeRuntimeMode.ScreenshotFixture)
     runtime.disconnect()
     bindNodeRuntimeTestFixture(app, runtime)

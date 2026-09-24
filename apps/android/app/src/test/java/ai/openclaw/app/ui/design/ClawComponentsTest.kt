@@ -62,6 +62,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.os.LocaleListCompat
 import kotlinx.serialization.json.Json
@@ -771,8 +772,19 @@ internal fun SemanticsNodeInteraction.assertCompleteText(label: String) {
   assertEquals(label, layout.layoutInput.text.text)
   assertFalse("$label must retain every line", layout.multiParagraph.didExceedMaxLines)
   assertTrue("$label must fit vertically", layout.multiParagraph.height <= layout.size.height + 1f)
-  // Paragraph width can exceed a tight Text node even when every glyph fits.
-  assertTrue("$label must fit horizontally", (0 until layout.lineCount).all { layout.getLineLeft(it) >= -1f && layout.getLineRight(it) <= layout.size.width + 1f })
+  // Simple Text semantics rebuild centered paragraphs at the parent limit, not the painted intrinsic width.
+  val paragraphOffset =
+    if (layout.layoutInput.style.textAlign == TextAlign.Center) {
+      (layout.multiParagraph.width - layout.size.width) / 2f
+    } else {
+      0f
+    }
+  assertTrue(
+    "$label must fit horizontally",
+    (0 until layout.lineCount).all {
+      layout.getLineLeft(it) - paragraphOffset >= -1f && layout.getLineRight(it) - paragraphOffset <= layout.size.width + 1f
+    },
+  )
   assertTrue("$label must not be ellipsized", (0 until layout.lineCount).none(layout::isLineEllipsized))
   assertEquals("$label must display its final character", label.length, layout.getLineEnd(layout.lineCount - 1, visibleEnd = true))
 }
