@@ -12,6 +12,7 @@ import type {
 } from "../../plugins/agent-tool-result-middleware-types.js";
 import { getPluginValueInstance } from "../../plugins/plugin-instance-scope.js";
 import { getPluginRegistryState } from "../../plugins/runtime-state.js";
+import { hasSingleOpenPluginRegistryOwner } from "../../plugins/runtime.js";
 import { createLazyPromiseLoader } from "../../shared/lazy-promise.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import { readEmbeddedMessageDeliveryFact } from "../embedded-agent-message-delivery.js";
@@ -411,8 +412,11 @@ function reconcileDeliveredMessagingFailure(
  */
 function isRemovedPluginMiddleware(handler: AgentToolResultMiddleware): boolean {
   const instance = getPluginValueInstance(handler);
+  // The active registry is this run's Gateway only when one owner is open;
+  // otherwise a stale handler fails closed as before.
   return (
     instance !== undefined &&
+    hasSingleOpenPluginRegistryOwner() &&
     (instance.disposing || !instance.acceptingCalls) &&
     !getPluginRegistryState()?.activeRegistry?.plugins.some(
       (record) => record.id === instance.pluginId && record.enabled && record.status === "loaded",

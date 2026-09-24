@@ -518,6 +518,22 @@ export function createPluginRegistryOwner(registry: PluginRegistry, workspaceDir
   };
 }
 
+/**
+ * True while exactly one Gateway registry owner is open in this process. Reload
+ * recovery that follows the process-active registry is only sound in that
+ * topology; with several open owners the active registry may belong to another
+ * Gateway.
+ */
+export function hasSingleOpenPluginRegistryOwner(): boolean {
+  let open = 0;
+  for (const owner of registryOwners) {
+    if (!owner.closing && ++open > 1) {
+      return false;
+    }
+  }
+  return open === 1;
+}
+
 export function getActivePluginRegistry(): PluginRegistry | null {
   return state.activeRegistry;
 }

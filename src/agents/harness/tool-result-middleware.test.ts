@@ -4,6 +4,12 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import type { AgentToolResultMiddleware } from "../../plugins/agent-tool-result-middleware-types.js";
 import { PluginInstanceUnavailableError } from "../../plugins/plugin-instance-error.js";
 import { PluginInstance } from "../../plugins/plugin-instance.js";
+import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
+import {
+  createPluginRegistryOwner,
+  resetPluginRuntimeStateForTest,
+  setActivePluginRegistry,
+} from "../../plugins/runtime.js";
 import { createAgentToolResultMiddlewareRunner } from "./tool-result-middleware.js";
 
 describe("createAgentToolResultMiddlewareRunner", () => {
@@ -64,7 +70,10 @@ describe("createAgentToolResultMiddlewareRunner", () => {
       await releaseEarlier.promise;
       return { result: { ...event.result, content: [{ type: "text", text: "compacted" }] } };
     };
-    // No live registry lists this plugin, so disposal leaves it removed.
+    // One open Gateway owner; its next registry no longer lists this plugin.
+    const registry = createEmptyPluginRegistry();
+    setActivePluginRegistry(registry);
+    const gateway = createPluginRegistryOwner(registry);
     const instance = new PluginInstance("removed-mid-call");
     const later = instance.wrap<AgentToolResultMiddleware>((event) => ({
       result: { ...event.result, content: [{ type: "text", text: "later" }] },
@@ -77,14 +86,21 @@ describe("createAgentToolResultMiddlewareRunner", () => {
       args: {},
       result: { content: [{ type: "text", text: "exit 0" }], details: {} },
     });
-    await earlierEntered.promise;
-    await instance.dispose();
-    releaseEarlier.resolve();
+    try {
+      await earlierEntered.promise;
+      const next = createEmptyPluginRegistry();
+      setActivePluginRegistry(next);
+      gateway.publish(next);
+      await instance.dispose();
+      releaseEarlier.resolve();
 
-    expect(await applied).toEqual({
-      content: [{ type: "text", text: "compacted" }],
-      details: {},
-    });
+      expect(await applied).toEqual({
+        content: [{ type: "text", text: "compacted" }],
+        details: {},
+      });
+    } finally {
+      resetPluginRuntimeStateForTest();
+    }
   });
 
   it("fails closed for invalid middleware results", async () => {

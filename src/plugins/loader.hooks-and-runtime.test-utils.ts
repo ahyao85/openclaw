@@ -32,7 +32,7 @@ import { loadPluginManifestRegistryCore } from "./manifest-registry.js";
 import { createPluginCache, retirePluginCache, withPluginCache } from "./plugin-cache.js";
 import { getPluginInstance } from "./plugin-instance-scope.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
-import { setActivePluginRegistry } from "./runtime.js";
+import { createPluginRegistryOwner, setActivePluginRegistry } from "./runtime.js";
 
 afterEach(globalAfterEach0);
 afterAll(globalAfterAll1);
@@ -1349,6 +1349,7 @@ ${channelPluginSource({
   it.each([
     { successor: "removed", preserved: true },
     { successor: "replaced", preserved: false },
+    { successor: "removed while a second Gateway is open", preserved: false },
   ])(
     "keeps a run's tool result only when its middleware plugin was $successor",
     async ({ successor, preserved }) => {
@@ -1373,6 +1374,7 @@ ${channelPluginSource({
         throw new Error("expected a loaded middleware plugin instance");
       }
       setActivePluginRegistry(registry);
+      const gateway = createPluginRegistryOwner(registry);
       // A run resolves its middleware once and keeps that list.
       const runner = createAgentToolResultMiddlewareRunner({ runtime: "openclaw" }, [
         entry.handler,
@@ -1388,10 +1390,15 @@ ${channelPluginSource({
       ]);
 
       const next = createEmptyPluginRegistry();
-      if (!preserved) {
+      if (successor === "replaced") {
         next.plugins.push({ ...record });
       }
       setActivePluginRegistry(next);
+      gateway.publish(next);
+      if (successor.includes("second Gateway")) {
+        // With two open owners the active registry may be the other Gateway's.
+        createPluginRegistryOwner(createEmptyPluginRegistry());
+      }
       await instance.dispose();
       // Callable and cyclic details survive only on the untouched no-middleware path.
       const details: Record<string, unknown> = { format: () => "exit 0" };

@@ -6,6 +6,7 @@ import {
 import {
   getActivePluginRegistry,
   getPluginRegistryForContext,
+  hasSingleOpenPluginRegistryOwner,
   requireActivePluginRegistry,
 } from "../plugins/runtime.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
@@ -23,16 +24,21 @@ export function getRegisteredDetachedTaskLifecycleRuntime():
 /**
  * Core work retains its scoped owner; plugin work follows its exact live instance.
  * Settlement of already-admitted work may move from a retired generation to the
- * live one while core owns tasks in both. New work never leaves its admitting scope.
+ * live one while core owns tasks in both and exactly one Gateway owner is open.
+ * New work never leaves its admitting scope.
  */
 export function captureDetachedTaskRuntimeOwner(options?: { settlement?: boolean }): {
   runtime: DetachedTaskLifecycleRuntime | undefined;
   assertCurrent: () => void;
 } {
   const scoped = requireActivePluginRegistry();
-  const live = getActivePluginRegistry();
+  // With several open Gateway owners the active registry may be another
+  // Gateway's; keep the strict owner check there.
+  const live =
+    options?.settlement === true && hasSingleOpenPluginRegistryOwner()
+      ? getActivePluginRegistry()
+      : null;
   const adopted =
-    options?.settlement === true &&
     live &&
     isPluginRegistryRetired(scoped) &&
     !scoped.detachedTaskRuntimes[0] &&
