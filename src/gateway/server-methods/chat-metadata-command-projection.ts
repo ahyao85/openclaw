@@ -9,7 +9,7 @@ export type CommandProjectionEntry =
   | { state: "pending"; promise: Promise<unknown[] | undefined> }
   | { state: "ready"; commands: unknown[] | undefined };
 
-function commandProjectionKey(params: ChatMetadataReadParams): string {
+export function commandProjectionKey(params: ChatMetadataReadParams): string {
   const entry = params.sessionEntry;
   return JSON.stringify([
     normalizeAgentId(params.agentId),
