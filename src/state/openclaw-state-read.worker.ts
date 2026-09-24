@@ -20,6 +20,8 @@ import {
   loadSubagentSessionListRunsFromSqlite,
 } from "../agents/subagents/registry/subagent-registry.store.sqlite.js";
 import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/workspace-state-store.kernel.js";
+import { isChannelIngressReadCommand } from "../channels/message/ingress-queue-read-contract.js";
+import { readChannelIngressInDatabase } from "../channels/message/ingress-queue-read.worker.js";
 import { observeCronRunRecoveryInDatabase } from "../cron/store/run-recovery.read.js";
 import {
   readGitHubPublicationRequest,
@@ -205,6 +207,9 @@ serveOwnedWorkerTasks(
                       (entry) => selectAcpSessionRowForRead(db, entry) ?? null,
                     ),
                   };
+                }
+                if (isChannelIngressReadCommand(command)) {
+                  return readChannelIngressInDatabase(db, command);
                 }
                 if (command.type === "subagents.runs") {
                   const rows =
