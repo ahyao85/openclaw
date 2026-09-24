@@ -160,7 +160,9 @@ class ArchiveSession {
               ? "published"
               : request.operation === "pending"
                 ? "pending"
-                : "final-read";
+                : request.operation === "read-page"
+                  ? "page-read"
+                  : "final-read";
         if (
           !isRecord(response) ||
           response.type !== expectedType ||
