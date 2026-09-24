@@ -405,8 +405,9 @@ function reconcileDeliveredMessagingFailure(
 
 /**
  * A run resolves middleware once. When a handler's own plugin was retired and is
- * gone from the live registry, its post-processing no longer applies. This check
- * runs before the handler, so a skipped plugin cannot have touched the result.
+ * gone from the live registry, its post-processing no longer applies. The runner
+ * filters these before invoking any handler, so a skipped plugin cannot have
+ * touched the result.
  */
 function isRemovedPluginMiddleware(handler: AgentToolResultMiddleware): boolean {
   const instance = getPluginValueInstance(handler);
@@ -442,7 +443,11 @@ export function createAgentToolResultMiddlewareRunner(
     async applyToolResultMiddleware(
       event: AgentToolResultMiddlewareEvent,
     ): Promise<OpenClawAgentToolResult> {
-      const handlersForRun = await resolveHandlers();
+      // Drop removed plugins' handlers before choosing a path, so a run whose
+      // only middleware was removed keeps the untouched no-middleware result.
+      const handlersForRun = (await resolveHandlers()).filter(
+        (handler) => !isRemovedPluginMiddleware(handler),
+      );
       // Fast path: with no middleware registered the result is delivered
       // unchanged; skip validation entirely so tool emitters that produce
       // dependency payloads on `details` (SDK objects with methods, cycles)
@@ -458,9 +463,6 @@ export function createAgentToolResultMiddlewareRunner(
       );
       let current = sanitizeToolResultForMiddleware(event.result);
       for (const handler of handlersForRun) {
-        if (isRemovedPluginMiddleware(handler)) {
-          continue;
-        }
         try {
           const next = await handler({ ...event, result: current }, ctx);
           // Middleware may mutate event.result in place for legacy runtime parity.

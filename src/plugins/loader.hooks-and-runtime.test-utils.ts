@@ -1393,11 +1393,20 @@ ${channelPluginSource({
       }
       setActivePluginRegistry(next);
       await instance.dispose();
-      const result = await runner.applyToolResultMiddleware(event);
+      // Callable and cyclic details survive only on the untouched no-middleware path.
+      const details: Record<string, unknown> = { format: () => "exit 0" };
+      details.self = details;
+      const raw = { content: [{ type: "text" as const, text: "exit 0" }], details };
+      const result = await runner.applyToolResultMiddleware({ ...event, result: raw });
       if (preserved) {
-        // The removed plugin no longer post-processes; the tool's own output survives.
-        expect(result.content).toEqual(event.result.content);
-        expect(result.details).not.toMatchObject({ middlewareError: true });
+        // The removed plugin no longer post-processes: same result as no middleware.
+        expect(result).toBe(raw);
+        expect(
+          await createAgentToolResultMiddlewareRunner(
+            { runtime: "openclaw" },
+            [],
+          ).applyToolResultMiddleware({ ...event, result: raw }),
+        ).toBe(raw);
       } else {
         // A replacement exists, so the stale handler fails closed.
         expect(result.details).toEqual({ status: "error", middlewareError: true });
