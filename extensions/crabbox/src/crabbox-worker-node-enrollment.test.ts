@@ -62,6 +62,7 @@ async function packageFixture(build: string, postinstall = ""): Promise<Buffer> 
     path.join(packageRoot, "openclaw.mjs"),
     `import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 const args = process.argv.slice(2);
 const state = process.env.OPENCLAW_STATE_DIR;
 if (args[0] === "--version") {
@@ -77,13 +78,18 @@ if (args[0] === "--version") {
   process.title = "openclaw-connect";
   const enabledFile = path.join(state, "enabled");
   const enabledPlugins = fs.existsSync(enabledFile) ? fs.readFileSync(enabledFile, "utf8").trim().split("\\n") : [];
-  fs.writeFileSync(path.join(state, "launch.json.tmp"), JSON.stringify({ build: ${JSON.stringify(build)}, args, cli: process.argv[1], token: process.env.CRABBOX_WORKER_BOOTSTRAP_TOKEN, setupCode: process.env.CRABBOX_WORKER_SETUP_CODE, environment: { DISPLAY: process.env.DISPLAY, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR }, enabledPlugins }));
+  fs.writeFileSync(path.join(state, "launch.json.tmp"), JSON.stringify({ build: ${JSON.stringify(build)}, args, cli: process.argv[1], token: process.env.CRABBOX_WORKER_BOOTSTRAP_TOKEN, setupCode: process.env.CRABBOX_WORKER_SETUP_CODE, tool: process.platform !== "win32" ? execFileSync("bootstrap-tool-fixture", {encoding:"utf8"}).trim() : undefined, environment: { DISPLAY: process.env.DISPLAY, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR }, enabledPlugins }));
   // Existence signals readiness only after the child publishes complete JSON.
   fs.renameSync(path.join(state, "launch.json.tmp"), path.join(state, "launch.json"));
   setInterval(() => {}, 60000);
 }
 `,
   );
+  const tools = path.join(packageRoot, "dist", "worker-tools", "bin");
+  fs.mkdirSync(tools, { recursive: true });
+  fs.writeFileSync(path.join(tools, "bootstrap-tool-fixture"), "#!/bin/sh\necho verified-tool\n", {
+    mode: 0o755,
+  });
   const archive = path.join(root, "package.tgz");
   await tar.create({ cwd: root, file: archive, gzip: true }, ["package"]);
   return fs.readFileSync(archive);
@@ -686,6 +692,7 @@ describe.skipIf(process.platform === "win32")("source node bootstrap", () => {
         "Bootstrap test",
       ],
     });
+    if (process.platform !== "win32") expect(launch.tool).toBe("verified-tool");
     expect(launch).not.toHaveProperty("token");
     expect(launch).not.toHaveProperty("setupCode");
     expect(launch.cli).toContain(`/node-runtimes/${nodeBootstrap.sha256}/`);
