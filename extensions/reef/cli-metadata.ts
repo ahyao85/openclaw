@@ -1,5 +1,5 @@
 // Reef plugin module implements cli metadata behavior.
-import { definePluginEntry } from "openclaw/plugin-sdk/core";
+import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { registerReefCliMetadata } from "./src/cli-metadata.js";
 
 export { registerReefCliMetadata } from "./src/cli-metadata.js";

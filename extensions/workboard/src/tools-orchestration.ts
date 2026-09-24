@@ -1,8 +1,8 @@
 import type { WorkboardCard } from "@openclaw/workboard-contract";
-import { jsonResult, readStringParam } from "openclaw/plugin-sdk/core";
+import { readStringParam } from "openclaw/plugin-sdk/param-readers";
 import type { AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import { asNonArrayRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
-import type { AgentToolResult } from "openclaw/plugin-sdk/tool-results";
+import { jsonResult, type AgentToolResult } from "openclaw/plugin-sdk/tool-results";
 import { Type } from "typebox";
 import { redactClaimToken } from "./card-redaction.js";
 import type { WorkboardStore } from "./store.js";

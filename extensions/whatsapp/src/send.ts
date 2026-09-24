@@ -6,7 +6,6 @@ import {
 } from "openclaw/plugin-sdk/channel-outbound";
 import { formatCliCommand } from "openclaw/plugin-sdk/cli-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import { generateSecureUuid } from "openclaw/plugin-sdk/core";
 import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-runtime";
 import { redactIdentifier } from "openclaw/plugin-sdk/logging-core";
 import { resolveMarkdownTableMode } from "openclaw/plugin-sdk/markdown-table-runtime";
@@ -15,6 +14,7 @@ import { requireRuntimeConfig } from "openclaw/plugin-sdk/plugin-config-runtime"
 import { normalizePollInput, type PollInput } from "openclaw/plugin-sdk/poll-runtime";
 import { resolveChunkMode, resolveTextChunkLimit } from "openclaw/plugin-sdk/reply-chunking";
 import { createSubsystemLogger, getChildLogger } from "openclaw/plugin-sdk/runtime-env";
+import { generateSecureUuid } from "openclaw/plugin-sdk/secure-random-runtime";
 import {
   resolveDefaultWhatsAppAccountId,
   resolveWhatsAppAccount,

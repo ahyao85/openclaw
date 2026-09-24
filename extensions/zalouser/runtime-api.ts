@@ -31,11 +31,8 @@ export type {
   OpenClawPluginToolContext,
 } from "openclaw/plugin-sdk/core";
 export type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
-export {
-  DEFAULT_ACCOUNT_ID,
-  buildChannelConfigSchema,
-  normalizeAccountId,
-} from "openclaw/plugin-sdk/core";
+export { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/account-id";
+export { buildChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-schema";
 export { chunkTextForOutbound } from "openclaw/plugin-sdk/text-chunking";
 export { isDangerousNameMatchingEnabled } from "openclaw/plugin-sdk/dangerous-name-runtime";
 export {

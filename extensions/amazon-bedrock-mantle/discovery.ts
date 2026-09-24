@@ -1,9 +1,9 @@
+import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 /**
  * Amazon Bedrock Mantle discovery and bearer-token handling. It resolves
  * explicit tokens, IAM-generated tokens, model catalogs, and implicit provider config.
  */
-import { createSubsystemLogger } from "openclaw/plugin-sdk/core";
-import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { createSubsystemLogger } from "openclaw/plugin-sdk/logging-core";
 import {
   isFutureDateTimestampMs,
   resolveExpiresAtMsFromDurationMs,

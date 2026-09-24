@@ -4,7 +4,7 @@
 export type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 export type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 export type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
-export { createDedupeCache } from "openclaw/plugin-sdk/core";
+export { createDedupeCache } from "openclaw/plugin-sdk/dedupe-runtime";
 export { createLoggerBackedRuntime } from "./src/logger-runtime.js";
 export {
   fetchWithSsrFGuard,
