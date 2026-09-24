@@ -373,6 +373,13 @@ copies created by older writers. Distinct nonempty indexes, distinct transcript
 archives, invalid archives, and archives missing without a recorded prior
 restore fail closed so restore cannot silently replace or hide recoverable data.
 
+Reimporting an unchanged, manifest-recorded restored index preserves current SQLite
+session metadata while reconciling its transcript history. It does not reset newer
+labels, activity timestamps, or the current session pointer to the restored values.
+A changed or unreadable restore receipt refuses import without replacing that state;
+a newly created index with a different file identity remains an ordinary import.
+Keep recovery manifests with their original files so Doctor can distinguish the two.
+
 After verifying the migration and current history, use
 `openclaw update cleanup --dry-run` to inspect retained recovery data without
 stopping the Gateway. Apply with `openclaw update cleanup` or
