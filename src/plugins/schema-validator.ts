@@ -9,6 +9,10 @@ import { Format } from "typebox/format";
 import { Compile, type Validator as TypeBoxValidator } from "typebox/schema";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import { appendAllowedValuesHint, summarizeAllowedValues } from "../config/allowed-values.js";
+import {
+  isRuntimeConfigUnknownPath,
+  omitRuntimeConfigPaths,
+} from "../config/validation-runtime.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";
 import {
   applyJsonSchemaDefaults,
@@ -351,6 +355,35 @@ function formatValidationErrors(
   });
 }
 
+// TypeBox emits raw keys in instance paths, not escaped JSON pointers. Resolve
+// against actual own keys and refuse ambiguous paths rather than deleting a sibling.
+function resolveTypeBoxInstancePath(value: unknown, path: string): (string | number)[] | undefined {
+  const matches: (string | number)[][] = [];
+  const visit = (current: unknown, remaining: string, segments: (string | number)[]): void => {
+    if (matches.length > 1) {
+      return;
+    }
+    if (remaining === "") {
+      matches.push(segments);
+      return;
+    }
+    if (current === null || typeof current !== "object") {
+      return;
+    }
+    for (const key of Object.keys(current)) {
+      const prefix = `/${key}`;
+      if (remaining === prefix || remaining.startsWith(`${prefix}/`)) {
+        visit(Reflect.get(current, key), remaining.slice(prefix.length), [
+          ...segments,
+          Array.isArray(current) ? Number(key) : key,
+        ]);
+      }
+    }
+  };
+  visit(value, path, []);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 /**
  * Result of validating manifest-sourced input. `schemaError` on the failure branch tells
  * callers whether the schema itself is unusable (true) versus the value failing a
@@ -359,7 +392,7 @@ function formatValidationErrors(
  * value could ever satisfy.
  */
 type PluginSchemaValidationResult =
-  | { ok: true; value: unknown }
+  | { ok: true; value: unknown; ignoredPaths?: (string | number)[][] }
   | { ok: false; errors: JsonSchemaValidationError[]; schemaError: boolean };
 
 /**
@@ -369,15 +402,18 @@ type PluginSchemaValidationResult =
  * repository-owned schema is a programming error and must stay loud.
  */
 export function validatePluginSchemaValue(
-  params: Parameters<typeof validateJsonSchemaValue>[0] & { origin: PluginOrigin },
+  params: Parameters<typeof validateJsonSchemaValue>[0] & {
+    origin: PluginOrigin;
+    ignoreUnknownProperties?: boolean;
+  },
 ): PluginSchemaValidationResult {
-  const { origin, ...validationParams } = params;
+  const { origin, ignoreUnknownProperties, ...validationParams } = params;
   if (origin === "bundled") {
-    const result = validateJsonSchemaValue(validationParams);
+    const result = validateJsonSchemaValueInternal(validationParams, ignoreUnknownProperties);
     return result.ok ? result : { ...result, schemaError: false };
   }
   try {
-    const result = validateJsonSchemaValue(validationParams);
+    const result = validateJsonSchemaValueInternal(validationParams, ignoreUnknownProperties);
     return result.ok ? result : { ...result, schemaError: false };
   } catch (error) {
     // The thrown text can embed raw manifest content (TypeBox echoes a bad regex
@@ -400,6 +436,15 @@ export function validateJsonSchemaValue(params: {
   applyDefaults?: boolean;
   cache?: boolean;
 }): { ok: true; value: unknown } | { ok: false; errors: JsonSchemaValidationError[] } {
+  return validateJsonSchemaValueInternal(params);
+}
+
+function validateJsonSchemaValueInternal(
+  params: Parameters<typeof validateJsonSchemaValue>[0],
+  ignoreUnknownProperties = false,
+):
+  | { ok: true; value: unknown; ignoredPaths?: (string | number)[][] }
+  | { ok: false; errors: JsonSchemaValidationError[] } {
   const schemaKey = params.cacheKey ?? fingerprintSchema(params.schema);
   const cacheKey = params.applyDefaults ? `${schemaKey}::defaults` : schemaKey;
   let cached = params.cache === false ? undefined : schemaCache.get(cacheKey);
@@ -431,11 +476,49 @@ export function validateJsonSchemaValue(params: {
 
   return withPluginFormatSemantics(() => {
     const originalValue = params.sourceValue === undefined ? params.value : params.sourceValue;
-    const value =
+    let value =
       params.applyDefaults && cached.hasDefaults
         ? applyJsonSchemaDefaults(params.schema, structuredClone(originalValue))
         : originalValue;
-    const errors = checkSchemaWithCurrentFormats(cached.validate, value);
+    let ignoredPaths: (string | number)[][] = [];
+    let errors = checkSchemaWithCurrentFormats(cached.validate, value);
+    if (
+      ignoreUnknownProperties &&
+      params.sourceValue === undefined &&
+      errors?.length &&
+      errors.every((error) => error.keyword === "additionalProperties")
+    ) {
+      // Do not reinterpret union/conditional/required failures as harmless extras.
+      const schema = normalizeJsonSchemaForTypeBox(cached.schema);
+      const paths = errors.flatMap((error) => {
+        const schemaPath = resolveTypeBoxInstancePath(schema, (error.schemaPath ?? "#").slice(1));
+        const owner = schemaPath?.reduce<unknown>(
+          (current, key) =>
+            current !== null && typeof current === "object" ? Reflect.get(current, key) : undefined,
+          schema,
+        );
+        // A schema-valued additionalProperties reports failing record entries too.
+        // Only false marks extras; never omit an entire configured owner as recovery.
+        if (asOptionalObjectRecord(owner)?.additionalProperties !== false) {
+          return [];
+        }
+        const parent = resolveTypeBoxInstancePath(value, error.instancePath ?? "");
+        return parent
+          ? resolveAdditionalProperties(error)
+              .map((key) => parent.concat(key))
+              .filter(isRuntimeConfigUnknownPath)
+          : [];
+      });
+      if (paths.length > 0) {
+        ignoredPaths = paths;
+        const projected = omitRuntimeConfigPaths(originalValue, paths);
+        value =
+          params.applyDefaults && cached.hasDefaults
+            ? applyJsonSchemaDefaults(params.schema, projected)
+            : projected;
+        errors = checkSchemaWithCurrentFormats(cached.validate, value);
+      }
+    }
     // Defaults may activate a required-only conditional failure in otherwise valid source.
     if (
       errors &&
@@ -453,7 +536,7 @@ export function validateJsonSchemaValue(params: {
       return { ok: false, errors: formatValidationErrors(errors) };
     }
     if (originalValue === params.value) {
-      return { ok: true, value };
+      return { ok: true, value, ...(ignoredPaths.length ? { ignoredPaths } : {}) };
     }
     return {
       ok: true,

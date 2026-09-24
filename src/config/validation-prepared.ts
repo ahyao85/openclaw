@@ -11,6 +11,7 @@ export type PreparedPluginSchemaValidations = Map<
   {
     schema: SchemaValidationParams["schema"];
     origin: SchemaValidationParams["origin"];
+    ignoreUnknownProperties: SchemaValidationParams["ignoreUnknownProperties"];
     input: unknown;
     result: SchemaValidationResult;
   }
@@ -29,6 +30,7 @@ export function validatePreparedPluginSchemaValue(
     previous &&
     (previous.schema === params.schema || isDeepStrictEqual(previous.schema, params.schema)) &&
     previous.origin === params.origin &&
+    previous.ignoreUnknownProperties === params.ignoreUnknownProperties &&
     isDeepStrictEqual(previous.input, params.value)
   ) {
     return structuredClone(previous.result);
@@ -38,6 +40,7 @@ export function validatePreparedPluginSchemaValue(
   prepared.set(params.cacheKey, {
     schema: params.schema,
     origin: params.origin,
+    ignoreUnknownProperties: params.ignoreUnknownProperties,
     input,
     result: structuredClone(result),
   });

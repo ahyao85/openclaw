@@ -14,21 +14,23 @@ function projectCanonicalSecretRefsOntoRuntime(
   if (isSecretRef(sourceValue)) {
     return sourceValue;
   }
-  if (Array.isArray(sourceValue)) {
-    const runtimeArray = Array.isArray(runtimeValue) ? runtimeValue : [];
-    return sourceValue.map((entry, index) =>
-      projectCanonicalSecretRefsOntoRuntime(entry, runtimeArray[index]),
+  if (Array.isArray(runtimeValue) && Array.isArray(sourceValue)) {
+    return runtimeValue.map((entry, index) =>
+      projectCanonicalSecretRefsOntoRuntime(sourceValue[index], entry),
     );
   }
-  if (isRecord(sourceValue)) {
-    const runtimeRecord = isRecord(runtimeValue) ? runtimeValue : {};
-    const projected: Record<string, unknown> = { ...runtimeRecord };
-    for (const [key, entry] of Object.entries(sourceValue)) {
-      projected[key] = projectCanonicalSecretRefsOntoRuntime(entry, runtimeRecord[key]);
+  if (isRecord(runtimeValue) && isRecord(sourceValue)) {
+    const projected: Record<string, unknown> = { ...runtimeValue };
+    // Restore refs only on retained runtime paths. Source also holds deliberately
+    // ignored settings and must not repopulate the accepted runtime candidate.
+    for (const key of Object.keys(runtimeValue)) {
+      if (Object.hasOwn(sourceValue, key)) {
+        projected[key] = projectCanonicalSecretRefsOntoRuntime(sourceValue[key], runtimeValue[key]);
+      }
     }
     return projected;
   }
-  return runtimeValue === undefined ? sourceValue : runtimeValue;
+  return runtimeValue;
 }
 
 export function restoreCanonicalSecretRefs(

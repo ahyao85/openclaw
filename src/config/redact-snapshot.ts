@@ -309,11 +309,13 @@ export function redactConfigSnapshot(
     };
   }
   const context = createRedactionContext(uiHints);
-  // Raw replacement uses only runtime-config secrets. Other projections can hold
-  // different values, so their redaction must not contribute to this collection.
+  // Authored fields can be omitted from the runtime view. Collect their secrets
+  // for raw redaction too, while resolved and migration-only values stay separate.
   const sensitiveValues: string[] = [];
   const redactedConfig = redactObject(snapshot.config, context, sensitiveValues);
-  const redactedParsed = snapshot.parsed ? redactObject(snapshot.parsed, context) : snapshot.parsed;
+  const redactedParsed = snapshot.parsed
+    ? redactObject(snapshot.parsed, context, sensitiveValues)
+    : snapshot.parsed;
   let redactedRaw = snapshot.raw
     ? replaceSensitiveValuesInRaw({
         raw: snapshot.raw,

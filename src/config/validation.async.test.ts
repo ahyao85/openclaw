@@ -6,6 +6,7 @@ import type { OpenClawConfig } from "./types.js";
 import {
   validateConfigObjectWithPlugins,
   validateConfigObjectWithPluginsAsync,
+  validateConfigObjectWithStrictFactsAsync,
   validateConfigObjectRawWithPlugins,
 } from "./validation.js";
 import type { PreparedConfigValidationPluginMetadata } from "./validation.types.js";
@@ -44,6 +45,53 @@ function preparedMetadata(): PreparedConfigValidationPluginMetadata {
 }
 
 describe("async config plugin validation", () => {
+  it("reports ignored source paths while retaining strict authoring diagnostics", async () => {
+    const raw = {
+      future: true,
+      plugins: { entries: { "validation-fixture": { config: { extra: 1 } } } },
+    };
+    const result = await validateConfigObjectWithStrictFactsAsync(raw, {
+      env,
+      schemaValidation: "runtime",
+      loadPluginMetadataSnapshotAsync: async () => preparedMetadata(),
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      config: {
+        plugins: {
+          entries: { "validation-fixture": { config: { workspace: "prepared-workspace" } } },
+        },
+      },
+      ignoredPaths: [["future"], ["plugins", "entries", "validation-fixture", "config", "extra"]],
+      strictIssues: [expect.objectContaining({ path: "" })],
+    });
+    expect(raw).toEqual({
+      future: true,
+      plugins: { entries: { "validation-fixture": { config: { extra: 1 } } } },
+    });
+  });
+
+  it.each([
+    { meta: { migrations: { futurePolicy: true } } },
+    { gateway: { auth: { mode: "token", token: "test", extraPolicy: true } } },
+    { gateway: { auth: { mode: "invalid" } } },
+    { routing: { allowFrom: ["123"] } },
+    { agents: { defaults: { sandbox: { perSession: true } } } },
+    { secrets: { providers: { default: { source: "exec", command: "/test", args: "invalid" } } } },
+    {
+      models: {
+        providers: { custom: { baseUrl: "http://localhost", models: [], api: "invalid" } },
+      },
+    },
+  ])("preserves essential rejection for %j", async (raw) => {
+    const result = await validateConfigObjectWithPluginsAsync(raw, {
+      env,
+      schemaValidation: "runtime",
+      loadPluginMetadataSnapshotAsync: async () => preparedMetadata(),
+    });
+    expect(result.ok).toBe(false);
+  });
+
   it("retains the validated agent list projection for raw validation consumers", () => {
     const result = validateConfigObjectRawWithPlugins(
       { agents: { entries: { main: {} } } },
