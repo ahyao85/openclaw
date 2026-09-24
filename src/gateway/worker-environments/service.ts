@@ -1,6 +1,7 @@
 import { onSessionIdentityMutation } from "../../config/sessions/session-accessor.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { withTimeout } from "../../infra/fs-safe.js";
+import { GatewayScheduler, type GatewayScheduledJob } from "../../infra/gateway-scheduler.js";
 import { isSqliteLockError } from "../../infra/sqlite-error-diagnostics.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
 import type { WorkerExecutionMode, WorkerProfile } from "../../plugins/types.js";
@@ -100,6 +101,7 @@ type WorkerEnvironmentServiceOptions = WorkerProviderLifecycleInputOptions &
     closeNodeBootstrapArtifacts?: () => Promise<void>;
     stopNodeWorkerBundleTransfers?: () => void;
     maintainProviders?: (signal: AbortSignal) => Promise<void>;
+    scheduler?: GatewayScheduler;
     reconcileIntervalMs?: number;
     bootstrapCallTimeoutMs?: number;
     workerCredentialTtlMs?: number;
@@ -133,6 +135,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
   const providerOperations = new KeyedAsyncQueue();
   const activeOperations = new Set<Promise<unknown>>();
   const now = options.now ?? Date.now;
+  const scheduler = options.scheduler ?? new GatewayScheduler();
   const tunnelLifecycle = createWorkerEnvironmentTransportLifecycle(options);
   const inference = createWorkerInferenceManager({
     execute: options.executeInference,
@@ -140,7 +143,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     ...(options.inferenceStore ? { store: options.inferenceStore } : {}),
   });
   let reconcileInFlight: Promise<void> | undefined;
-  let interval: ReturnType<typeof setInterval> | undefined;
+  let reconciliationJob: GatewayScheduledJob | undefined;
   let unsubscribeSessionIdentityMutation: (() => void) | undefined;
   let unsubscribeTurnClaimClosed = options.placementStore?.registerTurnClaimClosedHandler((claim) =>
     inference.cancelClaim(claim),
@@ -493,7 +496,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
   };
 
   const start = () => {
-    if (interval || stopping) {
+    if (reconciliationJob || stopping) {
       return;
     }
     unsubscribeSessionIdentityMutation = onSessionIdentityMutation((mutation) => {
@@ -506,11 +509,13 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     for (const profileId of new Set(store.listForReconcile().map((record) => record.profileId))) {
       providerLifecycle.warmMachineShape(profileId);
     }
-    interval = setInterval(
-      () => void reconcileOnce().catch(() => warn("Worker environment reconcile sweep failed")),
-      options.reconcileIntervalMs ?? 60_000,
-    );
-    interval.unref?.();
+    const everyMs = options.reconcileIntervalMs ?? 60_000;
+    reconciliationJob = scheduler.schedule({
+      id: "worker-environments:reconcile",
+      atMs: scheduler.now() + everyMs,
+      everyMs,
+      run: () => reconcileOnce().catch(() => warn("Worker environment reconcile sweep failed")),
+    });
     void reconcileOnce().catch(() => warn("Worker environment startup reconcile failed"));
   };
 
@@ -521,8 +526,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     providerLifecycle.clearMachineShapeListeners();
     maintenanceAbort.abort();
     options.stopNodeEnrollmentWaits?.();
-    clearInterval(interval);
-    interval = undefined;
+    reconciliationJob?.cancel();
     unsubscribeSessionIdentityMutation?.();
     unsubscribeSessionIdentityMutation = undefined;
     unsubscribeTurnClaimClosed?.();
@@ -544,9 +548,8 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
       ]);
     } finally {
       // Tunnel failures cannot release shutdown before admitted owner-bound operations drain.
-      const reconciliation = reconcileInFlight;
-      if (reconciliation) {
-        await Promise.allSettled([reconciliation]);
+      if (reconcileInFlight) {
+        await Promise.allSettled([reconcileInFlight]);
       }
       while (activeOperations.size > 0) {
         await Promise.allSettled(activeOperations);

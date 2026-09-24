@@ -102,7 +102,7 @@ describe("scheduled tool policy provenance", () => {
     expect(state.store?.jobs.some((entry) => entry.id === job.id)).toBe(true);
     expect(commitGuard).toHaveBeenCalledTimes(2);
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
   });
 
@@ -131,7 +131,7 @@ describe("scheduled tool policy provenance", () => {
     expect(commitGuard).toHaveBeenCalledOnce();
     expect(state.store?.jobs).toHaveLength(1);
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
   });
 
@@ -171,7 +171,7 @@ describe("scheduled tool policy provenance", () => {
     expect(commitGuard).toHaveBeenCalledOnce();
     expect(state.store?.jobs[0]?.name).toBe("updated");
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
   });
 
@@ -224,7 +224,7 @@ describe("scheduled tool policy provenance", () => {
     });
     expect(explicit.toolsAllowProvenance).toBeUndefined();
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
   });
 
@@ -332,7 +332,7 @@ describe("scheduled tool policy provenance", () => {
     );
     expect(persistedAuthorityRow).toBeUndefined();
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
   });
 
@@ -401,7 +401,7 @@ describe("scheduled tool policy provenance", () => {
     expect(recaptured.job.runtimeAuthority).toEqual(replacement);
     expect(recaptured.job.runtimeAuthorityRecoveryRequired).toBeUndefined();
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
   });
 
@@ -447,7 +447,7 @@ describe("scheduled tool policy provenance", () => {
       ownerAccountId: "work",
     });
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
   });
 
@@ -488,7 +488,7 @@ describe("scheduled tool policy provenance", () => {
     );
     expect(reauthorized.scheduledToolPolicy?.mode).toBe("account");
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
   });
 });
@@ -685,7 +685,7 @@ describe("cron stale job-family adoption", () => {
       ]),
     );
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
   });
 });
@@ -794,7 +794,7 @@ describe("cron service ops seam coverage", () => {
       payload: { kind: "systemEvent", text: "new" },
     });
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
 
     const loaded = await loadCronStore(storePath);
@@ -858,7 +858,7 @@ describe("cron service ops seam coverage", () => {
 
     await start(state);
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
 
     const loaded = await loadCronJobsStoreWithConfigJobs(storePath);
@@ -1969,7 +1969,7 @@ describe("cron service ops seam coverage", () => {
       }),
     ).rejects.toThrow(/has no upcoming run time and would never fire/);
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
 
     const loaded = await loadCronStore(storePath);
@@ -1990,7 +1990,7 @@ describe("cron service ops seam coverage", () => {
       payload: { kind: "agentTurn", message: "do work" },
     });
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
 
     expect(typeof job.state.nextRunAtMs).toBe("number");
@@ -2011,14 +2011,14 @@ describe("cron service ops seam coverage", () => {
       payload: { kind: "agentTurn", message: "do work" },
     });
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
 
     await expect(
       update(state, job.id, { schedule: { kind: "cron", expr: "0 0 30 2 *" } }),
     ).rejects.toThrow(/has no upcoming run time and would never fire/);
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
 
     const loaded = await loadCronStore(storePath);
@@ -2050,7 +2050,7 @@ describe("cron service ops seam coverage", () => {
 
     const updated = await update(state, "legacy-unsatisfiable", { enabled: false });
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
 
     expect(updated.enabled).toBe(false);
@@ -2088,7 +2088,7 @@ describe("cron service ops seam coverage", () => {
 
     const updated = await update(state, "auto-disabled-recurring", { enabled: true });
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
 
     expect(updated).toMatchObject({
@@ -2147,14 +2147,14 @@ describe("cron service ops seam coverage", () => {
       payload: { kind: "agentTurn", message: "do work" },
     });
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
 
     const updated = await update(state, job.id, {
       schedule: { kind: "cron", expr: "0 0 0 1 1 * 2001", tz: "UTC" },
     });
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
 
     expect(updated.state.nextRunAtMs).toBe(Date.parse("2001-01-01T00:00:00.000Z"));
@@ -2179,7 +2179,7 @@ describe("cron service ops seam coverage", () => {
       payload: { kind: "agentTurn", message: "do work" },
     });
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
 
     expect(job.state.nextRunAtMs).toBeGreaterThan(finalBaseRunAtMs);
@@ -2216,7 +2216,7 @@ describe("cron service ops seam coverage", () => {
     await remove(state, job.id);
     expect(events.map((event) => event.action)).toEqual(["removed"]);
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
   });
 
@@ -2247,7 +2247,7 @@ describe("cron service ops seam coverage", () => {
       { jobId: added.id, action: "added" },
     ]);
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
   });
 
@@ -2275,7 +2275,7 @@ describe("cron service ops seam coverage", () => {
       { jobId: target.id, action: "removed" },
     ]);
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
   });
 });
@@ -2342,7 +2342,7 @@ describe("cron service ops persist rollback", () => {
     expect(state.store?.jobs ?? []).toEqual([]);
     const listed = await list(state, { includeDisabled: true });
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
     expect(listed).toEqual([]);
     const loaded = await loadCronStore(storePath);
@@ -2356,7 +2356,7 @@ describe("cron service ops persist rollback", () => {
 
     const job = await add(state, makeCreateInput("daily cleanup"));
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
 
     vi.spyOn(cronStoreModule, "saveCronJobsStoreWithRevision").mockRejectedValueOnce(
@@ -2388,7 +2388,7 @@ describe("cron service ops persist rollback", () => {
 
     expect(clone).not.toHaveBeenCalledWith(state.store);
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
   });
 
@@ -2399,7 +2399,7 @@ describe("cron service ops persist rollback", () => {
 
     const job = await add(state, makeCreateInput("daily cleanup"));
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
 
     vi.spyOn(cronStoreModule, "saveCronJobsStoreWithRevision").mockRejectedValueOnce(
@@ -2420,7 +2420,7 @@ describe("cron service ops persist rollback", () => {
 
     const job = await add(state, makeCreateInput("daily cleanup"));
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
     job.state.startupCatchupAtMs = now + 5_000;
 
@@ -2446,12 +2446,12 @@ describe("cron service ops persist rollback", () => {
 
     const job = await add(state, makeCreateInput("daily cleanup"));
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
 
     const listed = await list(state, { includeDisabled: true });
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
     expect(listed.map((entry) => entry.id)).toEqual([job.id]);
     const loaded = await loadCronStore(storePath);
@@ -2470,7 +2470,7 @@ describe("cron service ops persist rollback", () => {
         schedule: { kind: "cron", expr: "0 1 * * *" },
       });
       if (state.timer) {
-        clearTimeout(state.timer);
+        state.timer.cancel();
       }
       malformed.state.nextRunAtMs = undefined;
       malformed.state.scheduleErrorCount = 2;
@@ -2512,7 +2512,7 @@ describe("cron service ops persist rollback", () => {
 
       await trigger();
       if (state.timer) {
-        clearTimeout(state.timer);
+        state.timer.cancel();
       }
 
       expect(state.store?.jobs.find((job) => job.id === malformed.id)?.enabled).toBe(false);
@@ -2548,7 +2548,7 @@ describe("cron service ops persist rollback", () => {
         schedule: { kind: "cron", expr: "0 1 * * *" },
       });
       if (state.timer) {
-        clearTimeout(state.timer);
+        state.timer.cancel();
       }
       malformed.state.nextRunAtMs = undefined;
       malformed.state.scheduleErrorCount = 2;
@@ -2587,7 +2587,7 @@ describe("cron service ops persist rollback", () => {
         await expect(transaction).rejects.toThrow("roster commit failed");
       }
       if (state.timer) {
-        clearTimeout(state.timer);
+        state.timer.cancel();
       }
 
       const rolledBack = outcome === "failed";
@@ -2612,7 +2612,7 @@ describe("cron service ops persist rollback", () => {
         expect(replacement.id).toBe(removed.id);
         expect(readCronJobScratchState(storePath, removed.id)).toEqual({ currentRevision: 0 });
         if (state.timer) {
-          clearTimeout(state.timer);
+          state.timer.cancel();
         }
       }
     },
@@ -2627,7 +2627,7 @@ describe("cron service ops persist rollback", () => {
       schedule: { kind: "cron", expr: "0 1 * * *" },
     });
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
     job.state.nextRunAtMs = undefined;
     job.state.scheduleErrorCount = 2;
