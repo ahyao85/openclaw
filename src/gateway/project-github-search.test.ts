@@ -11,6 +11,7 @@ function repository(fullName: string, updatedAt: string, description?: string) {
     html_url: `https://github.com/${owner}/${name}`,
     clone_url: `https://github.com/${owner}/${name}.git`,
     description: description ?? null,
+    default_branch: "main",
     updated_at: updatedAt,
   };
 }
@@ -115,7 +116,7 @@ describe("project GitHub search", () => {
 
     expect(result).toMatchObject({
       credential: "configured",
-      projects: [{ fullName: "bic/lobster" }],
+      projects: [{ fullName: "bic/lobster", defaultBranch: "main" }],
     });
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     for (const [, init] of fetchImpl.mock.calls) {

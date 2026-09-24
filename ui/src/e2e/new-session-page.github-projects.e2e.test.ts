@@ -26,6 +26,7 @@ const remoteSearchResult = {
       description: "Personal AI assistant",
       cloneUrl: "https://github.com/openclaw/openclaw.git",
       webUrl: "https://github.com/openclaw/openclaw",
+      defaultBranch: "main",
       private: false,
     },
   ],
@@ -89,7 +90,7 @@ suite.define(() => {
         );
         const baseRef = checkoutPopover.getByLabel("From", { exact: true });
         expect(await baseRef.getAttribute("placeholder")).toBe("From");
-        expect(await baseRef.inputValue()).toBe("");
+        expect(await baseRef.inputValue()).toBe("main");
         expect(await checkoutPopover.locator("datalist option").count()).toBe(0);
         await captureProjectUiProof(suite, page, "github-worktree-selected.png", {
           surface: checkoutPopover.locator('wa-popup [part="popup"]'),

@@ -89,6 +89,7 @@ export class DraftPlaceState {
   private folderSelectedByUser = false;
   private preferredWhereRestore: NewSessionWhere | null = null;
   private preferredProjectRestore = "";
+  private preferredRemoteProjectRestore: DraftRemoteProject | null = null;
   private whereSelectedByUser = false;
   private projectSelectedByUser = false;
 
@@ -211,6 +212,7 @@ export class DraftPlaceState {
       workspace: this.workspacePath(),
       folder: this.folderValue,
       projectId: this.preferredProjectRestore || this.browser.projectId,
+      remoteProject: this.preferredRemoteProjectRestore ?? this.browser.remoteProject,
       where,
       worktree:
         ((where.kind !== "local" && this.freshWorkspaceValue) ||
@@ -226,7 +228,8 @@ export class DraftPlaceState {
     return (
       (this.freshWorkspace || this.repositoryState.preferenceReady) &&
       this.preferredWhereRestore === null &&
-      !this.preferredProjectRestore
+      !this.preferredProjectRestore &&
+      !this.preferredRemoteProjectRestore
     );
   }
 
@@ -365,6 +368,11 @@ export class DraftPlaceState {
       }
       this.preferredProjectRestore =
         groupTarget || catalog.isTarget(snapshot.data) ? "" : (preference?.projectId ?? "");
+      this.preferredRemoteProjectRestore =
+        groupTarget || catalog.isTarget(snapshot.data) ? null : (preference?.remoteProject ?? null);
+      if (this.preferredRemoteProjectRestore) {
+        this.preferredProjectRestore = "";
+      }
       this.projectSelectedByUser = false;
       if (savedFolder.workspaceMoved && !groupTarget) {
         this.persistPreference({ folder: workspace });
@@ -401,6 +409,7 @@ export class DraftPlaceState {
     this.folderValidation.reset();
     this.preferredWhereRestore = null;
     this.preferredProjectRestore = "";
+    this.preferredRemoteProjectRestore = null;
     this.whereSelectedByUser = false;
     this.projectSelectedByUser = false;
     this.deviceIdValue = "";
@@ -476,6 +485,10 @@ export class DraftPlaceState {
       this.repositoryState.clearDetails(true);
     }
     this.browser.clearProjectSelection();
+    this.preferredProjectRestore = "";
+    this.preferredRemoteProjectRestore = null;
+    this.projectSelectedByUser = true;
+    this.persistPreference({ projectId: "", remoteProject: null });
     this.repositoryState.load();
     this.callbacks.requestUpdate();
   }
@@ -515,6 +528,7 @@ export class DraftPlaceState {
     this.folderSelectedByUser = true;
     this.projectSelectedByUser = true;
     this.preferredProjectRestore = "";
+    this.preferredRemoteProjectRestore = null;
     if (catalog.isTarget(snapshot.data) && this.terminalOnNode) {
       this.callbacks.requestUpdate();
       return;
@@ -524,6 +538,7 @@ export class DraftPlaceState {
       this.persistPreference({
         folder: this.folderValue,
         projectId: "",
+        remoteProject: null,
         worktree: this.worktree,
         freshWorkspace: false,
       });
@@ -549,6 +564,7 @@ export class DraftPlaceState {
     this.persistPreference({
       folder: this.folderValue,
       projectId: "",
+      remoteProject: null,
       worktree: true,
       freshWorkspace: true,
     });
@@ -581,10 +597,12 @@ export class DraftPlaceState {
     this.folderSelectedByUser = false;
     this.projectSelectedByUser = true;
     this.preferredProjectRestore = "";
+    this.preferredRemoteProjectRestore = null;
     this.repositoryState.selectWorktree(this.remotePlacement);
     if (selection.kind === "local") {
       this.persistPreference({
         projectId: selection.id,
+        remoteProject: null,
         where: resolveNewSessionWhere({
           cloudProfileId: this.cloudProfileIdValue,
           deviceId: this.deviceIdValue,
@@ -594,6 +612,16 @@ export class DraftPlaceState {
         worktreeName: "",
         freshWorkspace: false,
       });
+    } else {
+      this.persistPreference({
+        projectId: "",
+        remoteProject: selection.project,
+        worktree: this.worktree,
+        freshWorkspace: false,
+      });
+      if (selection.project.defaultBranch) {
+        this.repositoryState.setBaseRef(selection.project.defaultBranch, false);
+      }
     }
     this.repositoryState.load();
     this.browser.close();
@@ -693,8 +721,19 @@ export class DraftPlaceState {
     let changed = false;
     const preferredWhere = this.whereSelectedByUser ? null : this.preferredWhereRestore;
     const preferredProject = this.projectSelectedByUser ? "" : this.preferredProjectRestore;
+    const preferredRemoteProject = this.projectSelectedByUser
+      ? null
+      : this.preferredRemoteProjectRestore;
 
-    if (preferredProject) {
+    if (preferredRemoteProject) {
+      this.browser.selectProject({ kind: "remote", project: preferredRemoteProject });
+      this.freshWorkspaceValue = false;
+      this.folderSelectedByUser = false;
+      this.preferredRemoteProjectRestore = null;
+      changed = true;
+    }
+
+    if (preferredProject && !preferredRemoteProject) {
       const project = this.browser.projects.find((candidate) => candidate.id === preferredProject);
       if (project) {
         this.browser.selectProject({ kind: "local", id: project.id });

@@ -43,6 +43,7 @@ function parseRepository(value: unknown): RemoteProject | null {
     return null;
   }
   const description = boundedString(readNonBlankString(value.description), 500);
+  const defaultBranch = boundedString(readNonBlankString(value.default_branch), 255);
   return {
     name: name.slice(0, 100),
     fullName: fullName.slice(0, 200),
@@ -50,6 +51,7 @@ function parseRepository(value: unknown): RemoteProject | null {
     webUrl,
     private: value.private === true,
     ...(description ? { description } : {}),
+    ...(defaultBranch ? { defaultBranch } : {}),
   };
 }
 

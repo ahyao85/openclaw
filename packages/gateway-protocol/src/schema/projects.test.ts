@@ -54,6 +54,7 @@ describe("project protocol schemas", () => {
             description: "Personal AI assistant",
             cloneUrl: "https://github.com/openclaw/openclaw.git",
             webUrl: "https://github.com/openclaw/openclaw",
+            defaultBranch: "main",
             private: false,
           },
         ],

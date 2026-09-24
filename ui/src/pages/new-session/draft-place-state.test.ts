@@ -15,6 +15,7 @@ import { TestReactiveControllerHost } from "./reactive-controller-host.test-supp
 const REMOTE_PROJECT = {
   identity: "openclaw/openclaw",
   cloneUrl: "https://github.com/openclaw/openclaw.git",
+  defaultBranch: "main",
 };
 
 function createRepositoryFixture(
@@ -97,6 +98,35 @@ function createRepositoryFixture(
 }
 
 describe("DraftPlaceState repository selection", () => {
+  it("remembers a remote project and restores its default branch", () => {
+    const selected = createRepositoryFixture();
+    selected.state.selectRemoteProject(REMOTE_PROJECT);
+    expect(selected.persistPreference).toHaveBeenCalledWith(
+      "",
+      "/workspace",
+      expect.objectContaining({ projectId: "", remoteProject: REMOTE_PROJECT }),
+    );
+    expect(selected.state.baseRef).toBe("main");
+
+    const restored = createRepositoryFixture();
+    restored.readPreference.mockReturnValue({
+      remoteProject: REMOTE_PROJECT,
+      baseRef: "main",
+      where: { kind: "cloud", id: "aws" },
+    });
+    restored.state.adoptAgentDefaults();
+    restored.state.restorePreferenceSelections();
+
+    expect(restored.browser.remoteProject).toEqual(REMOTE_PROJECT);
+    expect(restored.state.baseRef).toBe("main");
+    expect(restored.state.cloudProfileId).toBe("aws");
+    expect(restored.state.remoteRepository).toEqual({
+      url: REMOTE_PROJECT.cloneUrl,
+      ref: "main",
+    });
+    expect(restored.state.placementPreferenceReady).toBe(true);
+  });
+
   it("leaves the worktree base to the Gateway unless a branch was selected", async () => {
     const { state, request, requestUpdate } = createRepositoryFixture({ workspaceGit: true });
     const discovered = createDeferred();
