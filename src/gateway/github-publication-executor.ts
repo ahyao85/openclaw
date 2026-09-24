@@ -45,6 +45,7 @@ import {
   githubPublicationUpdateRefArgs,
   hasGitHubPublicationWorkflowChanges,
   hasGitHubPublicationMessageFooter,
+  readGitHubPublicationCoauthorTrailers,
   requirePublicationCommand as requireCommand,
   runPublicationCommand as runCommand,
 } from "./github-publication-git-transport.js";
@@ -464,6 +465,17 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
         throw new GitHubPublicationCreditChangedError();
       }
     };
+    const completePublished = (url: string, publishedHead: string) =>
+      params.projectResult(
+        params.complete(row, {
+          requestId: row.request_id,
+          status: "published",
+          url,
+          repository,
+          branch,
+          headCommit: publishedHead,
+        }),
+      );
     assertAction();
     if (
       markerPresent &&
@@ -479,22 +491,22 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
       remoteHead === headCommit &&
       currentTree === workspaceTree &&
       sourceIndexTree === workspaceTree &&
-      messageLines.some((line) => line.startsWith(`${PUBLICATION_MARKER}: `)) &&
-      (attribution?.trailers ?? []).every((trailer) => messageLines.includes(trailer))
+      messageLines.some((line) => line.startsWith(`${PUBLICATION_MARKER}: `))
     ) {
-      // The owned open PR already exposes this exact attributed tree. A new request
-      // needs a receipt, not a new commit marker or index transaction. First publication
-      // and missing contributor credit still use the request-owned recovery marker below.
-      return params.projectResult(
-        params.complete(row, {
-          requestId: row.request_id,
-          status: "published",
-          url: existingPullRequest,
-          repository,
-          branch,
-          headCommit,
-        }),
-      );
+      // Text in prose or an earlier paragraph is not Git co-author credit.
+      // Parse the pinned commit before deciding its attributed tree can be reused.
+      const trailers = await readGitHubPublicationCoauthorTrailers({
+        cwd: worktree.path,
+        headCommit,
+        command,
+      });
+      assertAction();
+      if ((attribution?.trailers ?? []).every((trailer) => trailers.includes(trailer))) {
+        // The owned open PR already exposes this exact attributed tree. A new request
+        // needs a receipt, not a new commit marker or index transaction. First publication
+        // and missing contributor credit still use the request-owned recovery marker below.
+        return completePublished(existingPullRequest, headCommit);
+      }
     }
     const previousBranchHead = headCommit;
     let updateBranchRef: (() => Promise<void>) | undefined;
@@ -658,16 +670,7 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
     if (pullRequestPending) {
       params.recordEffect?.("pull_request", { url: pullRequestUrl });
     }
-    return params.projectResult(
-      params.complete(row, {
-        requestId: row.request_id,
-        status: "published",
-        url: pullRequestUrl,
-        repository,
-        branch,
-        headCommit,
-      }),
-    );
+    return completePublished(pullRequestUrl, headCommit);
   } catch (error) {
     if (
       error instanceof GitHubPublicationRequesterUnavailableError ||

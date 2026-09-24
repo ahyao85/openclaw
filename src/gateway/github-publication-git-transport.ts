@@ -387,6 +387,28 @@ const GITHUB_CREDENTIAL_ARGS = [
   "credential.helper=!gh auth git-credential",
 ] as const;
 
+export async function readGitHubPublicationCoauthorTrailers(params: {
+  cwd: string;
+  headCommit: string;
+  command: typeof requirePublicationCommand;
+}): Promise<string[]> {
+  const output = await params.command(
+    [
+      "git",
+      "-c",
+      "trailer.separators=:",
+      "-c",
+      "trailer.co-authored-by.key=Co-authored-by",
+      "show",
+      "-s",
+      "--format=%(trailers:key=Co-authored-by,only,unfold)",
+      params.headCommit,
+    ],
+    { cwd: params.cwd },
+  );
+  return output.split(/\r?\n/u);
+}
+
 export function appendGitHubPublicationMessage(base: string, lines: readonly string[]): string {
   const footer = [...new Set(lines)].join("\n");
   return footer ? `${base.trimEnd()}\n\n${footer}` : base.trimEnd();
