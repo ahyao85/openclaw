@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { formatErrorMessage } from "../infra/errors.js";
+import { assertStateDatabaseAccessAllowed } from "../infra/gateway-state-owner.js";
 import { enableNodeSqliteKyselyStatementCache } from "../infra/kysely-sync.js";
 import {
   runWithSqliteBusyTimeout,
@@ -155,6 +156,10 @@ function openNativeStateDatabase(
               path: params.pathname,
               checkpoint: walMaintenance?.health,
             }),
+          runMaintenance: (operation) => {
+            assertStateDatabaseAccessAllowed(params.pathname);
+            return operation();
+          },
           foreignKeys: true,
           synchronous: "NORMAL",
         });

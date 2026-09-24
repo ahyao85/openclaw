@@ -385,6 +385,14 @@ checkpoint clears the warning; a large WAL alone does not mean a checkpoint is
 blocked. File-size observation failures are recorded and logged separately from
 SQLite's completion result; they do not turn a completed checkpoint into a failure.
 
+Periodic maintenance yields before native work so the Gateway event loop can
+continue. After yielding, it rechecks the same database owner, physical file,
+and captured maintenance authority. Retirement cancels and joins pending work.
+SQLite handles writer contention directly with a zero busy timeout; maintenance
+does not wait on a separate coordination database. Explicit synchronous
+checkpoint and close operations retain their synchronous contract. These changes
+require no state migration.
+
 The warning includes observed WAL and database sizes, checkpointed and total WAL
 frames, the last observed complete checkpoint, the consecutive blocked count,
 the observation time, and up to eight process-local active reader owners when

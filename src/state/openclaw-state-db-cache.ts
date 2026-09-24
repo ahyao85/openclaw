@@ -23,7 +23,8 @@ import {
 } from "../infra/sqlite-lifecycle-errors.js";
 import { admitSqliteSchema } from "../infra/sqlite-schema-facts.js";
 import { createSqliteTerminalOpenLatch } from "../infra/sqlite-terminal-open-latch.js";
-import { registerSqliteCacheExitClose, type SqliteWalHealth } from "../infra/sqlite-wal.js";
+import { cancelSqliteWalWriteAdmission } from "../infra/sqlite-wal-write-admission.js";
+import { registerSqliteCacheExitClose } from "../infra/sqlite-wal.js";
 import type { DatabasePathIdentity } from "../infra/sqlite-worker-identity.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { OpenClawQuarantineReadCleanupError } from "./openclaw-quarantine-error.js";
@@ -43,6 +44,7 @@ import {
 } from "./openclaw-state-db-borrow.js";
 import { createStateDatabaseIdleRetirement } from "./openclaw-state-db-cache.idle.js";
 import type { StateDatabaseLifecycle } from "./openclaw-state-db-cache.types.js";
+import { createStateDatabaseWalOwner } from "./openclaw-state-db-cache.wal.js";
 import type {
   OpenClawStateDatabase,
   OpenClawStateDatabaseCloseOptions,
@@ -54,7 +56,6 @@ import { createOpenClawStateDatabaseRuntimeFailureOwner } from "./openclaw-state
 import { assertExistingOpenClawStateSchemaCacheAdmission } from "./openclaw-state-db-schema-policy.js";
 import { assertSupportedStateSchemaVersion } from "./openclaw-state-db-schema-version.js";
 import { openClawStateSnapshotOwners } from "./openclaw-state-db-snapshot-owner.js";
-import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 
 const stateDatabaseLifecycle = resolveGlobalSingleton<StateDatabaseLifecycle>(
@@ -89,7 +90,9 @@ const {
 
 const { touch: touchStateDatabase, retain: retainOpenClawStateDatabaseForIdle } =
   createStateDatabaseIdleRetirement(stateDatabaseLifecycle, retireOpenClawStateDatabaseHandle);
-export { retainOpenClawStateDatabaseForIdle };
+const { register: registerStateDatabaseWalAdmission, readHealth: readOpenClawStateWalHealth } =
+  createStateDatabaseWalOwner(stateDatabaseLifecycle, retainOpenClawStateDatabaseForIdle);
+export { readOpenClawStateWalHealth, retainOpenClawStateDatabaseForIdle };
 
 function notifyOpenClawStateDatabaseLifecycle(event: OpenClawStateDatabaseLifecycleEvent): void {
   const notification =
@@ -229,6 +232,7 @@ function closeOpenClawStateDatabaseHandle(
   const errors: unknown[] = [];
   openClawStateSnapshotOwners.release(database.db);
   try {
+    cancelSqliteWalWriteAdmission(database.db);
     database.walMaintenance?.close(options);
   } catch (error) {
     errors.push(error);
@@ -299,6 +303,7 @@ function publishOpenClawStateDatabase(database: OpenClawStateDatabase): OpenClaw
   const identity = asyncResources.publish(pathname);
   databaseIdentities.set(db, identity);
   cachedDatabases.set(pathname, database);
+  registerStateDatabaseWalAdmission(database, identity);
   touchStateDatabase(database);
   openClawStateSnapshotOwners.register(database, () => cachedDatabases.get(pathname));
   ownMaintenanceStateDatabaseHandle(database);
@@ -451,6 +456,9 @@ function retireOpenClawStateDatabaseHandle(
   retireAdmission = true,
   options?: OpenClawStateDatabaseCloseOptions,
 ): void {
+  if (database.db.isOpen) {
+    assertStateDatabaseAccessAllowed(database.path);
+  }
   assertStateDatabaseBorrowersReleased(borrowers.get(database.db), database.path);
   const borrowedOwner = borrowers.get(database.db);
   try {
@@ -575,12 +583,6 @@ export function isOpenClawStateDatabaseOpen(pathname?: string): boolean {
     return cachedDatabases.get(path.resolve(pathname))?.db.isOpen === true;
   }
   return Array.from(cachedDatabases.values()).some((database) => database.db.isOpen);
-}
-
-/** Report the live owner's last observation without opening or querying SQLite. */
-export function readOpenClawStateWalHealth(): SqliteWalHealth | undefined {
-  const database = cachedDatabases.get(path.resolve(resolveOpenClawStateSqlitePath()));
-  return database?.db.isOpen ? database.walMaintenance.health : undefined;
 }
 
 /** Close shared state handles and clear terminal failure latches for test isolation. */
