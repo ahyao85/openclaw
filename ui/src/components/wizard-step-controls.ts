@@ -104,7 +104,7 @@ function renderSignIn(step: WizardStep) {
   `;
 }
 
-export function renderWizardSingleChoice(props: {
+function renderWizardSingleChoice(props: {
   options: WizardStepOption[];
   busy: boolean;
   label: string;

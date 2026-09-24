@@ -27,6 +27,7 @@ afterEach(() => {
 function loginHarness(
   options: {
     capabilities?: ModelAuthStatusResult["providerCapabilities"];
+    providers?: ModelAuthStatusResult["providers"];
     saved?: boolean;
   } = {},
 ) {
@@ -40,16 +41,18 @@ function loginHarness(
   const status = deferred<{ status: "cancelled" }>();
   const authStatus = (): ModelAuthStatusResult => ({
     ts: 1,
-    providers: saved
-      ? [
-          {
-            provider: "example",
-            displayName: "Example provider",
-            status: "ok",
-            profiles: [{ profileId: "example:new", type: "api_key", status: "ok" }],
-          },
-        ]
-      : [],
+    providers:
+      options.providers ??
+      (saved
+        ? [
+            {
+              provider: "example",
+              displayName: "Example provider",
+              status: "ok",
+              profiles: [{ profileId: "example:new", type: "api_key", status: "ok" }],
+            },
+          ]
+        : []),
     providerCapabilities: options.capabilities ?? [
       {
         provider: "example",
@@ -697,7 +700,7 @@ describe("Models provider login", () => {
     expect(providerChoices(page)).toEqual(["example"]);
     await selectProvider(page, "example");
     expect(
-      [...page.querySelectorAll(".wizard-step__actions strong")].map(
+      [...page.querySelectorAll("[data-models-login-choice] strong")].map(
         (element) => element.textContent,
       ),
     ).toEqual(["Example browser sign-in", "Example API key"]);
@@ -732,13 +735,71 @@ describe("Models provider login", () => {
     );
   });
 
-  it("prefilters an existing account's provider while allowing another account login", async () => {
-    const { context, request } = loginHarness({ saved: true });
+  it("shows accounts from the selected provider's credential owner before another login", async () => {
+    const { context, request } = loginHarness({
+      capabilities: [
+        {
+          provider: "example-owner",
+          apiKeySupported: false,
+          quickApiKeySetup: false,
+          loginOptions: [
+            {
+              id: "example-browser",
+              brandId: "example",
+              groupLabel: "Example provider",
+              label: "Example browser sign-in",
+              kind: "oauth",
+              featured: true,
+            },
+          ],
+        },
+      ],
+      providers: [
+        {
+          provider: "example-owner",
+          authProvider: "example-owner",
+          displayName: "Example provider",
+          status: "ok",
+          profiles: [
+            {
+              profileId: "example:external",
+              type: "oauth",
+              status: "ok",
+              source: "external",
+              email: "same-account@example.invalid",
+              displayName: "External CLI account",
+            },
+            {
+              profileId: "example:saved",
+              type: "oauth",
+              status: "expiring",
+              source: "saved",
+              email: "same-account@example.invalid",
+              displayName: "Saved browser account",
+            },
+          ],
+        },
+        {
+          provider: "unrelated",
+          displayName: "Unrelated provider",
+          status: "ok",
+          profiles: [
+            {
+              profileId: "unrelated:one",
+              type: "oauth",
+              status: "ok",
+              email: "other-provider@example.invalid",
+            },
+          ],
+        },
+      ],
+    });
     const page = appendPage(context);
     await waitForFast(() =>
-      expect(page.querySelector('[data-provider-id="example"]')).not.toBeNull(),
+      expect(page.querySelector('[data-provider-id="example-owner"]')).not.toBeNull(),
     );
-    const addAccount = [...page.querySelectorAll<HTMLButtonElement>("button")].find(
+    const card = page.querySelector('[data-provider-id="example-owner"]')!;
+    const addAccount = [...card.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent?.trim() === "Add account",
     );
     expect(addAccount?.disabled).toBe(false);
@@ -748,6 +809,21 @@ describe("Models provider login", () => {
     expect(page.querySelector(".model-provider-login__provider")?.textContent).toContain(
       "Example provider",
     );
+    const dialog = page.querySelector("openclaw-modal-dialog")!;
+    expect(dialog.textContent).toContain("Accounts available to this agent");
+    const profiles = [...dialog.querySelectorAll<HTMLElement>("[data-profile-id]")];
+    expect(profiles.map((profile) => profile.dataset.profileId)).toEqual([
+      "example:external",
+      "example:saved",
+    ]);
+    expect(
+      profiles.every((profile) => profile.textContent?.includes("same-account@example.invalid")),
+    ).toBe(true);
+    expect(profiles[0]?.textContent).toContain("External CLI account");
+    expect(profiles[1]?.textContent).toContain("Saved browser account");
+    expect(profiles[1]?.textContent).toContain("Expiring");
+    expect(dialog.textContent).not.toContain("other-provider@example.invalid");
+    expect(request.mock.calls.some(([method]) => method === "models.authLogin")).toBe(false);
     await startSelectedLogin(page, "example-browser");
     expect(request).toHaveBeenCalledWith(
       "models.authLogin",
@@ -764,6 +840,17 @@ describe("Models provider login", () => {
     "preserves quick API-key setup alongside browser login: %s",
     async (withBrowser) => {
       const { context, request, runtimeConfig } = loginHarness({
+        providers: [
+          {
+            provider: "quick-key",
+            displayName: "Quick key",
+            status: "static",
+            profiles: [],
+            apiKey: withBrowser
+              ? { source: "env", envVar: "QUICK_KEY_API_KEY" }
+              : { source: "config" },
+          },
+        ],
         capabilities: [
           {
             provider: "quick-key",
@@ -794,11 +881,21 @@ describe("Models provider login", () => {
             (option) => option.textContent,
           ),
         ).toEqual(["Browser sign-in"]);
-        const apiKey = page.querySelector<HTMLButtonElement>("[data-models-login-api-key]");
-        expect(apiKey).not.toBeNull();
-        apiKey!.click();
-        await page.updateComplete;
       }
+      const dialog = page.querySelector("openclaw-modal-dialog")!;
+      expect(dialog.textContent).toContain("Accounts available to this agent");
+      expect(dialog.textContent).toContain(
+        withBrowser ? "API key from environment (QUICK_KEY_API_KEY)" : "API key set in config",
+      );
+      expect(dialog.querySelector('input[type="password"]')).toBeNull();
+      expect(
+        dialog.querySelector('a[href="https://docs.openclaw.ai/concepts/model-providers"]'),
+      ).not.toBeNull();
+      expect(request.mock.calls.some(([method]) => method === "models.authSetApiKey")).toBe(false);
+      const apiKey = page.querySelector<HTMLButtonElement>("[data-models-login-api-key]");
+      expect(apiKey).not.toBeNull();
+      apiKey!.click();
+      await page.updateComplete;
       expect(page.querySelector("[data-models-login-search]")).toBeNull();
       expect(page.querySelector("[data-models-login-choice]")).toBeNull();
       expect(page.querySelector('openclaw-modal-dialog input[type="password"]')).not.toBeNull();

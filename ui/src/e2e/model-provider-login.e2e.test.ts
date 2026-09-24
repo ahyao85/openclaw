@@ -299,7 +299,7 @@ suite.define(() => {
       },
     );
   });
-  it("starts browser sign-in from two direct choices and opens a detached tab", async () => {
+  it("shows a provider's accounts and every connection method before browser sign-in", async () => {
     await suite.withPage(
       {
         locale: "en-US",
@@ -320,6 +320,7 @@ suite.define(() => {
             "config.get",
             "config.patch",
             "models.authStatus",
+            "models.authSetApiKey",
             "models.authLogin",
             "wizard.next",
             "wizard.cancel",
@@ -327,24 +328,60 @@ suite.define(() => {
           methodResponses: {
             "models.authStatus": {
               ts: 1,
-              providers: [],
-              providerCapabilities: [
+              providers: [
                 {
-                  provider: "example",
-                  apiKeySupported: false,
-                  quickApiKeySetup: false,
-                  loginOptions: [
+                  provider: "openai",
+                  displayName: "OpenAI",
+                  status: "ok",
+                  profiles: [
                     {
-                      id: "example-device",
-                      brandId: "example",
-                      label: "Device pairing",
-                      kind: "device-code",
-                      featured: true,
+                      profileId: "openai:codex",
+                      type: "oauth",
+                      status: "ok",
+                      source: "external",
+                      email: "alex@example.invalid",
+                      displayName: "Codex CLI",
                     },
                     {
-                      id: "example-browser",
-                      brandId: "example",
-                      label: "Browser sign-in",
+                      profileId: "openai:siwc",
+                      type: "oauth",
+                      status: "expiring",
+                      source: "saved",
+                      email: "alex@example.invalid",
+                      displayName: "Sign in with ChatGPT",
+                    },
+                  ],
+                },
+              ],
+              providerCapabilities: [
+                {
+                  provider: "openai",
+                  apiKeySupported: true,
+                  quickApiKeySetup: true,
+                  loginOptions: [
+                    {
+                      id: "openai-device-code",
+                      brandId: "openai",
+                      groupLabel: "OpenAI",
+                      label: "Codex login (device code)",
+                      hint: "Approve Codex access using a code in your browser",
+                      kind: "device-code",
+                      featured: true,
+                      docsUrl: "https://docs.openclaw.ai/providers/openai/authentication",
+                    },
+                    {
+                      id: "openai",
+                      brandId: "openai",
+                      label: "Codex login (browser)",
+                      hint: "Sign in to Codex with your ChatGPT account",
+                      kind: "oauth",
+                      featured: false,
+                    },
+                    {
+                      id: "openai-token-sharing",
+                      brandId: "openai",
+                      label: "Sign in with ChatGPT",
+                      hint: "Use your ChatGPT allowance through the Responses API",
                       kind: "oauth",
                       featured: false,
                     },
@@ -384,14 +421,55 @@ suite.define(() => {
         });
         await page.goto(suite.server.baseUrl + "settings/model-providers");
         await page.locator("[data-models-connect]").click();
-        await page.locator('[data-models-login-provider="example"]').click();
+        await page.locator('[data-models-login-provider="openai"]').click();
         const dialog = page.locator(".model-setup-wizard");
-        await page.getByRole("button", { name: "Device pairing", exact: true }).waitFor();
-        expect(await dialog.locator("select").count()).toBe(0);
-        await captureProviderProof("login-browser-choices.png", dialog);
+        await dialog.getByText("Accounts available to this agent", { exact: true }).waitFor();
+        const profiles = dialog.locator("[data-profile-id]");
+        expect(await profiles.count()).toBe(2);
+        expect(await profiles.first().textContent()).toContain("alex@example.invalid");
+        expect(await profiles.first().textContent()).toContain("Codex CLI");
+        expect(await profiles.last().textContent()).toContain("alex@example.invalid");
+        expect(await profiles.last().textContent()).toContain("Expiring");
+        const connectionMethod = (label: string) =>
+          dialog.getByRole("button").filter({
+            has: page.locator("strong").filter({ hasText: label }),
+          });
+        for (const method of [
+          "Codex login (device code)",
+          "Codex login (browser)",
+          "Sign in with ChatGPT",
+        ]) {
+          await connectionMethod(method).waitFor();
+        }
+        expect(await dialog.locator("[data-models-login-api-key]").isVisible()).toBe(true);
+        expect(await dialog.locator("select, openclaw-select-picker").count()).toBe(0);
+        await dialog
+          .locator('a[href="https://docs.openclaw.ai/providers/openai/authentication"]')
+          .waitFor();
+        expect(await gateway.getRequests("models.authLogin")).toHaveLength(0);
+        expect(await gateway.getRequests("models.authSetApiKey")).toHaveLength(0);
+        const footerFits = () =>
+          dialog.evaluate((element) => {
+            const footer = element.querySelector(".model-setup-wizard__footer")!;
+            return footer.getBoundingClientRect().bottom <= element.getBoundingClientRect().bottom;
+          });
+        expect(await footerFits()).toBe(true);
+        await captureProviderProof("login-provider-accounts-and-methods.png", dialog);
+        if (recordVisuals) {
+          await page.setViewportSize({ width: 390, height: 844 });
+          expect(await footerFits()).toBe(true);
+          await captureProviderProof("login-provider-accounts-and-methods-narrow.png", dialog);
+          await page.setViewportSize({ width: 1280, height: 900 });
+        }
         await gateway.deferNext("wizard.next", { answer: { stepId: "instructions" } });
         const popupReady = page.waitForEvent("popup");
-        await page.getByRole("button", { name: "Browser sign-in", exact: true }).click();
+        await connectionMethod("Sign in with ChatGPT").click();
+        const login = await gateway.waitForRequest("models.authLogin");
+        expect(login.params).toEqual({
+          sessionId: expect.any(String),
+          agentId: "main",
+          authChoice: "openai-token-sharing",
+        });
         const popup = await popupReady;
         await gateway.waitForRequest("wizard.next", {
           match: { answer: { stepId: "instructions" } },
