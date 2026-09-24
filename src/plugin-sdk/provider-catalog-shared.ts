@@ -66,8 +66,6 @@ type LiveCatalogCacheEntry<T> = {
 
 const LIVE_CATALOG_CACHE_MAX_ENTRIES = 100;
 const liveCatalogCache = new Map<string, LiveCatalogCacheEntry<unknown>>();
-// Eviction and observer deadlines do not release capacity held by unfinished I/O.
-const liveCatalogAcquisitions = new Set<LiveCatalogCacheEntry<unknown>>();
 
 async function consumeLiveCatalog<T>(entry: LiveCatalogCacheEntry<T>, signal?: AbortSignal) {
   signal?.throwIfAborted();
@@ -129,13 +127,14 @@ export async function getCachedLiveCatalogValue<T>(params: {
   const key = buildLiveCatalogCacheKey(params.keyParts);
   const existing = liveCatalogCache.get(key) as LiveCatalogCacheEntry<T> | undefined;
   if (existing) {
-    if (isFutureDateTimestampMs(existing.expiresAt, { nowMs: rawNow })) {
+    // An abandoned load may ignore abort; a new caller must not inherit its cancellation.
+    if (
+      !existing.controller.signal.aborted &&
+      isFutureDateTimestampMs(existing.expiresAt, { nowMs: rawNow })
+    ) {
       return await consumeLiveCatalog(existing, params.signal);
     }
     liveCatalogCache.delete(key);
-  }
-  if (liveCatalogAcquisitions.size >= LIVE_CATALOG_CACHE_MAX_ENTRIES) {
-    throw new Error("Live catalog acquisition capacity is full; retry after pending loads settle");
   }
   const completion = createDeferredCore<T>();
   const entry: LiveCatalogCacheEntry<T> = {
@@ -146,9 +145,8 @@ export async function getCachedLiveCatalogValue<T>(params: {
     retained: false,
     value: completion.promise,
   };
-  liveCatalogAcquisitions.add(entry);
-  // Auth-scoped live provider catalogs can vary by token; keep this
-  // process-local cache bounded so discovery cannot grow without limit.
+  // Auth-scoped catalogs vary by token. Bound retained entries without rejecting
+  // new catalogs or canceling consumers of an evicted load.
   pruneMapToMaxSize(liveCatalogCache, LIVE_CATALOG_CACHE_MAX_ENTRIES - 1);
   liveCatalogCache.set(key, entry);
   const consumed = consumeLiveCatalog(entry, params.signal);
@@ -159,7 +157,7 @@ export async function getCachedLiveCatalogValue<T>(params: {
       const resolved = await params.load(entry.controller.signal);
       retain = !entry.controller.signal.aborted && (params.shouldCache?.(resolved) ?? true);
       if (retain) {
-        // A slow success gets a complete TTL; expiry of pending work never releases admission.
+        // A slow success gets a complete TTL without reviving an evicted entry.
         const completedExpiresAt = resolveExpiresAtMsFromDurationMs(ttlMs, {
           nowMs: params.now?.() ?? Date.now(),
         });
@@ -174,7 +172,6 @@ export async function getCachedLiveCatalogValue<T>(params: {
     } finally {
       entry.retained = retain;
       entry.settled = true;
-      liveCatalogAcquisitions.delete(entry);
       if (!retain && liveCatalogCache.get(key) === entry) {
         liveCatalogCache.delete(key);
       }

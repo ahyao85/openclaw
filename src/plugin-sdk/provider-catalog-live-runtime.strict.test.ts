@@ -14,6 +14,7 @@ import {
   getCachedUpstreamProviderCatalog,
   type LiveModelCatalogFetchGuard,
 } from "./provider-catalog-live-runtime.js";
+import { getCachedLiveCatalogValue } from "./provider-catalog-shared.js";
 
 const { fetchGuard } = vi.hoisted(() => ({ fetchGuard: vi.fn<LiveModelCatalogFetchGuard>() }));
 vi.mock("./ssrf-runtime.js", async (importOriginal) => ({
@@ -124,8 +125,8 @@ describe("strict catalog acquisition", () => {
     },
   );
 
-  it("preserves a shared HTTP body and releases an abandoned body before teardown", async () => {
-    for (const mode of ["shared", "abandoned"] as const) {
+  it("preserves available HTTP catalogs and releases abandoned bodies before teardown", async () => {
+    for (const mode of ["shared", "abandoned", "capacity"] as const) {
       const responseReady = createDeferredCore<ServerResponse>();
       const firstChunkRead = createDeferredCore();
       const responseClosed = createDeferredCore();
@@ -145,7 +146,17 @@ describe("strict catalog acquisition", () => {
           }),
       });
       const controllers = [new AbortController(), new AbortController()];
-      const pending: Array<Promise<readonly unknown[]>> = [];
+      const pending: Array<Promise<unknown>> = [];
+      const heldCompletion = createDeferredCore<string>();
+      const held =
+        mode === "capacity"
+          ? Array.from({ length: 100 }, (_, index) =>
+              getCachedLiveCatalogValue({
+                keyParts: ["held-http-catalog", index],
+                load: () => heldCompletion.promise,
+              }),
+            )
+          : [];
       const releases: Array<() => Promise<void>> = [];
       const restoreReaders: Array<() => void> = [];
       let acquisitionSignal: AbortSignal | undefined;
@@ -153,6 +164,7 @@ describe("strict catalog acquisition", () => {
         acquisitionSignal = params.signal;
         const result = await fetchWithSsrFGuard({
           ...params,
+          requireHttps: false,
           policy: { allowPrivateNetwork: true, hostnameAllowlist: ["127.0.0.1"] },
           dispatcherPolicy: { mode: "direct" },
         });
@@ -184,14 +196,31 @@ describe("strict catalog acquisition", () => {
           },
         };
       };
+      fetchGuard.mockImplementation(observedGuard);
+      const baseUrl = `http://127.0.0.1:${reserved.claim.port}/${mode}`;
       const acquire = (signal: AbortSignal) =>
-        getCachedLiveProviderModelRows({
-          providerId: "demo",
-          endpoint: `http://127.0.0.1:${reserved.claim.port}/${mode}`,
-          requireHttps: false,
-          signal,
-          fetchGuard: observedGuard,
-        });
+        mode === "capacity"
+          ? buildOpenAICompatibleProviderCatalog({
+              providerId: "demo",
+              buildProvider: () => ({ ...seed, baseUrl }),
+              discoveryMode: "strict",
+              ctx: {
+                config: {},
+                env: {},
+                signal,
+                resolveProviderApiKey: () => ({ apiKey: "fixture-key" }),
+                resolveProviderAuth: () => {
+                  throw new Error("Do not reselect auth");
+                },
+              },
+            })
+          : getCachedLiveProviderModelRows({
+              providerId: "demo",
+              endpoint: `${baseUrl}/models`,
+              requireHttps: false,
+              signal,
+              fetchGuard: observedGuard,
+            });
       try {
         pending.push(acquire(controllers[0]!.signal));
         if (mode === "shared") {
@@ -201,21 +230,35 @@ describe("strict catalog acquisition", () => {
         const settled = Promise.allSettled(pending);
         await Promise.race([
           firstChunkRead.promise,
-          pending[0]!.then(() => {
+          pending[0]!.then((value) => {
+            if (mode === "capacity") {
+              expect(value).toMatchObject({ outcomes: [{ provider: "demo", status: "ready" }] });
+            }
             throw new Error("Catalog completed before the held body was read");
           }),
         ]);
         const reply = await responseReady.promise;
-        const reason = new Error("catalog consumer closed");
-        controllers[0]!.abort(reason);
-        await expect(pending[0]).rejects.toBe(reason);
-        expect(acquisitionSignal?.aborted).toBe(mode === "abandoned");
-        if (mode === "shared") {
+        if (mode === "capacity") {
           reply.end('{"id":"known"}]}');
-          await expect(pending[1]).resolves.toEqual([{ id: "known" }]);
+          const expected = {
+            provider: { models: seed.models },
+            outcomes: [{ provider: "demo", status: "ready" }],
+          };
+          await expect(pending[0]).resolves.toMatchObject(expected);
+          await expect(acquire(controllers[0]!.signal)).resolves.toMatchObject(expected);
+          expect(acquisitionSignal?.aborted).toBe(false);
         } else {
-          await responseClosed.promise;
-          expect(reply.writableFinished).toBe(false);
+          const reason = new Error("catalog consumer closed");
+          controllers[0]!.abort(reason);
+          await expect(pending[0]).rejects.toBe(reason);
+          expect(acquisitionSignal?.aborted).toBe(mode === "abandoned");
+          if (mode === "shared") {
+            reply.end('{"id":"known"}]}');
+            await expect(pending[1]).resolves.toEqual([{ id: "known" }]);
+          } else {
+            await responseClosed.promise;
+            expect(reply.writableFinished).toBe(false);
+          }
         }
         await released.promise;
         await settled;
@@ -223,9 +266,10 @@ describe("strict catalog acquisition", () => {
       } finally {
         try {
           controllers.forEach((controller) => controller.abort());
+          heldCompletion.resolve("settled");
           response?.destroy();
           reserved.listener.closeAllConnections();
-          await Promise.allSettled(pending);
+          await Promise.allSettled([...pending, ...held]);
           await Promise.all(releases.map((release) => release()));
         } finally {
           restoreReaders.forEach((restore) => restore());
