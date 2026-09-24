@@ -1,7 +1,13 @@
 import type { ProviderAuthAliasLookupParams } from "openclaw/plugin-sdk/agent-runtime";
 import type { CodexAppServerCommandSource } from "./config-contracts.shared.js";
 import type { ParsedCodexPluginConfig, ParsedCodexSupervisionEndpoint } from "./config-parsing.js";
-import type { CodexApprovalPolicy, CodexServiceTier, JsonObject } from "./protocol.js";
+import type {
+  CodexApprovalPolicy,
+  CodexApprovalsReviewer,
+  CodexSandboxMode,
+  CodexServiceTier,
+  JsonObject,
+} from "./protocol.js";
 
 export {
   CODEX_PLUGIN_MARKETPLACE_NAME_PATTERN,
@@ -33,8 +39,8 @@ export type CodexAppServerApprovalPolicy = "never" | "on-request";
 export type CodexAppServerManagedApprovalPolicy = Extract<CodexApprovalPolicy, string>;
 export type CodexAppServerApprovalPolicySource = "config" | "env" | "requirements" | "implicit";
 export type CodexAppServerEffectiveApprovalPolicy = CodexApprovalPolicy;
-export type CodexAppServerSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
-export type CodexAppServerApprovalsReviewer = "user" | "auto_review" | "guardian_subagent";
+export type CodexAppServerSandboxMode = CodexSandboxMode;
+export type CodexAppServerApprovalsReviewer = CodexApprovalsReviewer;
 export type CodexManagedCommandOrder = "package-first" | "desktop-first" | "package-only";
 export type CodexDynamicToolsLoading = "searchable" | "direct";
 
