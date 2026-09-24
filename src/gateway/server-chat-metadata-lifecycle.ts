@@ -117,8 +117,10 @@ export async function createGatewayChatMetadataLifecycle(params: {
         preparedModelRuntimeState = "available";
         refreshLogged();
       });
-    const unregisterSkillsChange = registerSkillsChangeListener(() => {
-      refreshForSubordinateChange();
+    const unregisterSkillsChange = registerSkillsChangeListener((event) => {
+      if (event.reason !== "watch-available") {
+        refreshForSubordinateChange();
+      }
     });
     const unregisterRuntimeAuthProfileStoreMutation =
       registerRuntimeAuthProfileStoreMutationListener(() => {

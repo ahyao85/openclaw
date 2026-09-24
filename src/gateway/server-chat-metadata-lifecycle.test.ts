@@ -11,6 +11,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   bumpSkillsSnapshotVersion,
   getSkillsSnapshotVersion,
+  notifySkillsWatchAvailable,
   registerSkillsChangeListener,
   resetSkillsRefreshStateForTest,
 } from "../skills/runtime/refresh-state.js";
@@ -251,7 +252,7 @@ async function createRealMetadataLifecycle(
       modelEvent({ phase: "invalidated" });
     },
     events: {
-      skills: () => mocks.registerSkillsListener.mock.calls[0]![0](),
+      skills: () => mocks.registerSkillsListener.mock.calls[0]![0]({ reason: "watch" }),
       auth: () => authEvent(),
       catalog: () => modelEvent({ phase: "catalog-published" }),
       catalogFailure: () =>
@@ -284,6 +285,7 @@ describe("gateway chat metadata lifecycle", () => {
       harness.broadcast.mockClear();
       for (let count = 0; count < 3; count += 1) {
         bumpSkillsSnapshotVersion({ workspaceDir, reason: "watch" });
+        notifySkillsWatchAvailable({ workspaceDir, sourceScope: {} });
         expect(loadWorkspaceSkills(workspaceDir, loadOptions)).toEqual(entries);
         expect(getSkillsSnapshotVersion(workspaceDir)).toBe(version);
         expect(await harness.lifecycle.read({ agentId: "main" })).toEqual(before);
@@ -885,7 +887,7 @@ describe("gateway chat metadata lifecycle", () => {
     modelListener({ phase: "catalog-published" });
     modelListener({ phase: "catalog-failed", error: new Error("obsolete catalog failed") });
     authListener();
-    skillsListener();
+    skillsListener({ reason: "watch" });
 
     expect(mocks.refresh).toHaveBeenCalledOnce();
     expect(warn).not.toHaveBeenCalled();
@@ -906,7 +908,7 @@ describe("gateway chat metadata lifecycle", () => {
 
     authListener();
     await vi.waitFor(() => expect(mocks.refresh).toHaveBeenCalledTimes(2));
-    skillsListener();
+    skillsListener({ reason: "watch" });
     await vi.waitFor(() => expect(mocks.refresh).toHaveBeenCalledTimes(3));
   });
 
