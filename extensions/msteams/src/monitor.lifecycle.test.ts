@@ -1,7 +1,9 @@
 // Msteams tests cover monitor.lifecycle plugin behavior.
-import { createServer, type Server } from "node:http";
-import type { Request, Response } from "express";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import { acquireTestPortBlock } from "openclaw/plugin-sdk/test-env";
+import type { registerPluginHttpRoute } from "openclaw/plugin-sdk/webhook-ingress";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig, RuntimeEnv } from "../runtime-api.js";
 import type { MSTeamsConversationStore } from "./conversation-store.js";
 import type { createMSTeamsActivityHandler as CreateMSTeamsActivityHandler } from "./monitor-handler.js";
@@ -10,6 +12,7 @@ import {
   gateIngressAcceptThenDispatch,
 } from "./monitor-ingress-mock.test-support.js";
 import type { MSTeamsPollStore } from "./polls.js";
+import type { loadMSTeamsSdkWithAuth as LoadMSTeamsSdkWithAuth } from "./sdk.js";
 
 type MSTeamsUserResolution = {
   input: string;
@@ -32,14 +35,29 @@ type ResolveMSTeamsUserAllowlistMock = (params: {
   entries: string[];
 }) => Promise<MSTeamsUserResolution[]>;
 
-const keepHttpServerTaskAliveMock = vi.hoisted(() => vi.fn());
-
-vi.mock("../runtime-api.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../runtime-api.js")>();
-  keepHttpServerTaskAliveMock.mockImplementation(actual.keepHttpServerTaskAlive);
+type Route = Parameters<typeof registerPluginHttpRoute>[0];
+const routes = vi.hoisted(() => new Map<string, Route>());
+const monitorReady = vi.hoisted(() => ({ current: Promise.withResolvers<void>() }));
+const registerRouteMock = vi.hoisted(() =>
+  vi.fn((route: Route) => {
+    routes.set(route.path!, route);
+    return () => {
+      routes.delete(route.path!);
+    };
+  }),
+);
+vi.mock("openclaw/plugin-sdk/webhook-ingress", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/webhook-ingress")>()),
+  registerPluginHttpRoute: registerRouteMock,
+}));
+vi.mock("openclaw/plugin-sdk/channel-outbound", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/channel-outbound")>();
   return {
     ...actual,
-    keepHttpServerTaskAlive: keepHttpServerTaskAliveMock,
+    waitUntilAbort: (signal?: AbortSignal) => {
+      monitorReady.current.resolve();
+      return actual.waitUntilAbort(signal);
+    },
   };
 });
 
@@ -50,27 +68,18 @@ const isSigninInvokeAuthorized = vi.hoisted(() => vi.fn(async () => true));
 const isCardActionInvokeAuthorized = vi.hoisted(() => vi.fn(async () => true));
 const runMSTeamsFileConsentInvokeHandler = vi.hoisted(() => vi.fn(async () => {}));
 const loadMSTeamsSdkWithAuth = vi.hoisted(() =>
-  vi.fn(async (_creds?: unknown, options?: Record<string, unknown>) => {
+  vi.fn(async (_creds?: unknown, options?: Parameters<typeof LoadMSTeamsSdkWithAuth>[1]) => {
     const app = {
       on: vi.fn(),
       event: vi.fn(),
       onTokenExchange: vi.fn(async () => ({ status: 200 })),
       onVerifyState: vi.fn(async () => ({ status: 200 })),
       initialize: vi.fn(async () => {
-        const adapter = options?.httpServerAdapter as
-          | {
-              registerRoute?: (
-                path: string,
-                handler: (req: Request, res: Response) => void,
-              ) => void;
-            }
-          | undefined;
-        const endpoint = options?.messagingEndpoint;
-        if (adapter?.registerRoute && typeof endpoint === "string") {
-          adapter.registerRoute(endpoint, (req, res) => {
-            res.status(200).json({ url: req.url });
-          });
-        }
+        const adapter = options!.httpServerAdapter!;
+        adapter.registerRoute("POST", String(options?.messagingEndpoint), async ({ body }) => ({
+          status: 200,
+          body: { body },
+        }));
       }),
       tokenManager: {
         getBotToken: vi.fn(async () => ({ toString: (): string => "bot-token" })),
@@ -85,10 +94,6 @@ const ssoTokenStore = vi.hoisted(() => ({
   get: vi.fn(async () => null),
   save: vi.fn(async () => {}),
   remove: vi.fn(async () => false),
-}));
-
-vi.mock("@microsoft/teams.apps", () => ({
-  ExpressAdapter: vi.fn(),
 }));
 
 vi.mock("./monitor-handler.js", () => ({
@@ -122,14 +127,6 @@ vi.mock("./sdk.js", () => ({
   createMSTeamsTokenProvider: () => ({
     getAccessToken: vi.fn().mockResolvedValue("mock-token"),
   }),
-  createMSTeamsExpressAdapter: vi.fn(
-    async (expressApp: { post: (...args: unknown[]) => void }) => ({
-      registerRoute: (path: string, handler: (req: Request, res: Response) => void) =>
-        expressApp.post(path, handler),
-      start: vi.fn().mockResolvedValue(undefined),
-      stop: vi.fn().mockResolvedValue(undefined),
-    }),
-  ),
 }));
 
 vi.mock("./runtime.js", () => ({
@@ -157,10 +154,11 @@ vi.mock("./sso-token-store.js", () => ({
 import { monitorMSTeamsProvider } from "./monitor.js";
 
 async function waitForMSTeamsTestState(assertion: () => void | Promise<void>): Promise<void> {
-  await vi.waitFor(assertion, { interval: 1 });
+  await monitorReady.current.promise;
+  await assertion();
 }
 
-function createConfig(port: number): OpenClawConfig {
+function createConfig(): OpenClawConfig {
   return {
     channels: {
       msteams: {
@@ -169,7 +167,6 @@ function createConfig(port: number): OpenClawConfig {
         appPassword: "app-password", // pragma: allowlist secret
         tenantId: "tenant-id",
         webhook: {
-          port,
           path: "/api/messages",
         },
       },
@@ -208,24 +205,35 @@ function createStores() {
   };
 }
 
-async function resolveStartedServer(): Promise<Server> {
-  await waitForMSTeamsTestState(() => {
-    expect(keepHttpServerTaskAliveMock).toHaveBeenCalled();
+const routeServer = createServer((req, res) => {
+  Object.defineProperty(req.socket, "remoteAddress", {
+    configurable: true,
+    value: req.headers["x-test-client-ip"] ?? "127.0.0.1",
   });
-  const server = keepHttpServerTaskAliveMock.mock.calls.at(-1)?.[0]?.server as Server | undefined;
-  if (!server) {
-    throw new Error("expected started Microsoft Teams HTTP server");
+  const route = routes.get(new URL(req.url ?? "/", "http://localhost").pathname);
+  if (!route) {
+    res.writeHead(404).end();
+    return;
   }
-  return server;
-}
-
-function resolveServerUrl(server: Server, path: string): string {
-  const address = server.address();
+  Promise.resolve(route.handler(req, res)).catch((error) => res.destroy(error));
+});
+let routeBaseUrl: string;
+let portClaim: Awaited<ReturnType<typeof acquireTestPortBlock>>;
+beforeAll(async () => {
+  portClaim = await acquireTestPortBlock({ offsets: [0] });
+  routeServer.listen(portClaim.port, "127.0.0.1");
+  await once(routeServer, "listening");
+  const address = routeServer.address();
   if (!address || typeof address === "string") {
-    throw new Error("expected TCP server address");
+    throw new Error("expected route server address");
   }
-  return `http://127.0.0.1:${address.port}${path}`;
-}
+  routeBaseUrl = `http://127.0.0.1:${address.port}`;
+});
+afterAll(async () => {
+  routeServer.close();
+  await once(routeServer, "close");
+  await portClaim.release();
+});
 
 function requireRegisteredMSTeamsConfig(): OpenClawConfig {
   const registered = createMSTeamsActivityHandler.mock.calls[0]?.[0] as
@@ -248,6 +256,10 @@ function requireRegisteredMSTeamsMediaMaxBytes(): number {
 describe("monitorMSTeamsProvider lifecycle", () => {
   afterEach(() => {
     vi.clearAllMocks();
+    routes.clear();
+    vi.unstubAllEnvs();
+    Reflect.deleteProperty(globalThis, Symbol.for("openclaw.msteams.privateQaRuntime"));
+    monitorReady.current = Promise.withResolvers<void>();
     resolveAllowlistMocks.resolveMSTeamsTeamsConfig
       .mockReset()
       .mockImplementation(async ({ teams }) => ({ teams, mapping: [], unresolved: [] }));
@@ -265,7 +277,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
     const abort = new AbortController();
     const stores = createStores();
     const task = monitorMSTeamsProvider({
-      cfg: createConfig(0),
+      cfg: createConfig(),
       runtime: createRuntime(),
       abortSignal: abort.signal,
       conversationStore: stores.conversationStore,
@@ -282,7 +294,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
       },
     );
     await waitForMSTeamsTestState(() => {
-      expect(keepHttpServerTaskAliveMock).toHaveBeenCalledTimes(1);
+      expect(routes.has("/api/messages")).toBe(true);
     });
     await Promise.resolve();
     expect(taskSettled).toBe(false);
@@ -296,7 +308,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
 
   it("prefers the Teams media limit over the agent default", async () => {
     const abort = new AbortController();
-    const cfg = createConfig(0);
+    const cfg = createConfig();
     updateMSTeamsConfig(cfg, { mediaMaxMb: 12 });
     cfg.agents = { defaults: { mediaMaxMb: 3 } };
 
@@ -318,7 +330,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
 
   it("falls back to the agent media limit when Teams has no override", async () => {
     const abort = new AbortController();
-    const cfg = createConfig(0);
+    const cfg = createConfig();
     cfg.agents = { defaults: { mediaMaxMb: 3 } };
 
     const task = monitorMSTeamsProvider({
@@ -337,60 +349,60 @@ describe("monitorMSTeamsProvider lifecycle", () => {
     await task;
   });
 
-  it("rejects startup when the webhook port is already in use", async () => {
-    const blocker = createServer();
-    await new Promise<void>((resolve, reject) => {
-      blocker.once("error", reject);
-      blocker.listen(0, resolve);
+  it("refuses an unservable probe path while retaining an explicit legacy callback", async () => {
+    const cfg = createConfig();
+    updateMSTeamsConfig(cfg, { webhook: { path: "/ready?tenant=one" } });
+    await expect(
+      monitorMSTeamsProvider({ cfg, runtime: createRuntime(), ...createStores() }),
+    ).rejects.toThrow("18789/api/messages");
+    expect(registerRouteMock).not.toHaveBeenCalled();
+
+    updateMSTeamsConfig(cfg, { legacyWebhook: { port: 3978 } });
+    const abort = new AbortController();
+    const task = monitorMSTeamsProvider({
+      cfg,
+      runtime: createRuntime(),
+      abortSignal: abort.signal,
+      ...createStores(),
     });
+    await monitorReady.current.promise;
+    expect(routes.get("/ready?tenant=one")?.legacyListener).toEqual({ port: 3978 });
+    abort.abort();
+    await task;
+  });
 
-    try {
-      const address = blocker.address();
-      if (!address || typeof address === "string") {
-        throw new Error("expected occupied TCP port");
-      }
-
-      const stores = createStores();
-      const task = monitorMSTeamsProvider({
-        cfg: createConfig(address.port),
+  it("cleans up ingress when Gateway route registration fails", async () => {
+    registerRouteMock.mockImplementationOnce(() => {
+      throw new Error("route already owned");
+    });
+    await expect(
+      monitorMSTeamsProvider({
+        cfg: createConfig(),
         runtime: createRuntime(),
-        conversationStore: stores.conversationStore,
-        pollStore: stores.pollStore,
-      });
-
-      await expect(task).rejects.toMatchObject({ code: "EADDRINUSE" });
-      const ingress = getMSTeamsIngressMockState().instances[0];
-      if (!ingress) {
-        throw new Error("expected Teams ingress");
-      }
-      expect(ingress.start).toHaveBeenCalledTimes(1);
-      expect(ingress.stop).toHaveBeenCalledTimes(1);
-      expect(keepHttpServerTaskAliveMock).not.toHaveBeenCalled();
-    } finally {
-      await new Promise<void>((resolve, reject) => {
-        blocker.close((err) => (err ? reject(err) : resolve()));
-      });
-    }
+        ...createStores(),
+      }),
+    ).rejects.toThrow("route already owned");
+    expect(getMSTeamsIngressMockState().instances[0]?.stop).toHaveBeenCalledOnce();
   });
 
   it("rejects requests without Bearer token before SDK route", async () => {
     const abort = new AbortController();
     const task = monitorMSTeamsProvider({
-      cfg: createConfig(0),
+      cfg: createConfig(),
       runtime: createRuntime(),
       abortSignal: abort.signal,
       conversationStore: createStores().conversationStore,
       pollStore: createStores().pollStore,
     });
 
-    const server = await resolveStartedServer();
-    const unauthorized = await fetch(resolveServerUrl(server, "/api/messages"), {
+    await monitorReady.current.promise;
+    const unauthorized = await fetch(`${routeBaseUrl}/api/messages`, {
       method: "POST",
     });
     expect(unauthorized.status).toBe(401);
     await expect(unauthorized.json()).resolves.toEqual({ error: "Unauthorized" });
 
-    const authorized = await fetch(resolveServerUrl(server, "/api/messages"), {
+    const authorized = await fetch(`${routeBaseUrl}/api/messages`, {
       method: "POST",
       headers: { authorization: "Bearer valid-token" },
     });
@@ -400,18 +412,50 @@ describe("monitorMSTeamsProvider lifecycle", () => {
     await task;
   });
 
+  it("keeps private QA skip-auth requests restricted to loopback", async () => {
+    vi.stubEnv("OPENCLAW_BUILD_PRIVATE_QA", "1");
+    Object.defineProperty(globalThis, Symbol.for("openclaw.msteams.privateQaRuntime"), {
+      configurable: true,
+      value: { connectorUrl: "http://127.0.0.1:1/", nonce: "qa-nonce", botToken: "qa-token" },
+    });
+    const abort = new AbortController();
+    const task = monitorMSTeamsProvider({
+      cfg: createConfig(),
+      runtime: createRuntime(),
+      abortSignal: abort.signal,
+      ...createStores(),
+    });
+    await monitorReady.current.promise;
+    try {
+      for (const [clientIp, expectedStatus] of [
+        ["198.51.100.10", 401],
+        ["127.0.0.1", 200],
+      ] as const) {
+        const response = await fetch(`${routeBaseUrl}/api/messages`, {
+          method: "POST",
+          headers: { authorization: "Bearer private-qa", "x-test-client-ip": clientIp },
+        });
+        expect(response.status).toBe(expectedStatus);
+        await response.text();
+      }
+    } finally {
+      abort.abort();
+      await task;
+    }
+  });
+
   it("keeps oversized webhook parse failures JSON-shaped", async () => {
     const abort = new AbortController();
     const task = monitorMSTeamsProvider({
-      cfg: createConfig(0),
+      cfg: createConfig(),
       runtime: createRuntime(),
       abortSignal: abort.signal,
       conversationStore: createStores().conversationStore,
       pollStore: createStores().pollStore,
     });
 
-    const server = await resolveStartedServer();
-    const response = await fetch(resolveServerUrl(server, "/api/messages"), {
+    await monitorReady.current.promise;
+    const response = await fetch(`${routeBaseUrl}/api/messages`, {
       method: "POST",
       headers: {
         authorization: "Bearer valid-token",
@@ -429,9 +473,9 @@ describe("monitorMSTeamsProvider lifecycle", () => {
 
   it("forwards legacy /api/messages requests to a custom webhook path", async () => {
     const abort = new AbortController();
-    const cfg = createConfig(0);
+    const cfg = createConfig();
     updateMSTeamsConfig(cfg, {
-      webhook: { port: 0, path: "/teams/events" },
+      webhook: { path: "/teams/events" },
     });
     const task = monitorMSTeamsProvider({
       cfg,
@@ -441,17 +485,17 @@ describe("monitorMSTeamsProvider lifecycle", () => {
       pollStore: createStores().pollStore,
     });
 
-    const server = await resolveStartedServer();
+    await monitorReady.current.promise;
     expect(loadMSTeamsSdkWithAuth.mock.calls[0]?.[1]).toMatchObject({
       messagingEndpoint: "/teams/events",
     });
-    const response = await fetch(resolveServerUrl(server, "/api/messages"), {
+    const response = await fetch(`${routeBaseUrl}/api/messages`, {
       method: "POST",
       headers: { authorization: "Bearer valid" },
     });
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ url: "/teams/events" });
+    await expect(response.json()).resolves.toEqual({ body: {} });
 
     abort.abort();
     await task;
@@ -459,7 +503,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
 
   it("gates SDK SSO invoke routes and persists successful signin events", async () => {
     const abort = new AbortController();
-    const cfg = createConfig(0);
+    const cfg = createConfig();
     updateMSTeamsConfig(cfg, {
       sso: { enabled: true, connectionName: "graph" },
     });
@@ -547,7 +591,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
 
   it("does not persist SDK SSO signin events when Teams sender policy denies them", async () => {
     const abort = new AbortController();
-    const cfg = createConfig(0);
+    const cfg = createConfig();
     updateMSTeamsConfig(cfg, {
       sso: { enabled: true, connectionName: "graph" },
     });
@@ -597,7 +641,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
 
   it("blocks SDK SSO token exchange before the SDK calls Bot Framework", async () => {
     const abort = new AbortController();
-    const cfg = createConfig(0);
+    const cfg = createConfig();
     updateMSTeamsConfig(cfg, {
       sso: { enabled: true, connectionName: "graph" },
     });
@@ -643,7 +687,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
   it("falls through non-feedback message.submit invokes to activity dispatch", async () => {
     const abort = new AbortController();
     const task = monitorMSTeamsProvider({
-      cfg: createConfig(0),
+      cfg: createConfig(),
       runtime: createRuntime(),
       abortSignal: abort.signal,
       conversationStore: createStores().conversationStore,
@@ -711,7 +755,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
 
     const abort = new AbortController();
     const task = monitorMSTeamsProvider({
-      cfg: createConfig(0),
+      cfg: createConfig(),
       runtime: createRuntime(),
       abortSignal: abort.signal,
       conversationStore: createStores().conversationStore,
@@ -748,7 +792,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
   it("acks non-poll card actions after durable admission, before agent dispatch settles", async () => {
     const abort = new AbortController();
     const task = monitorMSTeamsProvider({
-      cfg: createConfig(0),
+      cfg: createConfig(),
       runtime: createRuntime(),
       abortSignal: abort.signal,
       conversationStore: createStores().conversationStore,
@@ -816,7 +860,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
 
   it("gates poll card votes before recording them", async () => {
     const abort = new AbortController();
-    const cfg = createConfig(0);
+    const cfg = createConfig();
     const pollStore: MSTeamsPollStore = {
       createPoll: vi.fn(async () => {}),
       getPoll: vi.fn(async () => ({
@@ -877,7 +921,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
 
   it("rejects poll card votes from the wrong conversation", async () => {
     const abort = new AbortController();
-    const cfg = createConfig(0);
+    const cfg = createConfig();
     const pollStore: MSTeamsPollStore = {
       createPoll: vi.fn(async () => {}),
       getPoll: vi.fn(async () => ({
@@ -937,7 +981,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
 
   it("does not resolve user allowlists by display name unless name matching is enabled", async () => {
     const abort = new AbortController();
-    const cfg = createConfig(0);
+    const cfg = createConfig();
     updateMSTeamsConfig(cfg, {
       allowFrom: ["Alice", "user:40a1a0ed-4ff2-4164-a219-55518990c197"],
       groupAllowFrom: ["Bob", "msteams:user:50a1a0ed-4ff2-4164-a219-55518990c198"],
@@ -1011,7 +1055,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
       .mockResolvedValueOnce([{ input: "Bob", resolved: true, id: "bob-aad" }]);
 
     const abort = new AbortController();
-    const cfg = createConfig(0);
+    const cfg = createConfig();
     updateMSTeamsConfig(cfg, {
       dangerouslyAllowNameMatching: true,
       allowFrom: ["Alice"],
@@ -1053,7 +1097,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
     );
     const runtime = createRuntime();
     const abort = new AbortController();
-    const cfg = createConfig(0);
+    const cfg = createConfig();
     updateMSTeamsConfig(cfg, {
       dangerouslyAllowNameMatching: true,
       allowFrom: ["Alice", "accessGroup:operators", "user:40a1a0ed-4ff2-4164-a219-55518990c197"],

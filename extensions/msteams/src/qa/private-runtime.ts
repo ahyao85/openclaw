@@ -124,7 +124,6 @@ class PrivateQaHttpClient {
 
 type MSTeamsPrivateQaRuntime = {
   client: PrivateQaHttpClient;
-  listenHost: "127.0.0.1";
   skipAuth: true;
   token: () => Promise<string>;
 };
@@ -161,7 +160,6 @@ export function resolveMSTeamsPrivateQaRuntime(
   const client = new PrivateQaHttpClient(parsedConnectorUrl.toString(), nonce);
   return {
     client,
-    listenHost: "127.0.0.1",
     skipAuth: true,
     token: async () => botToken,
   };
