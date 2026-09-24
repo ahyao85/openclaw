@@ -261,18 +261,6 @@ class SettingsScreensTest {
   }
 
   @Test
-  fun approvalActionsUseUnabridgedSafetyLabelsInLargeFontSafeOrder() {
-    assertEquals(
-      listOf(
-        ExecApprovalAction("allow-once", "Allow Once"),
-        ExecApprovalAction("allow-always", "Allow Always"),
-        ExecApprovalAction("deny", "Deny"),
-      ),
-      execApprovalActions(listOf("allow-once", "allow-always", "deny")),
-    )
-  }
-
-  @Test
   fun approvalPresentationLocalizesControlledCopyAndPreservesGatewayValues() {
     val approval =
       GatewayExecApprovalSummary(
@@ -357,26 +345,6 @@ class SettingsScreensTest {
     assertTrue(usageRefreshVisible(requestRefreshing = true, summaryRefreshing = false))
     assertTrue(usageRefreshVisible(requestRefreshing = false, summaryRefreshing = true))
     assertFalse(usageRefreshVisible(requestRefreshing = false, summaryRefreshing = false))
-  }
-
-  @Test
-  fun approvalCardShowsTheWholeMonospacedCommandBeforeStackedActions() {
-    val source = settingsScreensSource()
-    val cardStart = source.indexOf("private fun ExecApprovalCard(")
-    val reviewCall = source.indexOf("ExecApprovalCommandReview(", cardStart)
-    val actionsCall = source.indexOf("execApprovalActions(", reviewCall)
-    val reviewStart = source.indexOf("private fun ExecApprovalCommandReview(", actionsCall)
-    val reviewEnd = source.indexOf("internal data class ExecApprovalAction", reviewStart)
-    assertTrue(cardStart >= 0 && reviewCall > cardStart && actionsCall > reviewCall)
-    assertTrue(reviewStart > actionsCall && reviewEnd > reviewStart)
-    val reviewBody = source.substring(reviewStart, reviewEnd)
-    val actionBody = source.substring(reviewCall, reviewStart)
-
-    assertTrue(reviewBody.contains("FontFamily.Monospace"))
-    assertFalse(reviewBody.contains("maxLines"))
-    assertFalse(reviewBody.contains("TextOverflow"))
-    assertTrue(actionBody.contains("Column(modifier = Modifier.fillMaxWidth()"))
-    assertFalse(actionBody.contains("Modifier.weight(1f)"))
   }
 
   @Test

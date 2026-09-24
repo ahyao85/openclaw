@@ -111,7 +111,12 @@ Hard rule: avoid ultra-thin weights on light backgrounds.
 ## 6. Buttons And Actions
 
 - Primary action: filled accent button, visually dominant.
-- Secondary action: lower emphasis (outlined/text/surface button).
+- Secondary action: lower emphasis (outlined/text/surface button). Use the shared
+  secondary button’s danger treatment for Deny and Disconnect, with text-only
+  treatment when Disconnect accompanies a primary Reconnect action.
+- Approval actions share equal-width 48dp-minimum targets in a compact row when
+  their full labels fit; stack them at large text sizes or for longer translations.
+  Never shorten the permission scope to force the row to fit.
 - Icon-only buttons must remain legible and keep a 48dp target. `ClawIconButton` paints
   a 32dp bordered circle inside it; `ClawPlainIconButton` paints only the 18dp glyph.
 - `ClawDesignTheme` holds Material's own minimum interactive size at 48dp so Material

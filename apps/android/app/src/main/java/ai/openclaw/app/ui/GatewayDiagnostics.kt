@@ -7,6 +7,7 @@ import ai.openclaw.app.GatewayNodeCapabilityApproval
 import ai.openclaw.app.gateway.normalizeGatewayApprovalRequestId
 import ai.openclaw.app.gatewayConnectionStatusForDisplay
 import ai.openclaw.app.i18n.nativeString
+import ai.openclaw.app.ui.design.ClawStatus
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -26,68 +27,76 @@ internal fun openClawAndroidVersionLabel(): String {
 /** Normalizes blank gateway status text for display and diagnostics copy. */
 internal fun gatewayStatusForDisplay(statusText: String): String = gatewayConnectionStatusForDisplay(statusText)
 
+internal data class GatewayStatusPresentation(
+  val label: String,
+  val status: ClawStatus,
+)
+
 /** Converts raw gateway connection state into a stable compact label for status surfaces. */
 internal fun gatewayStatusLabel(
   statusText: String,
   isConnected: Boolean,
   gatewayConnectionProblem: GatewayConnectionProblem? = null,
-): String {
+): String = gatewayStatusPresentation(GatewayConnectionDisplay(isConnected, statusText, gatewayConnectionProblem)).label
+
+internal fun gatewayStatusPresentation(display: GatewayConnectionDisplay): GatewayStatusPresentation {
+  val (isConnected, statusText, gatewayConnectionProblem) = display
   val status = statusText.trim().lowercase()
   return when {
     status == "connected (node offline)" -> {
-      nativeString("Connected (node offline)")
+      GatewayStatusPresentation(nativeString("Connected (node offline)"), ClawStatus.Warning)
     }
 
     status == "connected (operator offline)" -> {
-      nativeString("Connected (operator offline)")
+      GatewayStatusPresentation(nativeString("Connected (operator offline)"), ClawStatus.Warning)
     }
 
     isConnected -> {
-      nativeString("Ready")
+      GatewayStatusPresentation(nativeString("Ready"), ClawStatus.Success)
     }
 
     status == "offline" -> {
-      nativeString("Offline")
+      GatewayStatusPresentation(nativeString("Offline"), ClawStatus.Danger)
     }
 
     gatewayConnectionProblem?.isNetworkFailure == true && gatewayConnectionProblem.reason == "transport-cleanup" -> {
-      nativeString("Stopping previous connection")
+      GatewayStatusPresentation(nativeString("Stopping previous connection"), ClawStatus.Neutral)
     }
 
     gatewayConnectionProblem?.isNetworkFailure == true -> {
-      nativeString("Cannot reach gateway")
+      GatewayStatusPresentation(nativeString("Cannot reach gateway"), ClawStatus.Danger)
     }
 
     status.contains("connecting") || status.contains("reconnecting") -> {
-      nativeString("Connecting...")
+      GatewayStatusPresentation(nativeString("Connecting..."), ClawStatus.Neutral)
     }
 
     status.contains("pair") -> {
-      nativeString("Pairing needed")
+      GatewayStatusPresentation(nativeString("Pairing needed"), ClawStatus.Warning)
     }
 
     status.contains("auth") || status.contains("device identity") -> {
-      gatewayAuthRecoveryLabel(gatewayConnectionProblem) ?: nativeString("Authentication needed")
+      GatewayStatusPresentation(gatewayAuthRecoveryLabel(gatewayConnectionProblem) ?: nativeString("Authentication needed"), ClawStatus.Warning)
     }
 
     status.contains("fingerprint verification timed out") -> {
-      nativeString("TLS timed out")
+      GatewayStatusPresentation(nativeString("TLS timed out"), ClawStatus.Danger)
     }
 
     status.contains("no tls endpoint") -> {
-      nativeString("No TLS endpoint")
+      GatewayStatusPresentation(nativeString("No TLS endpoint"), ClawStatus.Danger)
     }
 
     status.contains("certificate") || status.contains("tls") -> {
-      nativeString("Certificate review needed")
+      GatewayStatusPresentation(nativeString("Certificate review needed"), ClawStatus.Warning)
     }
 
     status.contains("failed") || status.contains("error") || status.contains("offline") || status.contains("not connected") -> {
-      nativeString("Cannot reach gateway")
+      GatewayStatusPresentation(nativeString("Cannot reach gateway"), ClawStatus.Danger)
     }
 
     else -> {
-      nativeString("Not connected")
+      GatewayStatusPresentation(nativeString("Not connected"), ClawStatus.Danger)
     }
   }
 }

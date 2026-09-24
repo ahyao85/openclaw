@@ -1,5 +1,10 @@
 package ai.openclaw.app.ui
 
+import ai.openclaw.app.AndroidScreenshotFixture
+import ai.openclaw.app.AndroidScreenshotScene
+import ai.openclaw.app.GatewayApprovalKind
+import ai.openclaw.app.GatewayExecApprovalInboxState
+import ai.openclaw.app.GatewayExecApprovalSummary
 import ai.openclaw.app.MainViewModel
 import ai.openclaw.app.NodeApp
 import ai.openclaw.app.NodeRuntime
@@ -9,15 +14,23 @@ import ai.openclaw.app.bindNodeRuntimeTestFixture
 import ai.openclaw.app.closeNodeRuntimeTestFixture
 import ai.openclaw.app.gateway.GatewayRegistryEntry
 import ai.openclaw.app.gateway.GatewayRegistryEntryKind
+import ai.openclaw.app.i18n.resolveNativeText
+import ai.openclaw.app.i18n.verbatimText
 import ai.openclaw.app.ui.design.ClawDesignTheme
 import android.content.Context
 import android.graphics.Bitmap
+import android.provider.Settings
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.DeviceConfigurationOverride
+import androidx.compose.ui.test.FontScale
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasClickAction
@@ -30,9 +43,17 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelStore
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -45,11 +66,12 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import org.robolectric.util.ReflectionHelpers
 import java.io.File
 import java.util.Base64
 import java.util.UUID
 
-/** Exercises the actual Settings route, including the retained credential-replacement action. */
+/** Exercises Gateway and Approvals through their real Settings routes and isolated runtime. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "en-rUS-w360dp-h800dp-mdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -61,6 +83,7 @@ class GatewaySettingsScreenTest {
   private lateinit var runtime: NodeRuntime
   private lateinit var model: MainViewModel
   private var previousRuntime: NodeRuntime? = null
+  private var animatorScale: String? = null
 
   // Compose consumers must be disposed before joining runtime cleanup.
   @get:Rule
@@ -75,7 +98,11 @@ class GatewaySettingsScreenTest {
               try {
                 if (::runtime.isInitialized) closeNodeRuntimeTestFixture(runtime)
               } finally {
-                if (::app.isInitialized) bindNodeRuntimeTestFixture(app, previousRuntime)
+                if (::app.isInitialized) {
+                  bindNodeRuntimeTestFixture(app, previousRuntime)
+                  Settings.Global.putString(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, animatorScale)
+                }
+                AndroidScreenshotFixture.configure(AndroidScreenshotScene.Home)
               }
             }
           }
@@ -83,8 +110,34 @@ class GatewaySettingsScreenTest {
       ).around(composeRule)
 
   @Test
+  fun unpairedGatewayOffersPairingWithoutInactiveConnectionActions() {
+    showSettings(paired = false)
+    capture("unpaired-gateway")
+    composeRule.onNodeWithText("Scan QR to Pair").assertIsDisplayed().performClick()
+    composeRule.runOnIdle { assertNotNull(model.gatewayAdditionRequest.value) }
+    composeRule.onNodeWithText("Reconnect").assertDoesNotExist()
+    composeRule.onNodeWithText("Disconnect").assertDoesNotExist()
+    composeRule.onNodeWithText("Connection").assertDoesNotExist()
+    composeRule.onAllNodesWithText("Offline").assertCountEquals(1)
+  }
+
+  @Test
+  fun connectedGatewayShowsOneStatusAndDisconnectUpdatesTheSameRow() {
+    showSettings(connected = true)
+    capture("connected-gateway")
+    composeRule.onNodeWithText("Connection").assertDoesNotExist()
+    composeRule.onAllNodesWithText("Connected").assertCountEquals(1)
+    composeRule.onNodeWithText("Ready").assertDoesNotExist()
+    composeRule.onNodeWithText("Disconnect").performClick()
+    composeRule.onNodeWithText("Offline").assertIsDisplayed()
+    composeRule.onNodeWithText("Reconnect").assertIsDisplayed()
+    composeRule.runOnIdle { assertEquals(1, prefs.gatewayRegistry.entries.value.size) }
+    capture("disconnected-gateway")
+  }
+
+  @Test
   fun connectionActionsAndSavedGatewaysPrecedeCollapsedTechnicalDetails() {
-    showGateway()
+    showSettings()
     capture("connection-actions")
     composeRule.onNodeWithText("Reconnect").assertIsDisplayed()
     composeRule.onNodeWithText("Disconnect").assertIsDisplayed()
@@ -109,7 +162,7 @@ class GatewaySettingsScreenTest {
 
   @Test
   fun invalidSetupCodeShowsErrorBesideItsActionWithoutChangingSavedSettings() {
-    showGateway()
+    showSettings()
     openManualSettings()
     val entries = prefs.gatewayRegistry.entries.value
     val code = composeRule.onNode(hasSetTextAction() and hasText("Setup code"))
@@ -134,7 +187,7 @@ class GatewaySettingsScreenTest {
 
   @Test
   fun populatedManualFieldsKeepLabelsAndSecretsStayMasked() {
-    showGateway()
+    showSettings()
     openManualSettings()
     val fields =
       listOf(
@@ -169,7 +222,7 @@ class GatewaySettingsScreenTest {
 
   @Test
   fun setupReplacementStillRequiresConfirmationAndCancelPreservesSavedGateway() {
-    showGateway()
+    showSettings()
     val entries = prefs.gatewayRegistry.entries.value
     val code =
       Base64.getUrlEncoder().withoutPadding().encodeToString(
@@ -186,7 +239,7 @@ class GatewaySettingsScreenTest {
 
   @Test
   fun technicalDisclosuresAnnounceExpansionRatherThanSelection() {
-    showGateway()
+    showSettings()
     for (label in listOf("Discovered", "Diagnostics", "Manual Gateway")) {
       val disclosure = composeRule.onNode(hasText(label) and hasClickAction())
       disclosure.performScrollTo()
@@ -197,6 +250,98 @@ class GatewaySettingsScreenTest {
       disclosure.performScrollTo().performClick()
       disclosure.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Collapsed"))
     }
+  }
+
+  @Test
+  fun approvalShowsOneFullCommandAndCompactUnabridgedDecisions() {
+    showSettings(connected = true, route = SettingsRoute.Approvals)
+    val approval = showApproval(GatewayApprovalKind.Exec)
+    composeRule.onNodeWithText("Deny").performScrollTo()
+    capture("exec-approval")
+    val command = approval.commandText.resolveNativeText()
+    composeRule.onAllNodesWithText(command).assertCountEquals(1)
+    val commandLayout = textLayout(command)
+    assertEquals(FontFamily.Monospace, commandLayout.layoutInput.style.fontFamily)
+    assertTrue("The entire command remains readable", !commandLayout.hasVisualOverflow)
+    val labels = listOf("Allow once", "Always allow here", "Deny")
+    labels.forEach(::assertReadableAction)
+    val buttons = labels.map { composeRule.onNodeWithText(it).getUnclippedBoundsInRoot() }
+    assertEquals(buttons[0].top, buttons[1].top)
+    assertEquals(buttons[0].top, buttons[2].top)
+    val widths = buttons.map { it.right - it.left }
+    assertTrue("Equal weights differ by at most one rounding pixel", widths.max() - widths.min() <= 1.dp)
+    assertTrue(buttons[1].left >= buttons[0].right && buttons[2].left >= buttons[1].right)
+    composeRule.onNodeWithText("Review").assertIsDisplayed()
+    composeRule.onNodeWithText("Deny").performClick()
+    runBlocking { withTimeout(5_000) { runtime.execApprovalInbox.first { state -> state.approvals.none { it.id == approval.id } } } }
+    composeRule.onNodeWithText(command).assertDoesNotExist()
+  }
+
+  @Test
+  fun largeTextKeepsPluginDetailsAndDisabledDecisionsThenRespectsExternalResolution() {
+    showSettings(connected = true, route = SettingsRoute.Approvals, fontScale = 2f, dark = false)
+    val approval = showApproval(GatewayApprovalKind.Plugin)
+    composeRule.onNodeWithText("Deny").performScrollTo()
+    capture("plugin-approval-large-text")
+    val labels = listOf("Allow once", "Always allow", "Deny")
+    labels.forEach(::assertReadableAction)
+    val buttons = labels.map { composeRule.onNodeWithText(it).getUnclippedBoundsInRoot() }
+    assertTrue("Full labels stack at large text", buttons[1].top >= buttons[0].bottom && buttons[2].top >= buttons[1].bottom)
+    composeRule.onNodeWithText("Prepared plugin action").performScrollTo().assertIsDisplayed()
+    composeRule.onNodeWithText("Review this plugin's complete description.").performScrollTo().assertIsDisplayed()
+    composeRule.onNodeWithText("Review the destination before allowing.").performScrollTo().assertIsDisplayed()
+    composeRule.runOnIdle { approvalState().value = GatewayExecApprovalInboxState(approvals = listOf(approval.copy(resolvingDecision = "deny"))) }
+    composeRule.onNodeWithText("Sending").performScrollTo().assertIsDisplayed()
+    labels.forEach { composeRule.onNodeWithText(it).performScrollTo().assertIsNotEnabled() }
+    composeRule.runOnIdle {
+      approvalState().value = GatewayExecApprovalInboxState(approvals = listOf(approval.copy(externalResolutionDecisions = listOf("allow-always"), externalResolutionLabel = "Always allow requires Control UI review.")))
+    }
+    composeRule.onNodeWithText("Always allow").assertDoesNotExist()
+    composeRule.onNodeWithText("Always allow requires Control UI review.").performScrollTo().assertIsDisplayed()
+    composeRule.onNodeWithText("Allow once").performScrollTo().assertIsEnabled()
+    composeRule.onNodeWithText("Deny").performScrollTo().assertIsEnabled()
+  }
+
+  private fun showApproval(kind: GatewayApprovalKind): GatewayExecApprovalSummary {
+    val loaded = runBlocking { withTimeout(5_000) { runtime.execApprovalInbox.first { !it.refreshing && it.approvals.size == 3 } } }
+    val approval =
+      loaded.approvals.single { it.kind == kind }.copy(
+        allowedDecisions = listOf("allow-once", "allow-always", "deny"),
+        commandPreview = if (kind == GatewayApprovalKind.Exec) "pnpm android:test:integration" else "Prepared plugin action",
+        commandText = verbatimText(if (kind == GatewayApprovalKind.Exec) "pnpm android:test:integration" else "Review this plugin's complete description."),
+        warningText = "Review the destination before allowing.",
+        createdAtMs = null,
+        expiresAtMs = null,
+      )
+    composeRule.runOnIdle { approvalState().value = GatewayExecApprovalInboxState(approvals = listOf(approval)) }
+    return approval
+  }
+
+  private fun approvalState(): MutableStateFlow<GatewayExecApprovalInboxState> = ReflectionHelpers.getField(runtime, "mutableExecApprovalInbox")
+
+  private fun textLayout(text: String): TextLayoutResult {
+    val layouts = mutableListOf<TextLayoutResult>()
+    composeRule.onNodeWithText(text, useUnmergedTree = true).performSemanticsAction(SemanticsActions.GetTextLayoutResult) { assertTrue(it(layouts)) }
+    return layouts.single()
+  }
+
+  private fun assertReadableAction(label: String) {
+    val button =
+      composeRule
+        .onNodeWithText(label)
+        .performScrollTo()
+        .assertIsDisplayed()
+        .assertIsEnabled()
+    val layout = textLayout(label)
+    val bounds = button.fetchSemanticsNode().touchBoundsInRoot
+    val contentWidth = bounds.width - with(composeRule.density) { 16.dp.toPx() }
+    assertTrue("$label has room for every line", !layout.didOverflowHeight)
+    for (line in 0 until layout.lineCount) {
+      assertTrue("$label is not ellipsized", !layout.isLineEllipsized(line))
+      assertTrue("$label fits inside its button", layout.getLineRight(line) - layout.getLineLeft(line) <= contentWidth)
+    }
+    val minimum = with(composeRule.density) { 48.dp.toPx() }
+    assertTrue("$label retains a 48dp touch target", bounds.width >= minimum && bounds.height >= minimum)
   }
 
   private fun openManualSettings() {
@@ -216,26 +361,44 @@ class GatewaySettingsScreenTest {
     println("Gateway settings proof: " + file.absolutePath)
   }
 
-  private fun showGateway() {
+  private fun showSettings(
+    paired: Boolean = true,
+    connected: Boolean = false,
+    route: SettingsRoute = SettingsRoute.Gateway,
+    fontScale: Float = 1f,
+    dark: Boolean = true,
+  ) {
     app = RuntimeEnvironment.getApplication() as NodeApp
     previousRuntime = app.peekRuntime()
+    animatorScale = Settings.Global.getString(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE)
+    Settings.Global.putFloat(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 0f)
     prefs = SecurePrefs(app, app.getSharedPreferences("gateway-settings-${UUID.randomUUID()}", Context.MODE_PRIVATE))
     prefs.setManualHost("127.0.0.1")
     prefs.setManualPort(18789)
-    prefs.gatewayRegistry.upsert(
-      GatewayRegistryEntry(
-        stableId = "manual|127.0.0.1|18789",
-        kind = GatewayRegistryEntryKind.MANUAL,
-        name = "Local QA Gateway",
-        host = "127.0.0.1",
-        port = 18789,
-        tls = false,
-      ),
-    )
+    if (paired) {
+      prefs.gatewayRegistry.upsert(
+        GatewayRegistryEntry(
+          stableId = "manual|127.0.0.1|18789",
+          kind = GatewayRegistryEntryKind.MANUAL,
+          name = "Local QA Gateway",
+          host = "127.0.0.1",
+          port = 18789,
+          tls = false,
+        ),
+      )
+    }
+    if (paired && connected) prefs.gatewayRegistry.setActive("manual|127.0.0.1|18789")
+    val scene = if (route == SettingsRoute.Approvals) AndroidScreenshotScene.Attention else AndroidScreenshotScene.Home
+    AndroidScreenshotFixture.configure(scene)
     runtime = NodeRuntime(app, prefs, NodeRuntimeMode.ScreenshotFixture)
-    runtime.disconnect()
+    if (!connected) runtime.disconnect()
     bindNodeRuntimeTestFixture(app, runtime)
     model = MainViewModel(app, prefs, SavedStateHandle()).also { models.put("gateway", it) }
-    composeRule.setContent { ClawDesignTheme { SettingsDetailScreen(model, SettingsRoute.Gateway, onBack = {}) } }
+    model.enterScreenshotFixtureMode(scene)
+    composeRule.setContent {
+      DeviceConfigurationOverride(DeviceConfigurationOverride.FontScale(fontScale)) {
+        ClawDesignTheme(dark = dark) { SettingsDetailScreen(model, route, onBack = {}) }
+      }
+    }
   }
 }

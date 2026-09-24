@@ -98,11 +98,14 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -166,14 +169,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -1780,14 +1786,22 @@ private fun GatewaySettingsScreen(
       )
     },
   ) {
-    SettingsMetricPanel(
-      rows =
-        listOf(
-          SettingsMetric(nativeString("Gateway"), serverName?.takeIf { it.isNotBlank() } ?: nativeString("Home Gateway")),
-          SettingsMetric(nativeString("Connection"), if (gatewayConnectionDisplay.isConnected) nativeString("Connected") else nativeString("Offline")),
-          SettingsMetric(nativeString("Status"), gatewayStatusLabel(gatewayConnectionDisplay)),
-        ),
-    )
+    val status = gatewayStatusPresentation(gatewayConnectionDisplay)
+    ClawPanel {
+      Column {
+        ClawListItem(title = nativeString("Gateway"), subtitle = serverName?.takeIf { it.isNotBlank() } ?: nativeString("Home Gateway"))
+        HorizontalDivider(color = ClawTheme.colors.border)
+        ClawListItem(
+          title = nativeString("Status"),
+          trailing = {
+            ClawStatusPill(
+              text = if (status.status == ClawStatus.Success) nativeString("Connected") else status.label,
+              status = status.status,
+            )
+          },
+        )
+      }
+    }
     // First-run hero: no paired gateways yet, so pairing is the primary action.
     if (gatewayShowsScanHero(pairedGateways.size)) {
       ClawPrimaryButton(
@@ -1825,13 +1839,25 @@ private fun GatewaySettingsScreen(
         }
       }
     }
-    FlowRow(
-      modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.spacedBy(8.dp),
-      verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-      ClawPrimaryButton(text = nativeString("Reconnect"), onClick = viewModel::refreshGatewayConnection, modifier = Modifier.weight(1f))
-      ClawSecondaryButton(text = nativeString("Disconnect"), onClick = viewModel::disconnect, modifier = Modifier.weight(1f))
+    if (!gatewayShowsScanHero(pairedGateways.size)) {
+      FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        if (gatewayConnectionDisplay.isConnected) {
+          ClawSecondaryButton(text = nativeString("Reconnect"), onClick = viewModel::refreshGatewayConnection, modifier = Modifier.weight(1f))
+        } else {
+          ClawPrimaryButton(text = nativeString("Reconnect"), onClick = viewModel::refreshGatewayConnection, modifier = Modifier.weight(1f))
+        }
+        ClawSecondaryButton(
+          text = nativeString("Disconnect"),
+          onClick = viewModel::disconnect,
+          modifier = Modifier.weight(1f),
+          danger = true,
+          textOnly = !gatewayConnectionDisplay.isConnected,
+        )
+      }
     }
     ClawPanel {
       Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -2767,11 +2793,13 @@ private fun ExecApprovalCard(
       Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs)) {
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
           Text(text = approval.title ?: nativeString("Command approval"), style = ClawTheme.type.section, color = ClawTheme.colors.text)
-          approval.commandPreview?.let { preview ->
-            Text(text = preview, style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+          if (approval.kind != GatewayApprovalKind.Exec) {
+            approval.commandPreview?.let { preview ->
+              Text(text = preview, style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
           }
         }
-        ClawStatusPill(text = if (resolving) nativeString("Sending") else nativeString("Review"), status = if (resolving) ClawStatus.Warning else ClawStatus.Success)
+        ClawStatusPill(text = if (resolving) nativeString("Sending") else nativeString("Review"), status = ClawStatus.Warning)
       }
       if (approval.kind == GatewayApprovalKind.Exec) {
         ExecApprovalCommandReview(approval.commandText.resolveNativeTextResource())
@@ -2786,24 +2814,63 @@ private fun ExecApprovalCard(
       approval.errorText?.let { errorText ->
         Text(text = gatewayExecApprovalTextForDisplay(errorText), style = ClawTheme.type.caption, color = ClawTheme.colors.warning)
       }
+      ExecApprovalActions(
+        actions = execApprovalActions(approval.allowedDecisions.filterNot { it in approval.externalResolutionDecisions }, approval.kind),
+        enabled = !resolving,
+        onResolve = { decision -> onResolve(approval.id, decision) },
+      )
+    }
+  }
+}
+
+@Composable
+private fun ExecApprovalActions(
+  actions: List<ExecApprovalAction>,
+  enabled: Boolean,
+  onResolve: (String) -> Unit,
+) {
+  if (actions.isEmpty()) return
+  val textMeasurer = rememberTextMeasurer()
+  val density = LocalDensity.current
+  BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+    val gap = with(density) { 8.dp.roundToPx() }
+    val buttonWidth = (constraints.maxWidth - gap * (actions.size - 1)) / actions.size
+    val textWidth = (buttonWidth - with(density) { 16.dp.roundToPx() }).coerceAtLeast(0)
+    val textHeight = with(density) { ClawTheme.spacing.touchTarget.roundToPx() }
+    // Keep the complete permission labels; stack when the compact row cannot fit them.
+    val compact =
+      actions.all { action ->
+        val layout = textMeasurer.measure(action.label, ClawTheme.type.label, constraints = Constraints(maxWidth = textWidth))
+        layout.size.height <= textHeight &&
+          (0 until layout.lineCount).all { line -> layout.getLineRight(line) <= textWidth && layout.getLineLeft(line) >= 0 }
+      }
+    val button: @Composable (ExecApprovalAction, Modifier) -> Unit = { action, modifier ->
+      if (action.decision == "allow-once") {
+        ClawPrimaryButton(
+          text = action.label,
+          onClick = { onResolve(action.decision) },
+          enabled = enabled,
+          modifier = modifier,
+          contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+        )
+      } else {
+        ClawSecondaryButton(
+          text = action.label,
+          onClick = { onResolve(action.decision) },
+          enabled = enabled,
+          modifier = modifier,
+          danger = action.decision == "deny",
+          contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+        )
+      }
+    }
+    if (compact) {
+      Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        actions.forEach { button(it, Modifier.weight(1f).fillMaxHeight()) }
+      }
+    } else {
       Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        execApprovalActions(approval.allowedDecisions.filterNot { it in approval.externalResolutionDecisions }).forEach { action ->
-          if (action.decision == "allow-once") {
-            ClawPrimaryButton(
-              text = action.label,
-              onClick = { onResolve(approval.id, action.decision) },
-              enabled = !resolving,
-              modifier = Modifier.fillMaxWidth(),
-            )
-          } else {
-            ClawSecondaryButton(
-              text = action.label,
-              onClick = { onResolve(approval.id, action.decision) },
-              enabled = !resolving,
-              modifier = Modifier.fillMaxWidth(),
-            )
-          }
-        }
+        actions.forEach { button(it, Modifier.fillMaxWidth()) }
       }
     }
   }
@@ -2833,11 +2900,14 @@ internal data class ExecApprovalAction(
   val label: String,
 )
 
-internal fun execApprovalActions(allowedDecisions: List<String>): List<ExecApprovalAction> =
+internal fun execApprovalActions(
+  allowedDecisions: List<String>,
+  kind: GatewayApprovalKind,
+): List<ExecApprovalAction> =
   allowedDecisions.mapNotNull { decision ->
     when (decision) {
-      "allow-once" -> ExecApprovalAction(decision, nativeString("Allow Once"))
-      "allow-always" -> ExecApprovalAction(decision, nativeString("Allow Always"))
+      "allow-once" -> ExecApprovalAction(decision, nativeString("Allow once"))
+      "allow-always" -> ExecApprovalAction(decision, if (kind == GatewayApprovalKind.Exec) nativeString("Always allow here") else nativeString("Always allow"))
       "deny" -> ExecApprovalAction(decision, nativeString("Deny"))
       else -> null
     }

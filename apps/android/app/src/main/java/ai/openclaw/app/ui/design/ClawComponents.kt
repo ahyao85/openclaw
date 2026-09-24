@@ -62,6 +62,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
@@ -121,6 +122,7 @@ internal fun ClawPrimaryButton(
   modifier: Modifier = Modifier,
   enabled: Boolean = true,
   icon: ImageVector? = null,
+  contentPadding: PaddingValues = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
 ) {
   Button(
     onClick = onClick,
@@ -134,14 +136,14 @@ internal fun ClawPrimaryButton(
         disabledContainerColor = ClawTheme.colors.surfacePressed,
         disabledContentColor = ClawTheme.colors.textSubtle,
       ),
-    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+    contentPadding = contentPadding,
     elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp, pressedElevation = 0.dp),
   ) {
     if (icon != null) {
       Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(16.dp))
       Spacer(modifier = Modifier.width(6.dp))
     }
-    Text(text = text, style = ClawTheme.type.label)
+    Text(text = text, style = ClawTheme.type.label, textAlign = TextAlign.Center)
   }
 }
 
@@ -153,18 +155,44 @@ internal fun ClawSecondaryButton(
   modifier: Modifier = Modifier,
   enabled: Boolean = true,
   icon: ImageVector? = null,
+  danger: Boolean = false,
+  textOnly: Boolean = false,
+  contentPadding: PaddingValues = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
 ) {
   Surface(
     onClick = onClick,
     enabled = enabled,
     modifier = modifier.heightIn(min = ClawTheme.spacing.touchTarget),
     shape = RoundedCornerShape(ClawTheme.radii.button),
-    color = if (enabled) ClawTheme.colors.surfaceRaised else ClawTheme.colors.surface,
-    contentColor = if (enabled) ClawTheme.colors.text else ClawTheme.colors.textSubtle,
-    border = BorderStroke(1.dp, if (enabled) ClawTheme.colors.borderStrong else ClawTheme.colors.border),
+    color =
+      when {
+        textOnly -> Color.Transparent
+        !enabled -> ClawTheme.colors.surface
+        danger -> ClawTheme.colors.dangerSoft
+        else -> ClawTheme.colors.surfaceRaised
+      },
+    contentColor =
+      when {
+        !enabled -> ClawTheme.colors.textSubtle
+        danger -> ClawTheme.colors.danger
+        else -> ClawTheme.colors.text
+      },
+    border =
+      if (textOnly) {
+        null
+      } else {
+        BorderStroke(
+          1.dp,
+          when {
+            !enabled -> ClawTheme.colors.border
+            danger -> ClawTheme.colors.danger.copy(alpha = 0.35f)
+            else -> ClawTheme.colors.borderStrong
+          },
+        )
+      },
   ) {
     Row(
-      modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+      modifier = Modifier.padding(contentPadding),
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.Center,
     ) {
@@ -172,7 +200,7 @@ internal fun ClawSecondaryButton(
         Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(16.dp))
         Spacer(modifier = Modifier.width(6.dp))
       }
-      Text(text = text, style = ClawTheme.type.label)
+      Text(text = text, style = ClawTheme.type.label, textAlign = TextAlign.Center)
     }
   }
 }
