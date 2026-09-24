@@ -24,6 +24,11 @@ import { formatShimResult, withShimFixture } from "./direct-run-entrypoints.test
 import { preparedScriptWrapperEnv } from "./prepared-script-wrapper.test-support.js";
 import { toolingMtsEntrypoints } from "./tooling-mts-runtime.test-support.mts";
 
+const sourceRunnerServiceFixtureUrl = new URL(
+  "./fixtures/source-runner-service.mjs",
+  import.meta.url,
+).href;
+
 const preparedRunnerModules = [
   [
     new URL("../../scripts/run-node.mts", import.meta.url),
@@ -92,6 +97,8 @@ setInterval(() => {
         `import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { runNodeMain } from ${JSON.stringify(runnerUrl)};
+import { registerSourceRunnerServiceFixture } from ${JSON.stringify(sourceRunnerServiceFixtureUrl)};
+registerSourceRunnerServiceFixture(${JSON.stringify(process.cwd())});
 fs.appendFileSync(${JSON.stringify(invocationsPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");
 // Let a regressed watcher finish after recording its doctor or restart invocation.
 if (fs.existsSync(${JSON.stringify(childPidPath)})) process.exit(0);
@@ -182,8 +189,10 @@ else process.exit(outcome);
             throw toErrorObject(result.error, "Gateway watch command failed");
           }
         },
-      ).catch((error: unknown) => {
+      ).catch(async (error: unknown) => {
+        const result = await command;
         const failure = toErrorObject(error, "Gateway watch fixture failed");
+        failure.message += `\nGateway watch command:\n${formatShimResult(result)}`;
         if (hasUnjoinedWork(failure)) {
           // The shim fixture needs this marker at the top level to retain unjoined inputs.
           Object.assign(failure, { processTreeState: "indeterminate" });
@@ -310,6 +319,8 @@ setInterval(() => {}, 1000);
         `import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { runNodeMain } from ${JSON.stringify(implementationUrl)};
+import { registerSourceRunnerServiceFixture } from ${JSON.stringify(sourceRunnerServiceFixtureUrl)};
+registerSourceRunnerServiceFixture(${JSON.stringify(process.cwd())});
 fs.writeFileSync(${JSON.stringify(wrapperPidPath)}, String(process.ppid));
 const outcome = await runNodeMain({
   cwd: ${JSON.stringify(checkoutRoot)},
