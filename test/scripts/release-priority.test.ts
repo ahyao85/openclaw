@@ -114,6 +114,8 @@ describe("release priority selection", () => {
           created_at: "2026-09-22T11:59:59Z",
         }),
         run(5, "CI", { status: "completed", conclusion: "skipped", event: "workflow_dispatch" }),
+        // Draft CI skips its gate too; unlike release deferral, there is no failed gate to restore.
+        run(6, "CI", { status: "completed", conclusion: "skipped" }),
       ],
       record,
     );

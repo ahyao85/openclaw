@@ -74,7 +74,7 @@ export function selectDeferredRunCandidates(runs, record) {
       run.status === "completed" &&
       String(run.created_at ?? "") >= record.recordedAt &&
       isDeferrableRun(run, record.parentRunId) &&
-      (run.conclusion === "skipped" || (run.name === "CI" && run.conclusion === "failure")),
+      (run.name === "CI" ? run.conclusion === "failure" : run.conclusion === "skipped"),
   );
 }
 
