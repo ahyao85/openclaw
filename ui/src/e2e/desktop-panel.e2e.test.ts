@@ -291,7 +291,10 @@ suite.define(() => {
     await suite.withPage({ serviceWorkers: "block" }, async ({ page }) => {
       const sessions = sessionsList("active");
       const [session] = sessions.sessions;
+      const discoveryTarget = { environmentId: "other-worker" };
+      const directTarget = { environmentId: workerDesktopEnvironment.id };
       const gateway = await installMockGateway(page, {
+        deferredMethods: ["environments.status"],
         featureMethods: ["desktop.observe", "environments.list"],
         methodResponses: {
           "sessions.list": {
@@ -315,22 +318,26 @@ suite.define(() => {
         },
       });
       await page.goto(`${suite.server.baseUrl}chat`);
+      // Chat discovery owns a separate read; hold it across the explicit open and retry.
+      await gateway.waitForRequest("environments.status", { match: discoveryTarget });
       await openDirectDesktop(page, "worker-desktop-1");
 
       const panel = page.locator("openclaw-desktop-panel");
       await panel.getByRole("alert").filter({ hasText: "inventory" }).waitFor();
+      expect(await gateway.getRequests("environments.status", directTarget)).toHaveLength(1);
       expect(await gateway.getRequests("desktop.observe")).toHaveLength(0);
       expect(await panel.getByText("Desktop sources", { exact: true }).count()).toBe(0);
       expect(await panel.getByText("This machine", { exact: true }).count()).toBe(0);
 
-      await gateway.setMethodResponse("environments.status", workerDesktopEnvironment);
+      await gateway.setMethodResponse("environments.status", {
+        cases: [{ match: directTarget, response: workerDesktopEnvironment }],
+      });
       await installDesktopClientFake(panel);
       const requestCount = (await gateway.getRequests()).length;
       await panel.getByRole("button", { name: "Retry", exact: true }).click();
 
-      await expect
-        .poll(async () => (await gateway.getRequests("environments.status")).length)
-        .toBe(2);
+      await gateway.waitForRequest("environments.status", { match: directTarget, after: 1 });
+
       const observeRequest = await gateway.waitForRequest("desktop.observe");
       expect(observeRequest.params).toEqual({
         source: { kind: "environment", environmentId: "worker-desktop-1" },
@@ -350,6 +357,15 @@ suite.define(() => {
       await panel.getByRole("button", { name: "Terminal", exact: true }).waitFor();
       expect(await panel.getAttribute("data-connect-count")).toBe("1");
       expect(await panel.getByText("Desktop sources", { exact: true }).count()).toBe(0);
+      await gateway.rejectDeferred("environments.status", {
+        code: "UNAVAILABLE",
+        message: "assigned desktop discovery is unavailable",
+      });
+      expect(await gateway.getRequests("environments.status", directTarget)).toHaveLength(2);
+      expect(
+        (await gateway.getRequests("environments.status")).map((request) => request.params),
+      ).toEqual([discoveryTarget, directTarget, directTarget]);
+      expect(await gateway.getRequests("desktop.observe")).toHaveLength(1);
     });
   });
 
