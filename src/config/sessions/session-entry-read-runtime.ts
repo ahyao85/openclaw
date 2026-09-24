@@ -336,31 +336,37 @@ async function withOrderedSessionEntriesInWorker<T>(
       selected.map(({ database }) => database),
       async () => {
         let changed = false;
-        const unsubscribe = sessionChanges.subscribe((change) => {
-          if (change.scope === "runtime" || change.scope === "agent-runs") {
-            return;
-          }
-          if ("all" in change) {
-            changed = true;
+        const unsubscribe = sessionChanges.subscribeFacts((change) => {
+          const scope = "all" in change ? change.scope : change;
+          if (typeof scope === "string") {
+            // Registry topology can invalidate discovery; presentation-only buses
+            // (placements, activity, profiles) do not change these stored entries.
+            changed ||= scope === "stores";
             return;
           }
           if (
-            !selected.some(({ input: selectedInput }) =>
-              selectedInput.sessionKeys.includes(change.sessionKey),
-            )
+            !("all" in change) &&
+            !change.factsInvalidated &&
+            (!change.facts || change.facts.kind === "unchanged")
           ) {
             return;
           }
+          const matching = selected.filter(
+            ({ input: selectedInput }) =>
+              (!scope.agentId || scope.agentId === selectedInput.agentId) &&
+              ("all" in change || selectedInput.sessionKeys.includes(change.sessionKey)),
+          );
+          if (matching.length === 0) {
+            return;
+          }
           try {
-            const physicalPath = change.storePath
+            const physicalPath = scope.storePath
               ? captureSessionStoreReadCandidate(
-                  resolveUnsuffixedSqliteTargetFromSessionStorePath(change.storePath).path,
+                  resolveUnsuffixedSqliteTargetFromSessionStorePath(scope.storePath).path,
                 ).physicalPath
               : undefined;
-            changed ||= selected.some(
-              ({ input: selectedInput, database }) =>
-                selectedInput.sessionKeys.includes(change.sessionKey) &&
-                (!physicalPath || physicalPath === database.path),
+            changed ||= matching.some(
+              ({ database }) => !physicalPath || physicalPath === database.path,
             );
           } catch {
             changed = true;

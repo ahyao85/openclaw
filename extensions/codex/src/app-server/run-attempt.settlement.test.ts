@@ -28,6 +28,7 @@ import {
   threadStartResult,
   turnStartResult,
 } from "./run-attempt-test-harness.js";
+import { readCodexAppServerBinding } from "./session-binding.test-helpers.js";
 import { resetSharedCodexAppServerClientForTests } from "./shared-client.js";
 import { attachSqliteSessionTarget } from "./sqlite-session.test-helpers.js";
 import { createInferenceReadyClientHarness, waitForHarnessRequest } from "./test-support.js";
@@ -483,9 +484,12 @@ describe("Codex app-server terminal settlement", () => {
       const settled = vi.fn();
       const run = runCodexAppServerAttempt(params);
       let successor: ReturnType<typeof runCodexAppServerAttempt> | undefined;
+      let coverageBeforeSettlement: string | undefined;
       void run.then(settled, settled);
       try {
         await harness.waitForMethod("turn/start");
+        coverageBeforeSettlement = (await readCodexAppServerBinding(params.sessionFile))
+          ?.historyCoveredThrough;
         if (boundary === "checkpoint") {
           await holdWriter();
         }
@@ -614,6 +618,12 @@ describe("Codex app-server terminal settlement", () => {
           checkpoint.resolve();
           await Promise.allSettled(checkpointWrites);
           const events = await readSessionTranscriptEvents(transcriptTarget);
+          if (release === "after cutoff") {
+            // Releasing the old writer must not admit a late coverage mutation.
+            expect(
+              (await readCodexAppServerBinding(params.sessionFile))?.historyCoveredThrough,
+            ).toBe(coverageBeforeSettlement);
+          }
           const assistantRows = events.filter(
             (event) =>
               isJsonObject(event) &&

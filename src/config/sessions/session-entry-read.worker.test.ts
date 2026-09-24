@@ -251,7 +251,7 @@ it("closes worker-prepared authority synchronously before queued consumers can r
   });
 });
 
-it("orders native reads with writers and ignores runtime-only invalidations", async () => {
+it("orders native reads with writers and ignores unrelated metadata notifications", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
     const database = openOpenClawAgentDatabase({ agentId: "main", env });
     const sessionKey = "agent:main:ordered-consumer";
@@ -264,9 +264,18 @@ it("orders native reads with writers and ignores runtime-only invalidations", as
         escaped = read!.assertCurrent;
         sessionChanges.emit({ sessionKey, scope: "runtime" });
         sessionChanges.emit({ all: true, scope: "agent-runs" });
+        sessionChanges.emit({ all: true, scope: "worker-placements" });
+        sessionChanges.emit({ all: true, scope: "profiles" });
+        sessionChanges.emit({ sessionKey, agentId: "main" });
+        sessionChanges.emit({ sessionKey, storePath: database.path, facts: { kind: "unchanged" } });
+        sessionChanges.emit({
+          all: true,
+          scope: { storePath: path.join(path.dirname(database.path), "unrelated.sqlite") },
+          factsInvalidated: true,
+        });
         read!.assertCurrent();
         expect(read!.result.entries[0]?.entry.sessionId).toBe("ordered-session");
-        sessionChanges.emit({ sessionKey, storePath: database.path });
+        sessionChanges.emit({ sessionKey, storePath: database.path, factsInvalidated: true });
         expect(read!.assertCurrent).toThrow("Session entry changed during read");
       },
       { ordered: true },
@@ -279,3 +288,33 @@ it("orders native reads with writers and ignores runtime-only invalidations", as
     ).rejects.toThrow("cannot reenter an active SQLite writer admission");
   });
 });
+
+it.each(["entry", "store", "topology"] as const)(
+  "revokes an ordered reader after authoritative %s changes",
+  async (change) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+      const database = openOpenClawAgentDatabase({ agentId: "main", env });
+      const sessionKey = "agent:main:changed-consumer";
+      writeSessionEntry(database, sessionKey, { sessionId: "original", updatedAt: 1 });
+      await withSessionEntriesFromStoresInWorker(
+        [{ agentId: "main", storePath: database.path, sessionKeys: [sessionKey], env }],
+        ([read]) => {
+          read!.assertCurrent();
+          if (change === "entry") {
+            writeSessionEntry(database, sessionKey, { sessionId: "successor", updatedAt: 2 });
+          } else if (change === "store") {
+            sessionChanges.emit({
+              all: true,
+              scope: { storePath: database.path },
+              factsInvalidated: true,
+            });
+          } else {
+            sessionChanges.emit({ all: true, scope: "stores" });
+          }
+          expect(read!.assertCurrent).toThrow("Session entry changed during read");
+        },
+        { ordered: true },
+      );
+    });
+  },
+);

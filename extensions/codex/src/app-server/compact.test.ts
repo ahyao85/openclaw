@@ -15,8 +15,8 @@ import {
   retainCodexAppServerLiveThread,
 } from "./client-runtime.js";
 import { CodexAppServerRpcError } from "./client.js";
+import { createCompactTestClient } from "./compact.client.test-support.js";
 import { maybeCompactCodexAppServerSession as maybeCompactCodexAppServerSessionImpl } from "./compact.js";
-import { createCompactTestClient } from "./compact.test-client.js";
 import {
   compactDetails,
   createNodeExecCompactionParams,

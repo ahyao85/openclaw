@@ -476,27 +476,34 @@ export async function tryReuseCodexLiveThread(
     if (!ownershipTransferred) {
       let failure: { cause: unknown } | undefined;
       try {
+        let pendingRetention: Promise<boolean> | undefined;
         if (preserveSubscription) {
-          // Recheck immediately before republishing: even a passive failure can
-          // race cancellation or replacement of the retained generation.
-          try {
+          // A passive refusal still needs current durable lineage to republish.
+          // Start retention synchronously under that read, then await its eviction work.
+          const retain = () => {
             assertWarmOwner();
-            preserveSubscription = isSameCodexAppServerThreadOwner(
-              params.bindingStore.read(bindingIdentity),
-              binding,
-            );
+            if (
+              isSameCodexAppServerThreadOwner(params.bindingStore.read(bindingIdentity), binding)
+            ) {
+              pendingRetention = retainCodexAppServerBindingSubscription(
+                params.client,
+                binding.threadId,
+                retainedThread,
+              );
+            }
+          };
+          try {
+            if (params.authority) {
+              await params.authority.withCurrent(retain);
+            } else {
+              retain();
+            }
           } catch {
-            preserveSubscription = false;
+            // Rejected admission never transfers the consumed claim back to idle storage.
           }
         }
-        if (preserveSubscription) {
-          if (
-            !(await retainCodexAppServerBindingSubscription(
-              params.client,
-              binding.threadId,
-              retainedThread,
-            ))
-          ) {
+        if (pendingRetention) {
+          if (!(await pendingRetention)) {
             failure = {
               cause: new Error("Codex live thread ownership could not be returned to its session"),
             };

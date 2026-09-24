@@ -4,6 +4,7 @@ import {
   runAgentCleanupStep,
   type AgentHarnessRuntimeArtifactBinding,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { createNativeSessionBindingAuthority } from "openclaw/plugin-sdk/agent-harness-session-runtime";
 import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { isIncognitoSessionKey } from "../incognito-session.js";
 import {
@@ -137,6 +138,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     releaseSharedClientLease: undefined as (() => void) | undefined,
     startupClientUnsafe: false,
     turnStartAttempted: false,
+    nativeSettlementExpired: false,
     sharedCodexClientRetiredForOneShotCleanup: false,
     ...initialResourceState,
     codexEnvironmentSelection: undefined as CodexTurnEnvironmentParams[] | undefined,
@@ -370,6 +372,16 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
   };
   // Startup transfers the claim with state.thread. Both pre-turn failure and
   // active-turn cleanup settle it here; neither may unsubscribe a successor.
+  const settlementExpiredError = new Error("Codex native settlement admission has expired");
+  const settlementAuthority = createNativeSessionBindingAuthority(
+    connection.authority.lineage,
+    () => {
+      if (state.nativeSettlementExpired) {
+        throw settlementExpiredError;
+      }
+      connection.assertCurrent();
+    },
+  );
   let subscriptionSettlement:
     | { thread: CodexAppServerThreadLifecycleBinding; retained: boolean }
     | undefined;
@@ -384,58 +396,65 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     const { bindingStore, bindingIdentity } = connection;
     const hasBackgroundCustody = () => hasCodexNativeBackgroundProcesses(client, thread.threadId);
     const retentionAuthority = createCodexAppServerRetentionAuthority({
-      authority: connection.authority,
+      authority: settlementAuthority,
       hasBackgroundCustody,
     });
-    const retained = await bindingStore.withLease(
-      bindingIdentity,
-      async () => {
-        let pending: Promise<boolean> | undefined;
-        const retain = () => {
-          if (!isSameCodexAppServerThreadOwner(bindingStore.read(bindingIdentity), thread)) {
-            return;
-          }
-          try {
-            if (!state.turnStartAttempted) {
-              runAbortController.signal.throwIfAborted();
+    const retained = await bindingStore
+      .withLease(
+        bindingIdentity,
+        async () => {
+          let pending: Promise<boolean> | undefined;
+          const retain = () => {
+            if (!isSameCodexAppServerThreadOwner(bindingStore.read(bindingIdentity), thread)) {
+              return;
             }
-            // Retaining the existing subscription is cleanup custody for concrete
-            // background work; revoking this foreground source cannot evict a peer.
-            if (!hasCodexNativeBackgroundProcesses(client, thread.threadId)) {
-              params.hostCapabilities.assertActive();
-              connection.assertCurrent();
+            try {
+              if (!state.turnStartAttempted) {
+                runAbortController.signal.throwIfAborted();
+              }
+              // Retaining the existing subscription is cleanup custody for concrete
+              // background work; revoking this foreground source cannot evict a peer.
+              if (!hasCodexNativeBackgroundProcesses(client, thread.threadId)) {
+                params.hostCapabilities.assertActive();
+                connection.assertCurrent();
+              }
+              thread.liveThreadOwnership?.assertCurrent();
+            } catch {
+              return;
             }
-            thread.liveThreadOwnership?.assertCurrent();
-          } catch {
-            return;
+            pending = retainCodexAppServerBindingSubscription(client, thread.threadId, {
+              release: thread.liveThreadOwnership?.release,
+              configFingerprint: thread.liveThreadConfigFingerprint,
+              serviceTier: state.turnStartAttempted
+                ? connection.mutable.pluginAppServer.serviceTier
+                : thread.liveThreadOwnership?.serviceTier,
+              ephemeralPolicy: thread.liveThreadEphemeralPolicy,
+            });
+          };
+          // Decide after lease acquisition: background custody can end while this
+          // waiter is queued, before retained-thread publication begins.
+          if (hasBackgroundCustody()) {
+            retain();
+          } else {
+            await settlementAuthority.withCurrent(retain);
           }
-          pending = retainCodexAppServerBindingSubscription(client, thread.threadId, {
-            release: thread.liveThreadOwnership?.release,
-            configFingerprint: thread.liveThreadConfigFingerprint,
-            serviceTier: state.turnStartAttempted
-              ? connection.mutable.pluginAppServer.serviceTier
-              : thread.liveThreadOwnership?.serviceTier,
-            ephemeralPolicy: thread.liveThreadEphemeralPolicy,
-          });
-        };
-        // Decide after lease acquisition: background custody can end while this
-        // waiter is queued, before retained-thread publication begins.
-        if (hasBackgroundCustody()) {
-          retain();
-        } else {
-          await connection.withCurrent(retain);
-        }
-        return pending ? await pending : false;
-      },
-      {
-        assertCurrent: () => {
-          if (!hasBackgroundCustody()) {
-            connection.assertCurrent();
-          }
+          return pending ? await pending : false;
         },
-        authority: retentionAuthority,
-      },
-    );
+        {
+          assertCurrent: () => {
+            if (!hasBackgroundCustody()) {
+              settlementAuthority.assertCurrent();
+            }
+          },
+          authority: retentionAuthority,
+        },
+      )
+      .catch((error: unknown) => {
+        if (error === settlementExpiredError) {
+          return false;
+        }
+        throw error;
+      });
     if (retained) {
       subscriptionSettlement = { thread, retained: true };
     }
@@ -449,6 +468,13 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     // Record the attempted settlement before awaiting; failed acknowledgments
     // retire the client, not a second unsubscribe from a competing cleanup path.
     subscriptionSettlement = { thread, retained: false };
+    if (state.nativeSettlementExpired) {
+      // Do not enqueue a row read behind the writer whose settlement just expired.
+      // Retiring this physical client preserves sibling leases; forget only our claim.
+      await closeCodexStartupClientBestEffort(client);
+      thread.liveThreadOwnership?.forget();
+      return false;
+    }
     if (thread.liveThreadOwnership) {
       try {
         await thread.liveThreadOwnership.release(

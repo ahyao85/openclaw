@@ -464,7 +464,7 @@ export async function finalizeCodexAttempt(
     // Supervised auth belongs to its native connection, which has no generic stock
     // tool-free summary operation. Retain fallback eligibility instead of selecting host auth.
     const settledTurnFinalizationContext = shouldCaptureSettledTurnFinalizationContext
-      ? ((!usesSupervisionConnection
+      ? ((!usesSupervisionConnection && !resourceState.nativeSettlementExpired
           ? await captureCodexSettledTurnFinalizationContext({
               ...activeTranscriptTarget,
               model: resourceState.thread.model,
@@ -552,7 +552,12 @@ export async function finalizeCodexAttempt(
       !finalAborted &&
       !finalPromptError;
     // Refresh replies did not reach the native thread; successful handoff clears its binding.
-    if (turnSucceeded && !runAbortController.signal.aborted && !state.pluginRuntimeRefreshStop) {
+    if (
+      turnSucceeded &&
+      !runAbortController.signal.aborted &&
+      !state.pluginRuntimeRefreshStop &&
+      !resourceState.nativeSettlementExpired
+    ) {
       try {
         // Only no-engine continuity prompts may calibrate their measured history.
         // Billing spans every model call; density needs only the latest full prompt.
