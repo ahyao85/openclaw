@@ -1,5 +1,4 @@
 // Safe recursive removal without coupling the file-access surface to log redaction.
-import "./fs-safe-defaults.js";
 import path from "node:path";
 import { FsSafeError } from "@openclaw/fs-safe/errors";
 import { root as fsSafeRoot } from "@openclaw/fs-safe/root";
