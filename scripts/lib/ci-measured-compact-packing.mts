@@ -197,6 +197,41 @@ function executedCompactGroupFingerprint(
     .digest("hex");
 }
 
+function readMeasuredSerialJobPricing(
+  job: CompactNodeTestShard,
+  compactMode: "push" | "pull-request",
+) {
+  if (!serialTwoWorkerJob(job, job.runner)) {
+    return undefined;
+  }
+  const keys = job.groups.map((group) => executedCompactGroupFingerprint(job, group));
+  const observations = keys.map((key) => measuredSerialGroupSeconds[compactMode][key]);
+  if (observations.every((seconds) => seconds === undefined)) {
+    return undefined;
+  }
+  return {
+    observations,
+    predictedSeconds: Math.max(
+      job.predictedSeconds ?? 0,
+      observations.reduce<number>((sum, seconds) => sum + (seconds ?? 0), 0) + FIXED_JOB_SECONDS,
+    ),
+    complete:
+      observations.every((seconds) => seconds !== undefined) &&
+      measuredSerialJobKeys[compactMode].includes(
+        createHash("sha256").update(JSON.stringify(keys)).digest("hex"),
+      ),
+  };
+}
+
+/** The observed source provider can inform routing without running placement again. */
+export function getMeasuredSerialJobSeconds(
+  job: CompactNodeTestShard,
+  compactMode: "push" | "pull-request",
+): number | undefined {
+  const pricing = readMeasuredSerialJobPricing(job, compactMode);
+  return pricing?.complete ? pricing.predictedSeconds : undefined;
+}
+
 /** Price native serial children after their execution runner is known. */
 export function repriceMeasuredSerialJobs(
   jobs: CompactNodeTestShard[],
@@ -204,26 +239,14 @@ export function repriceMeasuredSerialJobs(
   packedWorkSeconds: number,
 ): CompactNodeTestShard[] {
   return jobs.flatMap((job) => {
-    if (!serialTwoWorkerJob(job, job.runner)) {
+    const pricing = readMeasuredSerialJobPricing(job, compactMode);
+    if (!pricing) {
       return [job];
     }
-    const keys = job.groups.map((group) => executedCompactGroupFingerprint(job, group));
-    const observations = keys.map((key) => measuredSerialGroupSeconds[compactMode][key]);
-    if (observations.every((seconds) => seconds === undefined)) {
-      return [job];
-    }
+    const { observations, predictedSeconds, complete } = pricing;
     const standalone = job.groups.filter(
       (_group, index) => (observations[index] ?? 0) > packedWorkSeconds,
     );
-    const predictedSeconds = Math.max(
-      job.predictedSeconds ?? 0,
-      observations.reduce<number>((sum, seconds) => sum + (seconds ?? 0), 0) + FIXED_JOB_SECONDS,
-    );
-    const complete =
-      observations.every((seconds) => seconds !== undefined) &&
-      measuredSerialJobKeys[compactMode].includes(
-        createHash("sha256").update(JSON.stringify(keys)).digest("hex"),
-      );
     if (job.groups.length === 1 || (!complete && standalone.length === 0)) {
       return [{ ...job, predictedSeconds }];
     }

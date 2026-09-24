@@ -57,6 +57,7 @@ import {
   estimateCommandWorkerSeconds,
 } from "./ci-command-test-plan.mts";
 import {
+  getMeasuredSerialJobSeconds,
   rebalanceMeasuredHybridJobs,
   repriceMeasuredSerialJobs,
 } from "./ci-measured-compact-packing.mts";
@@ -4275,13 +4276,19 @@ function routeRunsOnJobs(
     compactNodeJobCap + routed.filter((job) => job.requiresDist).length,
   );
   const placed = routed.map((job) => {
+    // Match the native source allocation before choosing a different provider.
+    // The inherited forecast is admission evidence, not an AWS timing sample.
+    const predictedSeconds =
+      job.runner === DEFAULT_NODE_TEST_RUNNER
+        ? (getMeasuredSerialJobSeconds(job, compactMode) ?? job.predictedSeconds)
+        : job.predictedSeconds;
     // The long tooling tail ran on two CPUs with a two-worker ceiling.
     // Keep its execution contract; the complete forecast selects on-demand.
     if (
       job.runner === DEFAULT_NODE_TEST_RUNNER &&
-      job.predictedSeconds !== undefined &&
-      Number.isFinite(job.predictedSeconds) &&
-      job.predictedSeconds >= 480 &&
+      predictedSeconds !== undefined &&
+      Number.isFinite(predictedSeconds) &&
+      predictedSeconds >= 480 &&
       job.planConcurrency === 1 &&
       !job.requiresDist &&
       !job.pretestBuildMode &&
@@ -4297,7 +4304,7 @@ function routeRunsOnJobs(
           !group.pretestBuildMode,
       )
     ) {
-      return Object.assign({}, job, { runner: "runson-general-16" });
+      return Object.assign({}, job, { runner: "runson-general-16", predictedSeconds });
     }
     const retainedRunner = resolveRunsOnRetainedBlacksmithRunner(job);
     if (retainedRunner) {

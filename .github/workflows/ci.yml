@@ -2062,10 +2062,11 @@ jobs:
                 timeout_minutes: shard.timeoutMinutes,
                 plan_concurrency: shard.planConcurrency,
                 predicted_seconds: shard.predictedSeconds,
-                // Observed Spot allocation exceeded its forecast by up to 307s, including startup.
-                // This reserve selects the market without changing any execution budget.
+                // Memory32 lost four of 17 diversified Spot allocations in run 36050763810.
+                // Other pools retain the native timing reserve without changing execution budgets.
                 runson_spot: shard.runner?.startsWith("runson-")
-                  ? Number.isFinite(shard.predictedSeconds) && shard.predictedSeconds > 0 &&
+                  ? shard.runner !== "runson-memory-32" &&
+                    Number.isFinite(shard.predictedSeconds) && shard.predictedSeconds > 0 &&
                     shard.predictedSeconds + 320 <= 480
                   : undefined,
                 targets: shard.targets,

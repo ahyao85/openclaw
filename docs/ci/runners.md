@@ -215,16 +215,20 @@ dist rows and the measured update-CLI storage envelope retain Blacksmith.
 Ordinary tooling envelopes with a finite prediction of at least 480 seconds
 also move from Blacksmith's 8-class to the 4–8-CPU, 16-GiB pool. Eligibility
 requires serial execution, the existing two-worker cap in every child, and no
-runtime preparation or dist requirement. Their prediction already exceeds Spot
-admission, so they use on-demand. This changes capacity without adding shards or
+runtime preparation or dist requirement. A complete ordered native cohort can
+raise its source-provider forecast before this existing routing decision. The
+134-file tooling cohort from runs `36038423993` and `36050763810` supplies a
+634-second forecast, including the unchanged 60-second setup reserve; it moves
+as one intact job. This is inherited Blacksmith evidence, not a measured AWS
+duration. The unchanged prediction threshold ensures these rows use on-demand. This changes capacity without adding shards or
 changing the selected files, packing, workers, or deadlines.
 
-Each request admits five exact instance types. Fast-family preference is best
-effort: RunsOn's capacity-optimized-prioritized policy (`spot=cop`) chooses
-capacity first. Older AMD alternatives require native workload qualification;
+Each request admits five exact instance types. Where Spot remains enabled,
+fast-family preference is best effort: RunsOn's capacity-optimized-prioritized
+policy (`spot=cop`) chooses capacity first. Older AMD alternatives require native workload qualification;
 the family list does not establish equal single-thread performance.
 
-| Pool                              | CPU / GiB bounds | Spot preference order                                                       |
+| Pool                              | CPU / GiB bounds | Eligible exact types                                                        |
 | --------------------------------- | ---------------- | --------------------------------------------------------------------------- |
 | Node                              | 8–16 / 32–48     | `m8azn.3xlarge`, `m8a.2xlarge`, `c8a.4xlarge`, `m7a.2xlarge`, `c7a.4xlarge` |
 | Cron, Control UI and long tooling | 4–8 / 16         | `m8azn.xlarge`, `m8a.xlarge`, `c8a.2xlarge`, `m7a.xlarge`, `c7a.2xlarge`    |
@@ -235,8 +239,13 @@ Resource ranges keep that alternative eligible. Direct on-demand requests put
 use `ubuntu24-full-x64`, an 80 GB gp3 root and the pinned workflow Node version.
 Blacksmith dependency archives remain disabled on AWS; portable caches remain.
 
-Spot admission requires a known positive planner prediction plus a 320-second
-native timing reserve to fit within 480 seconds. In the first diversified run,
+The memory32 class uses on-demand. Failed qualification run `36050763810`
+recorded four explicit interruptions among 17 diversified Spot allocations,
+plus two shutdown cancellations without an interruption receipt. The same
+five-family request concentrated all 17 allocations on `m8a.2xlarge`; eligibility
+does not guarantee distribution. The existing general16 Spot admission still
+requires a known positive planner prediction plus a 320-second native timing
+reserve to fit within 480 seconds. In the first diversified run,
 Spot allocation wall exceeded the planner prediction by up to 307 seconds, including
 launch, setup and underestimated test work. The reserve only selects the market:
 it does not change execution deadlines, packing estimates or worker limits.
@@ -266,7 +275,7 @@ Allocation logs record the selected type, market, region, AZ, AZ ID, CPU count,
 memory and launch time. Cost reports price those actual allocations.
 
 ```yaml
-runs-on: runs-on=${{ github.run_id }}-${{ matrix.check_name }}/family=m8azn.3xlarge+m8a.2xlarge+c8a.4xlarge+m7a.2xlarge+c7a.4xlarge/cpu=8+16/ram=32+48/spot=cop/retry=false/image=ubuntu24-full-x64/volume=80gb/region=us-east-1
+runs-on: runs-on=${{ github.run_id }}-${{ matrix.check_name }}/family=m8a.2xlarge+m8azn.3xlarge+c8a.4xlarge+m7a.2xlarge+c7a.4xlarge/cpu=8+16/ram=32+48/spot=false/retry=false/image=ubuntu24-full-x64/volume=80gb/region=us-east-1
 ```
 
 The GitHub App owns allocation. `spot=cop` retains native on-demand capacity

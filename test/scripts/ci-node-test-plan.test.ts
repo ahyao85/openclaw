@@ -1160,6 +1160,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     toolingTailJobs: CompactNodeTestShard[];
     providerTailJobs: CompactNodeTestShard[];
     aggregateTailJobs: CompactNodeTestShard[];
+    longToolingJob: CompactNodeTestShard;
     extensionTailGroups: CompactNodeTestShard["groups"];
   };
 
@@ -1254,6 +1255,30 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       expect(planMeasuredProviderRows([build])).toEqual([build]);
     },
   );
+
+  it("routes the measured complete tooling cohort without splitting or changing worker policy", () => {
+    const before = structuredClone(measuredCompactFixture.longToolingJob);
+    expect(planMeasuredProviderRows([before])).toEqual([
+      { ...before, runner: "runson-general-16", predictedSeconds: 634 },
+    ]);
+    expect(planMeasuredProviderRows([before], { compactMode: "push" })).toEqual([before]);
+    for (const changed of [
+      { ...structuredClone(before), runner: "blacksmith-16vcpu-ubuntu-2404" },
+      { ...structuredClone(before), planConcurrency: 2 },
+      { ...structuredClone(before), pretestBuildMode: "runtime" as const },
+    ]) {
+      expect(planMeasuredProviderRows([changed])).toEqual([changed]);
+    }
+    const reordered = structuredClone(before);
+    reordered.groups.reverse();
+    const partial = structuredClone(before);
+    partial.groups[0]!.includePatterns!.pop();
+    for (const changed of [reordered, partial]) {
+      const [after] = planMeasuredProviderRows([changed]);
+      expect(after!.runner).toBe(before.runner);
+      expect(after!.groups).toEqual(changed.groups);
+    }
+  });
 
   it("expires provider tail prices when the execution contract changes", () => {
     const sample = measuredCompactFixture.providerTailJobs[0]!;

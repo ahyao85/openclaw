@@ -91,8 +91,30 @@ retain Blacksmith. The slow retained CLI process cohort is split using the
 existing runtime admission owner and complete file costs; its former seven-file
 child took 720 seconds inside a 1,142-second job.
 
-A known planner prediction plus a 320-second native timing reserve must fit
-480 seconds to use prioritized Spot. Longer or unknown rows use on-demand;
+The memory32 class now uses on-demand after failed run `36050763810` recorded
+four confirmed Spot interruptions and two unconfirmed shutdown cancellations
+among 17 Spot allocations. All selected `m8a.2xlarge`; 16 used one AZ despite the
+unchanged five-family request and unrestricted configured AZs. The earlier
+`36038423993` sample had zero interruptions in 17 `c7a.4xlarge` Spot allocations,
+so its result does not establish reliability of the newly selected pool.
+Repricing the same 5,420 allocation seconds at the saved M8a rates adds about
+$0.48 ($0.24917 Spot versus $0.73302 on-demand). Those intervals include incomplete
+work; this buys no-retry reliability, not a pure-compute break-even win or a
+complete-run price. An on-demand campaign cannot claim Spot qualification.
+
+The unchanged 134-file tooling envelope finished at +880 seconds in that failed
+run: 557 seconds per job and 516.08 seconds in the timed runner, using 1.636 busy
+cores on two available CPUs. Its three child spans totaled 514.64 seconds. The
+prior matching envelope took 502/461.56 job/runner seconds with 1.607 busy cores.
+Both had the same 7.656 GiB reported RAM and two-worker policy; no memory peak
+was recorded. Complete source-cohort prices now inform the existing long-tooling
+routing threshold before provider selection. The conservative 634-second
+Blacksmith forecast moves this intact envelope to the existing general16
+on-demand pool, without another shard or worker. Native comparison must establish
+performance there; no speedup follows from the larger requested capacity alone.
+
+For the remaining Spot-eligible pool, a known planner prediction plus a
+320-second native timing reserve must fit 480 seconds. Longer or unknown rows use on-demand;
 UI has no complete per-row forecast. This market-only reserve covers the
 307-second maximum observed gap between prediction and Spot allocation wall,
 including startup and underestimated test work. It never changes a deadline. The

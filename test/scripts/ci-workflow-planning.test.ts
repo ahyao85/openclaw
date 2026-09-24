@@ -4247,43 +4247,40 @@ describe("ci workflow guards", () => {
     expect(pr!.filter((row) => row.retained)).toHaveLength(1);
   });
 
-  it("admits Spot only when the native timing reserve fits inside eight minutes", () => {
-    const forecasts = [undefined, 0, -1, 160, 161, 308, 310, 314, 315, 900];
-    const manifest = runCiManifestFixture({
-      bundledPlanner: true,
-      eventName: "push",
-      runnerBackend: "hybrid",
-      nodeRunnerBackend: "runson",
-      nodeTestShards: forecasts.map((predictedSeconds, index) => ({
-        checkName: `market-${index}`,
-        shardName: `market-${index}`,
-        configs: ["test/vitest/fixture.config.ts"],
-        runner: "runson-memory-32",
-        requiresDist: false,
-        predictedSeconds,
-      })),
-    });
-    expect(manifest.status, manifest.output).toBe(0);
-    const rows = JSON.parse(
-      expectDefined(manifest.outputs.checks_node_core_nondist_matrix, "market Node rows"),
-    ).include as { check_name: string; runson_spot: boolean }[];
-    expect(
-      rows
-        .toSorted((a, b) => a.check_name.localeCompare(b.check_name))
-        .map((row) => [row.check_name, row.runson_spot]),
-    ).toEqual([
-      ["market-0", false],
-      ["market-1", false],
-      ["market-2", false],
-      ["market-3", true],
-      ["market-4", false],
-      ["market-5", false],
-      ["market-6", false],
-      ["market-7", false],
-      ["market-8", false],
-      ["market-9", false],
-    ]);
-  });
+  it.each(["runson-general-16", "runson-memory-32"])(
+    "keeps memory32 on-demand and preserves the Spot timing reserve for %s",
+    (runner) => {
+      const forecasts = [undefined, 0, -1, 46, 160, 161, 308, 310, 314, 315, 900];
+      const manifest = runCiManifestFixture({
+        bundledPlanner: true,
+        eventName: "push",
+        runnerBackend: "hybrid",
+        nodeRunnerBackend: "runson",
+        nodeTestShards: forecasts.map((predictedSeconds, index) => ({
+          checkName: `market-${index}`,
+          shardName: `market-${index}`,
+          configs: ["test/vitest/fixture.config.ts"],
+          runner,
+          requiresDist: false,
+          predictedSeconds,
+        })),
+      });
+      expect(manifest.status, manifest.output).toBe(0);
+      const rows = JSON.parse(
+        expectDefined(manifest.outputs.checks_node_core_nondist_matrix, "market Node rows"),
+      ).include as { check_name: string; runson_spot: boolean }[];
+      expect(rows).toHaveLength(forecasts.length);
+      const expected =
+        runner === "runson-memory-32"
+          ? [false, false, false, false, false, false, false, false, false, false, false]
+          : [false, false, false, true, true, false, false, false, false, false, false];
+      for (const [index, runson_spot] of expected.entries()) {
+        expect(rows.find((row) => row.check_name === `market-${index}`)).toMatchObject({
+          runson_spot,
+        });
+      }
+    },
+  );
 
   it.each(["runson-cron", "changed-runson-cron"])(
     "admits both %s qualification providers before ordinary Node work",
