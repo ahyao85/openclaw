@@ -181,6 +181,44 @@ describe("telegram thread bindings", () => {
     expect(await storedBindings()).toEqual([]);
   });
 
+  it("does not publish a memory binding after its command authority is revoked", async () => {
+    const manager = await createTelegramThreadBindingManager({
+      accountId: "memory-authority",
+      persist: false,
+      enableSweeper: false,
+    });
+    const service = getSessionBindingService();
+    const conversation = {
+      channel: "telegram",
+      accountId: manager.accountId,
+      conversationId: "thread",
+    };
+    const targetSessionKey = "agent:main:subagent:memory-authority";
+    let current = true;
+    expect(service.resolveByConversation(conversation)).toBeNull();
+    const binding = service.bind({
+      targetSessionKey,
+      targetKind: "subagent",
+      conversation,
+      assertCurrent: () => {
+        if (!current) {
+          throw new Error("Command revoked");
+        }
+      },
+    });
+    const publishedBeforeRevocation = service.resolveByConversation(conversation);
+    current = false;
+    // Synchronous publication is valid; an unpublished binding must not appear after revocation.
+    if (publishedBeforeRevocation) {
+      await expect(binding).resolves.toMatchObject({ targetSessionKey });
+      expect(service.resolveByConversation(conversation)).toMatchObject({ targetSessionKey });
+    } else {
+      await expect(binding).rejects.toThrow("Command revoked");
+      expect(service.resolveByConversation(conversation)).toBeNull();
+    }
+    expect(await storedBindings()).toEqual([]);
+  });
+
   it.each(["before-commit", "after-commit", "after-commit-readonly"] as const)(
     "preserves synchronous SDK touch ordering with a worker binding (%s)",
     async (phase) => {

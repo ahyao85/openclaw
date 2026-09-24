@@ -37,9 +37,12 @@ timestamp predates restored build information. Frozen targets keep their
 original stripe invocations. Per-graph elapsed times appear in the job log.
 
 The test-type jobs restore their own `.artifacts/tsgo-cache` state across runs.
-Cache keys separate compiler/dependency/configuration versions and CI rows;
-the compiler still validates every selected graph after a hit. Pull requests
-only restore state, while the existing trusted cache writer policy controls
+Exact cache keys separate compiler/dependency/configuration versions and CI rows.
+When those inputs change, each row can restore its previous incremental state;
+the compiler validates the current roots, options, source and dependency contents
+and discards incompatible compiler state. The central changed-graph queue also
+restores the five core stripe caches that full runs publish. Every selected graph
+still runs after a hit. Pull requests only restore state, while the existing trusted cache writer policy controls
 publication after successful checks. Cache-off and frozen-target runs retain
 their original behavior. Lint programs do not share these compiler caches.
 
@@ -71,7 +74,7 @@ pnpm test:ui                                  # Control UI unit/browser suite
 pnpm ui:i18n:check                            # generated Control UI locale parity (release gate)
 pnpm native:i18n:baseline                     # update source-owned native extraction inventory
 pnpm native:i18n:verify                       # source inventory + Android/Apple localization safety
-pnpm native:i18n:check                        # strict translated/platform-generated parity (release gate)
+pnpm native:i18n:check                        # strict local translated/platform-generated parity
 pnpm test:channels
 pnpm test:contracts:channels
 pnpm check:docs                               # docs format + lint + broken links
@@ -90,6 +93,14 @@ pnpm test:startup:memory
 pnpm test:extensions:memory -- --json .artifacts/openclaw-performance/source/mock-provider/extension-memory.json
 pnpm perf:kova:summary --report .artifacts/kova/reports/mock-provider/report.json --output .artifacts/kova/summary.md
 ```
+
+Native locale checks remain strict locally. With `CI=true` or `CI=1`, the native
+check warns about obsolete translation IDs and Android generated rows awaiting
+the serialized locale refresh. Android warnings require canonical, unreferenced,
+noninterpolated obsolete rows whose removal leaves every other byte unchanged.
+Missing active translations or resources, invalid placeholders or artifact
+syntax, and other generated-output differences remain blocking. Generator sync
+and the standalone Android and Apple checks retain their strict behavior.
 
 The Gateway watch regression check starts its idle CPU window only after readiness
 and the settle period. Startup and early-exit failures still fail the check. Missing

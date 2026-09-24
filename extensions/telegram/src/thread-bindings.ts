@@ -435,19 +435,22 @@ async function initializeThreadBindingManager(
           assertCurrent?.();
         }
         mutation.prepare(record);
-        const committed = await persistBindingMutation({
-          accountId,
-          persist: manager.shouldPersistMutations(),
-          binding: record,
-          reason: "bind",
-          throwOnError: true,
-          assertCurrent: () => {
-            mutation.assertCurrent();
-            if (!nativeTopicCreated) {
-              assertCurrent?.();
-            }
-          },
-        });
+        // Memory-only publication must not yield after checking command authority.
+        const committed =
+          manager.shouldPersistMutations() &&
+          (await persistBindingMutation({
+            accountId,
+            persist: true,
+            binding: record,
+            reason: "bind",
+            throwOnError: true,
+            assertCurrent: () => {
+              mutation.assertCurrent();
+              if (!nativeTopicCreated) {
+                assertCurrent?.();
+              }
+            },
+          }));
         mutation.publish(record, committed);
         logVerbose(
           `telegram: bound conversation ${conversationId} -> ${targetSessionKey} (${summarizeLifecycleForLog(
