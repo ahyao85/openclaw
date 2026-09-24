@@ -38,6 +38,7 @@ import {
   type LegacyMigrationReceipt,
 } from "./state-migrations.receipts.js";
 import {
+  LegacyMigrationSourceClaim,
   legacyMigrationSourceSnapshotsMatch as snapshotsMatch,
   readLegacyMigrationSourceSnapshot,
   resolveLegacyMigrationRelativePath,
@@ -272,29 +273,6 @@ async function removePath(params: {
   await params.stateRoot.remove(relativeLegacyPath(params.stateDir, params.sourcePath));
 }
 
-async function restoreClaim(params: {
-  stateRoot: Root;
-  stateDir: string;
-  sourcePath: string;
-  claimPath: string;
-}): Promise<string | null> {
-  try {
-    if (!(await params.stateRoot.exists(relativeLegacyPath(params.stateDir, params.claimPath)))) {
-      return null;
-    }
-    if (await params.stateRoot.exists(relativeLegacyPath(params.stateDir, params.sourcePath))) {
-      return `source path already exists: ${params.sourcePath}`;
-    }
-    await params.stateRoot.move(
-      relativeLegacyPath(params.stateDir, params.claimPath),
-      relativeLegacyPath(params.stateDir, params.sourcePath),
-    );
-    return null;
-  } catch (error) {
-    return String(error);
-  }
-}
-
 async function cleanupReceiptSources(params: {
   stateRoot: Root;
   stateDir: string;
@@ -303,18 +281,6 @@ async function cleanupReceiptSources(params: {
   env: NodeJS.ProcessEnv;
   removeSource?: (sourcePath: string) => Promise<void> | void;
 }): Promise<MigrationMessages> {
-  if (
-    await params.stateRoot.exists(
-      relativeLegacyPath(params.stateDir, params.detected.nativeClaimPath),
-    )
-  ) {
-    return {
-      changes: [],
-      warnings: [
-        "Native device identity import is pending; restart the native app before running Doctor cleanup.",
-      ],
-    };
-  }
   const changes: string[] = [];
   const warnings: string[] = [];
   const notices: string[] = [];
@@ -388,10 +354,6 @@ async function migrateWithExclusiveStateOwnership(params: {
     resolveLegacyMigrationSourceKey("device-identity-json", params.detected.sourcePath),
     params.env,
   );
-  if (receipt) {
-    return await cleanupReceiptSources({ ...params, receipt });
-  }
-
   if (
     await params.stateRoot.exists(
       relativeLegacyPath(params.stateDir, params.detected.nativeClaimPath),
@@ -400,17 +362,28 @@ async function migrateWithExclusiveStateOwnership(params: {
     return {
       changes: [],
       warnings: [
-        "Native device identity import is pending; restart the native app before running Doctor.",
+        receipt
+          ? "Native device identity import is pending; restart the native app before running Doctor cleanup."
+          : "Native device identity import is pending; restart the native app before running Doctor.",
       ],
     };
   }
 
-  const hasSource = await params.stateRoot.exists(
-    relativeLegacyPath(params.stateDir, params.detected.sourcePath),
-  );
-  const hasClaim = await params.stateRoot.exists(
-    relativeLegacyPath(params.stateDir, params.detected.claimPath),
-  );
+  const source = new LegacyMigrationSourceClaim({
+    stateRoot: params.stateRoot,
+    stateDir: params.stateDir,
+    sourcePath: params.detected.sourcePath,
+    label: "device identity",
+    includeFilePath: false,
+    readSnapshot: (sourcePath) => readLegacySourceSnapshot({ ...params, sourcePath }),
+  });
+  await source.recoverLinkedMove();
+  if (receipt) {
+    return await cleanupReceiptSources({ ...params, receipt });
+  }
+
+  const hasSource = await source.exists();
+  const hasClaim = await source.exists(true);
   if (hasSource && hasClaim) {
     return {
       changes: [],
@@ -444,22 +417,13 @@ async function migrateWithExclusiveStateOwnership(params: {
 
   if (activePath === params.detected.sourcePath) {
     try {
-      params.beforeClaim?.(params.detected.sourcePath);
-      await params.stateRoot.move(
-        relativeLegacyPath(params.stateDir, params.detected.sourcePath),
-        relativeLegacyPath(params.stateDir, params.detected.claimPath),
-      );
-      const claimed = await readLegacySourceSnapshot({
-        stateRoot: params.stateRoot,
-        stateDir: params.stateDir,
-        sourcePath: params.detected.claimPath,
+      snapshot = await source.claim({
+        snapshot,
+        beforeClaim: () => params.beforeClaim?.(params.detected.sourcePath),
+        mismatchMessage: "legacy device identity changed before Doctor could claim it",
       });
-      if (!snapshotsMatch(snapshot, claimed)) {
-        throw new Error("legacy device identity changed before Doctor could claim it");
-      }
-      snapshot = claimed;
     } catch (error) {
-      const restoreError = await restoreClaim({ ...params, ...params.detected });
+      const restoreError = await source.restore();
       return {
         changes: [],
         warnings: [
@@ -477,7 +441,7 @@ async function migrateWithExclusiveStateOwnership(params: {
       snapshot,
     });
   } catch (error) {
-    const restoreError = await restoreClaim({ ...params, ...params.detected });
+    const restoreError = await source.restore();
     return {
       changes: [],
       warnings: [
@@ -488,26 +452,16 @@ async function migrateWithExclusiveStateOwnership(params: {
 
   try {
     params.beforeCleanup?.();
-    if (
-      await params.stateRoot.exists(relativeLegacyPath(params.stateDir, params.detected.sourcePath))
-    ) {
-      throw new Error("legacy device identity source reappeared during import");
-    }
-    const finalSnapshot = await readLegacySourceSnapshot({
-      stateRoot: params.stateRoot,
-      stateDir: params.stateDir,
-      sourcePath: params.detected.claimPath,
-    });
+    const finalSnapshot = await source.read(true);
     if (!snapshotsMatch(snapshot, finalSnapshot)) {
       throw new Error("legacy device identity claim changed after SQLite import");
     }
     verifyCanonicalIdentity(finalSnapshot.identity, params.env);
-    await removePath({ ...params, sourcePath: params.detected.claimPath });
-    if (
-      await params.stateRoot.exists(relativeLegacyPath(params.stateDir, params.detected.claimPath))
-    ) {
-      throw new Error("legacy device identity Doctor claim remains after cleanup");
-    }
+    await source.remove({
+      removeSource: params.removeSource,
+      sourceReappearedMessage: "legacy device identity source reappeared during import",
+      claimRemainingMessage: "legacy device identity Doctor claim remains after cleanup",
+    });
     markLegacyMigrationSourceRemoved(result.sourceKey, params.env);
   } catch (error) {
     return {

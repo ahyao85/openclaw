@@ -20,9 +20,24 @@ describe("workspace migration portable-move recovery", () => {
       const raw = `${JSON.stringify({ version: 1, setupCompletedAt: completedAt })}\n`;
       fs.writeFileSync(source, raw);
       const pinDirectory = durability.pinDirectory;
+      let archiveSyncFailed = false;
       const pin = vi.spyOn(durability, "pinDirectory").mockImplementation(async (...args) => {
         const directory = await pinDirectory(...args);
-        vi.spyOn(directory, "sync").mockResolvedValue({ status: "unsupported", code: "EINVAL" });
+        const sync = directory.sync.bind(directory);
+        vi.spyOn(directory, "sync").mockImplementation(async () => {
+          // Native-disabled claims also sync this parent before the archive exists.
+          // Fail archive publication only, leaving claim and restore durability real.
+          if (
+            !archiveSyncFailed &&
+            fs
+              .readdirSync(path.dirname(source))
+              .some((name) => name.startsWith(`${path.basename(source)}.migrated.`))
+          ) {
+            archiveSyncFailed = true;
+            return { status: "unsupported", code: "EINVAL" };
+          }
+          return await sync();
+        });
         return directory;
       });
 

@@ -10,6 +10,7 @@ import {
   type PinnedDirectory,
 } from "./directory-durability.js";
 import { hasErrnoCode } from "./errno.js";
+import { getFsSafeNativeConfig } from "./fs-safe-defaults.js";
 import { pathMayExistSync } from "./path-existence.js";
 
 /** The stable source identity every doctor-owned import verifies before cleanup. */
@@ -136,9 +137,12 @@ export class LegacyMigrationSourceClaim<
         root.defaults.assertBeforeMutation ||
         root.defaults.denyMutations ||
         root.defaults.mutationSymlinks ||
-        !["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"].some((code) =>
-          hasErrnoCode(error.cause, code),
-        )
+        // Explicitly disabled native moves have no syscall cause. Other native
+        // failures still need a known unsupported-operation errno.
+        (!(getFsSafeNativeConfig().mode === "off" && error.cause === undefined) &&
+          !["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"].some((code) =>
+            hasErrnoCode(error.cause, code),
+          ))
       ) {
         throw error;
       }

@@ -23,6 +23,7 @@ describe("doctor legacy migration source contract", () => {
     afterEach(() => {
       __setFsSafeTestHooksForTest(undefined);
       vi.restoreAllMocks();
+      vi.unstubAllEnvs();
       cleanup();
     });
   });
@@ -132,16 +133,21 @@ describe("doctor legacy migration source contract", () => {
     expect(fs.existsSync(claim.claimPath)).toBe(false);
   });
 
-  it.each(["EINVAL", "ENOTSUP"])(
-    "claims and restores the same inode when native no-replace rename returns %s",
+  it.each(["off", "EINVAL", "ENOTSUP"])(
+    "claims and restores the same inode when native no-replace rename is unavailable (%s)",
     async (code) => {
       const { sourcePath, stateDir } = createSource();
       const stateRoot = await root(stateDir, { hardlinks: "reject", symlinks: "reject" });
-      vi.spyOn(stateRoot, "move").mockRejectedValue(
-        new FsSafeError("helper-unavailable", "native no-replace move is unavailable", {
-          cause: Object.assign(new Error("unsupported rename flags"), { code }),
-        }),
-      );
+      if (code === "off") {
+        vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
+        vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
+      } else {
+        vi.spyOn(stateRoot, "move").mockRejectedValue(
+          new FsSafeError("helper-unavailable", "native no-replace move is unavailable", {
+            cause: Object.assign(new Error("unsupported rename flags"), { code }),
+          }),
+        );
+      }
       const claim = createClaim(stateRoot, stateDir, sourcePath);
       const snapshot = await claim.read();
 
@@ -153,6 +159,31 @@ describe("doctor legacy migration source contract", () => {
       expect(await claim.restore()).toBeNull();
       expect(fs.readFileSync(sourcePath)).toEqual(snapshot.buffer);
       expect(fs.statSync(sourcePath).ino).toBe(snapshot.ino);
+      expect(fs.existsSync(claim.claimPath)).toBe(false);
+    },
+  );
+
+  it.each([
+    { mode: "require", code: "helper-unavailable", cause: undefined },
+    { mode: "off", code: "helper-unavailable", cause: new Error("unexpected native failure") },
+    { mode: "off", code: "denied-path", cause: undefined },
+  ] as const)(
+    "preserves the source on an unclassified move failure ($mode/$code/$cause)",
+    async ({ mode, code, cause }) => {
+      vi.stubEnv("FS_SAFE_NATIVE_MODE", mode);
+      vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", mode);
+      const { sourcePath, stateDir } = createSource();
+      const stateRoot = await root(stateDir, { hardlinks: "reject", symlinks: "reject" });
+      const failure = new FsSafeError(code, "move refused", { cause });
+      vi.spyOn(stateRoot, "move").mockRejectedValue(failure);
+      const claim = createClaim(stateRoot, stateDir, sourcePath);
+      const snapshot = await claim.read();
+
+      await expect(claim.claim({ snapshot, mismatchMessage: "source changed" })).rejects.toBe(
+        failure,
+      );
+
+      expect(fs.readFileSync(sourcePath)).toEqual(snapshot.buffer);
       expect(fs.existsSync(claim.claimPath)).toBe(false);
     },
   );

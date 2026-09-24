@@ -3,7 +3,7 @@ import { createHash, generateKeyPairSync } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
@@ -36,10 +36,15 @@ const SWIFT_RAW_DEVICE_ID = "56475aa75463474c0285df5dbf2bcab73da651358839e9b7748
 const SWIFT_RAW_PUBLIC_KEY = "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=";
 const SWIFT_RAW_PRIVATE_KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="; // pragma: allowlist secret
 
-describe("legacy device identity Doctor migration", () => {
+describe.each(["auto", "off"])("legacy device identity Doctor migration (native=%s)", (mode) => {
+  beforeEach(() => {
+    vi.stubEnv("FS_SAFE_NATIVE_MODE", mode);
+    vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", mode);
+  });
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
     afterEach(() => {
       closeOpenClawStateDatabaseForTest();
+      vi.unstubAllEnvs();
       cleanup();
     });
   });
@@ -627,6 +632,36 @@ describe("legacy device identity Doctor migration", () => {
     expect(fs.existsSync(sourcePath)).toBe(false);
     expect(fs.existsSync(claimPath)).toBe(false);
   });
+
+  it.each([false, true])(
+    "recovers only an interrupted claim link pair (extra alias=%s)",
+    async (extraAlias) => {
+      const { env, stateDir } = useStateDir();
+      const sourcePath = await writeLegacy({ stateDir });
+      const claimPath = `${sourcePath}.doctor-importing`;
+      const bytes = await fsp.readFile(sourcePath);
+      await fsp.link(sourcePath, claimPath);
+      if (extraAlias) {
+        await fsp.link(sourcePath, `${sourcePath}.unrelated`);
+      }
+
+      const result = await migrate(stateDir, env);
+
+      if (extraAlias) {
+        expect(result.warnings).not.toEqual([]);
+        expect(identityRow(env)).toBeUndefined();
+        expect(receipt(env)).toBeUndefined();
+        expect(fs.statSync(claimPath).nlink).toBe(3);
+        await expect(fsp.readFile(sourcePath)).resolves.toEqual(bytes);
+      } else {
+        expect(result.warnings).toEqual([]);
+        expect(identityRow(env)?.device_id).toBe(SWIFT_RAW_DEVICE_ID);
+        expect(receipt(env)).toMatchObject({ removed_source: 1 });
+        expect(fs.existsSync(sourcePath)).toBe(false);
+        expect(fs.existsSync(claimPath)).toBe(false);
+      }
+    },
+  );
 
   it("preserves an interrupted native claim for native startup", async () => {
     const { env, stateDir } = useStateDir();
