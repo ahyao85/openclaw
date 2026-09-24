@@ -22,6 +22,10 @@ import { classifyReleaseTrain, parseReleaseVersion } from "./lib/release-version
 
 export { MAX_RELEASE_ARTIFACT_BYTES, serializeReleaseArtifact };
 
+function isPerformanceBlocking(releaseProfile) {
+  return releaseProfile !== "beta";
+}
+
 export function buildReleaseValidationManifest({ plan, drain, context }) {
   const childEvidence = Object.fromEntries(
     Object.entries(drain?.children ?? {}).map(([key, child]) => [
@@ -131,7 +135,7 @@ export function buildReleaseValidationManifest({ plan, drain, context }) {
         },
         controls: {
           stableSoakRequired: ["stable", "full"].includes(context.releaseProfile),
-          performanceBlocking: false,
+          performanceBlocking: isPerformanceBlocking(context.releaseProfile),
           performanceReportPublication: "artifact-only",
         },
         childRuns: {
@@ -144,7 +148,7 @@ export function buildReleaseValidationManifest({ plan, drain, context }) {
           productPerformance: {
             runId: runs.productPerformance ?? "",
             conclusion: drain?.children?.productPerformance?.conclusion ?? "",
-            blocking: false,
+            blocking: isPerformanceBlocking(context.releaseProfile),
           },
         },
       };
@@ -1557,8 +1561,8 @@ function blockerIndex(issues) {
   return issues.map((issue) => jsonSha256(blockerEvidence(issue))).toSorted();
 }
 
-// Publication requires package and upgrade proof; all other execution lanes
-// remain recorded confidence evidence regardless of the release profile.
+// Package and upgrade proof blocks every profile; performance also blocks
+// stable/full releases. Other execution lanes remain recorded confidence evidence.
 const REQUIRED_PROOF_JOB_PATTERNS = [
   /install[-_ ]smoke/iu,
   /upgrade-survivor/u,
@@ -1610,8 +1614,11 @@ function survivorLanesGreen(jobs) {
   );
 }
 
-function isLaneAdvisory({ childKey, jobName, laneWaiver, jobs }) {
+function isLaneAdvisory({ childKey, jobName, releaseProfile, laneWaiver, jobs }) {
   if (!POLICY_CHILD_KEYS.has(childKey)) {
+    return false;
+  }
+  if (childKey === "productPerformance" && isPerformanceBlocking(releaseProfile)) {
     return false;
   }
   if (FIRST_HOP_JOB_PATTERN.test(jobName) && laneWaiver && LANE_WAIVER_CHILD_KEYS.has(childKey)) {
@@ -1722,6 +1729,13 @@ export function formatAdvisoryJobFailure(failure) {
 
 export function terminalPolicyPass(child, releaseProfile, workflowRef, laneWaiver = "") {
   if (child.status !== "completed") {
+    return false;
+  }
+  if (
+    child.key === "productPerformance" &&
+    isPerformanceBlocking(releaseProfile) &&
+    child.conclusion !== "success"
+  ) {
     return false;
   }
   if (child.conclusion === "success") {
