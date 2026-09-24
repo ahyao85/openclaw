@@ -37,7 +37,10 @@ vi.mock("./service-operation-lock.js", () => ({
       assertGatewayServiceUpdateCurrent();
     }),
 }));
-vi.mock("./schtasks-state-probe.js", () => ({ probeScheduledTaskState: native.probe }));
+vi.mock("./schtasks-state-probe.js", async (original) => ({
+  ...(await original<typeof import("./schtasks-state-probe.js")>()),
+  probeScheduledTaskState: native.probe,
+}));
 vi.mock("./schtasks-runtime.js", async (original) => ({
   ...(await original<typeof import("./schtasks-runtime.js")>()),
   isStartupEntryInstalled: async () => false,

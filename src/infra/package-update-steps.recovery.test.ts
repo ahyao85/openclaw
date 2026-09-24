@@ -63,7 +63,27 @@ describe("npm-lifecycle-policy-preflight", () => {
 });
 
 describe("package update recovery safety", () => {
-  it.each([
+  it.each<{
+    spec: string;
+    before: string | undefined;
+    after: string | undefined;
+    noop: boolean;
+    candidateAdmission?: boolean;
+  }>([
+    {
+      spec: "./candidate.tgz",
+      before: "admitted-build",
+      after: "admitted-build",
+      noop: true,
+      candidateAdmission: true,
+    },
+    {
+      spec: "./candidate.tgz",
+      before: "admitted-build",
+      after: "new-build",
+      noop: false,
+      candidateAdmission: true,
+    },
     { spec: "./candidate.tgz", before: "old-build", after: "new-build", noop: false },
     {
       spec: "https://example.test/candidate.tgz",
@@ -133,7 +153,7 @@ describe("package update recovery safety", () => {
     ].map((spec) => ({ spec, before: "old-build", after: "new-build", noop: true })),
   ])(
     "honors staged identity for $spec ($before -> $after)",
-    async ({ spec, before, after, noop }) => {
+    async ({ spec, before, after, noop, candidateAdmission }) => {
       await withTestDir({ prefix: "openclaw-artifact-identity-" }, async (base) => {
         const prefix = path.join(base, "prefix");
         const globalRoot = path.join(prefix, "lib", "node_modules");
@@ -149,6 +169,9 @@ describe("package update recovery safety", () => {
           }
         };
         await writeIdentity(packageRoot, before);
+        const retained = path.join(globalRoot, ".openclaw-retained", "witness");
+        await fs.mkdir(path.dirname(retained));
+        await fs.writeFile(retained, "retained rename contents\n");
         const installedPaths = [
           "package.json",
           "dist/index.js",
@@ -190,6 +213,7 @@ describe("package update recovery safety", () => {
           timeoutMs: 1000,
           runCommand: createRootRunner(globalRoot),
           runStep,
+          ...(candidateAdmission ? { beforeVerifyCandidate: async () => {} } : {}),
           validateCandidate,
           beforeActivate,
         });
@@ -202,6 +226,7 @@ describe("package update recovery safety", () => {
           expect(result.failedStep?.name).toBe("canary");
         }
         expect(beforeActivate).not.toHaveBeenCalled();
+        expect(await fs.readFile(retained, "utf8")).toBe("retained rename contents\n");
         expect(runStep.mock.calls.flatMap(([call]) => call.argv)).not.toContain("--force");
         await expect(
           Promise.all(

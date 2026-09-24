@@ -6,6 +6,7 @@ import { ScheduledTaskAutoStartRecoveryError } from "../../daemon/schtasks-updat
 import {
   ServiceInspectionError,
   findServiceOwnershipRefusal,
+  isServiceInspectionControlFailure,
 } from "../../daemon/service-inspection-error.js";
 import { resolveManagedServiceNodeRunner } from "../../daemon/service-layout.js";
 import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
@@ -17,20 +18,16 @@ import { readGatewayServiceState, resolveGatewayService } from "../../daemon/ser
 import { readSystemdServiceExecStart } from "../../daemon/systemd-service-files.js";
 import { captureSystemdServiceIdentity } from "../../daemon/systemd-service-identity.js";
 import { parseTcpPortFromArgs } from "../../infra/tcp-port.js";
-import { UPDATE_RUN_ID_ENV } from "../../infra/update-control-plane-sentinel.js";
 import { admitSystemdUpdate } from "../../infra/update-managed-service-handoff-service.js";
 import { isCurrentManagedServiceUpdateHandoffProcess } from "../../infra/update-managed-service-handoff.js";
-import {
-  getUpdateRun,
-  recordUpdateRunPhase,
-  recordUpdateRunStep,
-} from "../../infra/update-run-ledger.js";
+import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { withCommandProcessScope } from "../../process/exec-spawn.js";
 import { defaultRuntime } from "../../runtime.js";
 import { UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
 import { gatewayMaintenanceBlockMessage } from "./update-command-handoff.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
+import { createGatewayMaintenanceWarningReporter } from "./update-command-result.js";
 import type {
   ManagedGatewayUpdateVerdict,
   PreManagedServiceStop,
@@ -172,6 +169,10 @@ type ManagedServiceStopParams = {
   /** Package/helper root can differ from the inspected service during a rebind. */
   handoffRoot?: string;
   handoffFromGateway?: (state: GatewayServiceState) => Promise<boolean>;
+  beforeNativePreparation?: (
+    state: GatewayServiceState | undefined,
+    warn: (message: string) => void,
+  ) => Promise<void>;
   expectedService?: Pick<
     PreManagedServiceStop,
     "serviceEnv" | "serviceUpdateVerdict" | "serviceManagerUid"
@@ -210,6 +211,11 @@ export async function maybeStopManagedServiceBeforeMutableUpdate(
   }
   const expected = params.expectedService?.serviceUpdateVerdict;
   if (expected?.kind === "unavailable") {
+    const assertCurrent = () => params.assertCurrent?.();
+    const warn = createGatewayMaintenanceWarningReporter({ ...params, assertCurrent });
+    assertCurrent();
+    await params.beforeNativePreparation?.(undefined, warn);
+    assertCurrent();
     return unavailableServiceState(expected);
   }
   if (params.phase === "inspect") {
@@ -239,29 +245,11 @@ async function stopManagedServiceBeforeMutableUpdate(
     assertNative?.();
     assertExecutor();
   };
-  let warningIndex = 0;
-  const warn = (message: string) => {
+  const warn = createGatewayMaintenanceWarningReporter({ ...params, updateRun, assertCurrent });
+  const inspectConsumers = async (state?: GatewayServiceState) => {
     assertCurrent();
-    (params.warn ?? defaultRuntime.error)(message);
-    const runId = updateRun?.runId ?? process.env[UPDATE_RUN_ID_ENV];
-    if (runId) {
-      try {
-        recordUpdateRunStep(
-          runId,
-          {
-            step: `warning:gateway-maintenance:${Date.now()}:${warningIndex++}`,
-            status: "completed",
-            endedAtMs: Date.now(),
-            detail: message,
-          },
-          { env: updateRun?.env },
-        );
-      } catch {
-        (params.warn ?? defaultRuntime.error)(
-          "Could not record the Gateway maintenance warning in update history.",
-        );
-      }
-    }
+    await params.beforeNativePreparation?.(state, warn);
+    assertCurrent();
   };
   // Detached helpers can retain Gateway ancestry or inherited service metadata.
   // Reprove their current handoff lease at every boundary that can stop the Gateway.
@@ -288,6 +276,7 @@ async function stopManagedServiceBeforeMutableUpdate(
   const serviceMutationSkipMessage =
     resolveGatewayServiceManagementBlockMessageForUpdate(serviceEnv);
   if (serviceMutationSkipMessage) {
+    await inspectConsumers();
     return { ...uninspected, serviceMutationAllowed: false, serviceMutationSkipMessage };
   }
   let service: ReturnType<typeof resolveGatewayService> | undefined;
@@ -319,7 +308,7 @@ async function stopManagedServiceBeforeMutableUpdate(
       );
     }
   } catch (err) {
-    if (hasCommandProcessCleanupError(err)) {
+    if (isServiceInspectionControlFailure(err)) {
       throw err;
     }
     assertCurrent();
@@ -330,7 +319,7 @@ async function stopManagedServiceBeforeMutableUpdate(
       ).then(
         () => true,
         (error: unknown) => {
-          if (hasCommandProcessCleanupError(error)) {
+          if (isServiceInspectionControlFailure(error)) {
             throw error;
           }
           return false;
@@ -338,9 +327,11 @@ async function stopManagedServiceBeforeMutableUpdate(
       );
       assertCurrent();
       if (available) {
+        await inspectConsumers();
         return { ...uninspected, serviceMutationAllowed: false, blockMessage: err.message };
       }
     }
+    await inspectConsumers();
     return unavailableServiceState({
       kind: "unavailable",
       message:
@@ -366,6 +357,7 @@ async function stopManagedServiceBeforeMutableUpdate(
     assertGatewayServiceAdmissionUnchanged(params.expectedService, serviceUpdateVerdict);
   }
   if (serviceUpdateVerdict.kind === "unavailable") {
+    await inspectConsumers();
     return unavailableServiceState(serviceUpdateVerdict);
   }
   const inspected: PreManagedServiceStop = {
@@ -389,6 +381,7 @@ async function stopManagedServiceBeforeMutableUpdate(
   };
   assertCurrent();
   if (serviceUpdateVerdict.kind === "foreign") {
+    await inspectConsumers();
     return {
       ...inspected,
       serviceMutationAllowed: false,
@@ -397,6 +390,7 @@ async function stopManagedServiceBeforeMutableUpdate(
     };
   }
   if (serviceUpdateVerdict.kind === "absent") {
+    await inspectConsumers();
     return {
       ...inspected,
       serviceMutationAllowed: false,
@@ -413,6 +407,7 @@ async function stopManagedServiceBeforeMutableUpdate(
         )
       : undefined;
   assertCurrent();
+  await inspectConsumers(serviceState);
   // Pure inventory inspection supplies no handoff callback. Execution supplies it
   // only after complete target admission, before online candidate validation.
   if (params.shouldRestart && serviceState.running && params.handoffFromGateway) {

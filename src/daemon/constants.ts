@@ -64,6 +64,10 @@ export function resolveGatewaySystemdServiceName(profile?: string): string {
   return `openclaw-gateway${suffix}`;
 }
 
+export function normalizeWindowsTaskIdentity(value: string): string {
+  return value.replace(/^\\+/, "").toLowerCase();
+}
+
 export function resolveGatewayWindowsTaskName(profile?: string): string {
   const normalized = normalizeGatewayProfile(profile);
   if (!normalized) {

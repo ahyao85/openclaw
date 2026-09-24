@@ -13,6 +13,14 @@ vi.mock("./systemd-exec.js", async (importOriginal) => ({
   assertSystemdAvailable: async () => {},
 }));
 vi.mock("./systemd-scope.js", () => ({ findInstalledSystemdGatewayScope: async () => null }));
+vi.mock("./systemd-user-transport.js", () => ({
+  resolveSystemdUserTransport: async () => ({
+    kind: "session-bus",
+    address: "unix:path=/test/owned/bus",
+    runtimeDir: "/test/owned",
+  }),
+  readSystemdUserTransport: async () => undefined,
+}));
 
 import { readSystemdServiceRuntime } from "./systemd-runtime.js";
 
@@ -269,8 +277,8 @@ describe("loaded-only systemd runtime", () => {
       expect(runtime.status).toBe(expected);
       expect(runtime.systemd?.tasksCurrent).toBeUndefined();
       expect(busctl.mock.calls.find(([, args]) => args.includes("GetUnitProcesses"))?.[1]).toEqual([
-        "--auto-start=no",
         "--json=short",
+        "--auto-start=no",
         "call",
         ":1.42",
         "/org/freedesktop/systemd1",
@@ -346,6 +354,83 @@ describe("loaded-only systemd runtime", () => {
       now.mockRestore();
     }
   });
+
+  it.each(["running", "stopped", "busy"] as const)(
+    "retains the runtime call budget through legacy output fallback for %s processes",
+    async (outcome) => {
+      const drain = outcome !== "running";
+      let elapsed = 0;
+      const now = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+      const nativeProperties = new Map(
+        Object.entries({
+          ...properties,
+          ...(drain
+            ? {
+                ActiveState: { type: "s", data: "inactive" },
+                SubState: { type: "s", data: "dead" },
+                MainPID: { type: "u", data: 0 },
+                TasksCurrent: { type: "t", data: Number("18446744073709551615") },
+              }
+            : {}),
+        }).map(([name, value]) => [name, `${value.type} ${JSON.stringify(value.data)}`]),
+      );
+      if (drain) {
+        nativeProperties.set("TasksCurrent", "t 18446744073709551615");
+      }
+      busctl.mockImplementation(async (_env, args) => {
+        if (args.includes("--json=short")) {
+          elapsed += 10;
+          return {
+            code: 1,
+            termination: "exit",
+            stdout: "",
+            stderr: "busctl: unrecognized option '--json=short'",
+          };
+        }
+        elapsed += 5;
+        if (args.includes("GetNameOwner")) {
+          return success('s ":1.42"');
+        }
+        if (args.includes("GetConnectionUnixUser")) {
+          return success("u 2001");
+        }
+        if (args.includes("GetUnit")) {
+          return success(`o "${unitPath}"`);
+        }
+        if (args.includes("GetUnitProcesses")) {
+          return success(outcome === "busy" ? 'a(sus) 1 "/unit/child" 431 "worker"' : "a(sus) 0");
+        }
+        const propertyIndex = args.findIndex((arg) => /\.(Unit|Service)$/.test(arg));
+        return success(
+          args
+            .slice(propertyIndex + 1)
+            .map((name) => nativeProperties.get(name))
+            .join("\n"),
+        );
+      });
+      try {
+        const runtime = await readSystemdServiceRuntime(env, {
+          requireLoaded: true,
+          timeoutMs: 700,
+        });
+        expect(runtime.status).toBe(outcome === "busy" ? "unknown" : outcome);
+        expect(runtime.inspectionFailure).toBeUndefined();
+        expect(busctl).toHaveBeenCalledTimes(drain ? 9 : 8);
+        expect(busctl.mock.calls.map((call) => call[2])).toEqual(
+          drain
+            ? [100, 90, 114, 136, 168, 223, 221, 330, 655]
+            : [100, 90, 114, 136, 168, 223, 332, 660],
+        );
+        expect(busctl.mock.calls.filter(([, args]) => args.includes("--json=short"))).toHaveLength(
+          1,
+        );
+        expect(busctl.mock.calls.every(([, args]) => args.includes("--auto-start=no"))).toBe(true);
+        expect(systemctl).not.toHaveBeenCalled();
+      } finally {
+        now.mockRestore();
+      }
+    },
+  );
 
   it.each([
     { pid: 412, tasks: 0 },
@@ -521,16 +606,19 @@ describe("owned inspection refuses foreign or unverified collected units", () =>
 });
 
 describe("bounded owned runtime inspection", () => {
-  it.each([
-    "current",
-    "revoked-before",
-    "revoked-load",
-    "revoked-read",
-    "claim-revoked",
-    "claim-deadline",
-  ] as const)(
-    "keeps %s authority while collecting a failed unit within the remaining budget",
-    async (mode) => {
+  it.each(
+    [
+      "current",
+      "revoked-before",
+      "revoked-load",
+      "revoked-read",
+      "claim-revoked",
+      "claim-deadline",
+    ].flatMap((mode) => (["user", "system"] as const).map((scope) => ({ mode, scope }))),
+  )(
+    "keeps $mode authority in $scope scope while collecting a failed unit within the remaining budget",
+    async ({ mode, scope }) => {
+      const managerUid = scope === "system" ? 0 : 2001;
       let now = 0;
       let active = mode !== "revoked-before";
       let loaded = false;
@@ -543,7 +631,7 @@ describe("bounded owned runtime inspection", () => {
         }
       };
       const inspection = {
-        managerUid: 2001,
+        managerUid,
         assertCurrent() {
           // Installed artifact-preserving snapshots take about 100ms; native
           // queries take a few ms. Exact claims authorize loading, not reads.
@@ -556,10 +644,13 @@ describe("bounded owned runtime inspection", () => {
         },
         assertReadCurrent: live,
       };
-      busctl.mockImplementation(async (_env, args) => {
+      const reply = async (args: string[]) => {
         now += 5;
-        if (mode === "claim-revoked" && args.includes("GetConnectionUnixUser")) {
-          claimChanged = true;
+        if (args.includes("GetConnectionUnixUser")) {
+          if (mode === "claim-revoked") {
+            claimChanged = true;
+          }
+          return success(JSON.stringify({ type: "u", data: [managerUid] }));
         }
         if (args.includes("LoadUnit")) {
           loaded = true;
@@ -580,19 +671,22 @@ describe("bounded owned runtime inspection", () => {
           MainPID: { type: "u", data: 0 },
           TasksCurrent: { type: "t", data: Number("18446744073709551615") },
         });
-      });
+      };
+      busctl.mockImplementation(async (_env, args) => reply(args));
+      systemBusctl.mockImplementation(reply);
       try {
         const runtime = await readSystemdServiceRuntime(env, {
           requireLoaded: true,
           timeoutMs: 1500,
           loadForInspection: inspection,
+          systemdReadTarget: { scope, unitName, unitPath: `/etc/systemd/${scope}/${unitName}` },
         });
         expect(runtime.status).toBe(mode === "current" ? "stopped" : "unknown");
         expect(loaded).toBe(!["revoked-before", "claim-revoked", "claim-deadline"].includes(mode));
         if (mode === "current") {
-          expect(claimReads).toBeGreaterThan(0);
+          expect(claimReads).toBe(2);
           expect(now).toBeLessThan(1500);
-          expect(runtime.systemd).toMatchObject({ unit: unitName, managerUid: 2001 });
+          expect(runtime.systemd).toMatchObject({ unit: unitName, managerUid });
         }
         expect(systemctl).not.toHaveBeenCalled();
       } finally {

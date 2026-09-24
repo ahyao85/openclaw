@@ -53,6 +53,7 @@ function loadApi() {
         output,
         machine,
       ),
+    system: (output: Pointer[]) => invoke(bind("int sd_bus_open_system(_Out_ void **bus)"), output),
     address: bind("int sd_bus_set_address(void *bus, const char *address)"),
     client: bind("int sd_bus_set_bus_client(void *bus, int client)"),
     start: bind("int sd_bus_start(void *bus)"),
@@ -106,6 +107,11 @@ export async function openSystemdMachineBroker(machine: string, deadline: number
   return await openSystemdConnection({ machine }, deadline);
 }
 
+/** System-manager reads use the same native system-bus selector as busctl --system. */
+export async function openSystemdSystemBroker(deadline: number) {
+  return await openSystemdConnection({ system: true }, deadline);
+}
+
 /** Ordinary local reads authenticate the connected manager without a session broker. */
 export async function openSystemdUserManager(address: string, deadline: number) {
   const uid = process.geteuid?.();
@@ -116,7 +122,7 @@ export async function openSystemdUserManager(address: string, deadline: number) 
 }
 
 async function openSystemdConnection(
-  address: string | { machine: string },
+  address: string | { machine: string } | { system: true },
   deadline: number,
   expected?: SystemdPeerIdentity,
   managerUid?: number,
@@ -128,8 +134,10 @@ async function openSystemdConnection(
   const output: Pointer[] = [null];
   if (typeof address === "string") {
     checked(native.newBus(output));
-  } else {
+  } else if ("machine" in address) {
     await native.userMachine(address.machine, output);
+  } else {
+    await native.system(output);
   }
   const bus = output[0];
   let closed = false;
@@ -234,6 +242,7 @@ async function openSystemdConnection(
   const structs: Record<string, string[]> = {
     "(sb)": ["s", "b"],
     "(sus)": ["s", "u", "s"],
+    "(ssssssouso)": ["s", "s", "s", "s", "s", "s", "o", "u", "s", "o"],
     "(sasbttttuii)": ["s", "as", "b", "t", "t", "t", "t", "u", "i", "i"],
   };
   const scalar: Record<string, string> = {

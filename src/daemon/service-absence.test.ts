@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockProcessPlatform } from "../test-utils/vitest-spies.js";
 import { ServiceInspectionError } from "./service-inspection-error.js";
@@ -69,7 +70,12 @@ describe("readGatewayServiceState absence", () => {
     vi.spyOn(fs, "readdir").mockResolvedValue([]);
     const native = vi.spyOn(await import("./exec-file.js"), "execFileUtf8");
     const state = await readGatewayServiceState(resolveGatewayService(), {
-      env: { ...serviceEnv("no-manager-or-unit"), DBUS_SESSION_BUS_ADDRESS: undefined },
+      env: {
+        ...serviceEnv("no-manager-or-unit"),
+        DBUS_SESSION_BUS_ADDRESS: undefined,
+        USER: os.userInfo().username,
+        LOGNAME: os.userInfo().username,
+      },
     });
     expect(state).toMatchObject({
       inspectionReason: "service-manager-unavailable",

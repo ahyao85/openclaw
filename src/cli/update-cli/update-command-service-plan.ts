@@ -14,6 +14,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveNodeRuntimeInfo } from "../../daemon/runtime-paths.js";
 import {
   formatServiceInspectionReason,
+  isServiceInspectionControlFailure,
   type ServiceInspectionReason,
 } from "../../daemon/service-inspection-error.js";
 import {
@@ -46,7 +47,6 @@ import {
   type FreeBsdPkgOwnershipInspection,
 } from "../../infra/update-freebsd-pkg-ownership.js";
 import { UPDATE_RUNNER_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
-import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { withCommandProcessScope } from "../../process/exec-spawn.js";
 import {
   createRuntimeUpdateRecoverySteps,
@@ -295,7 +295,7 @@ export async function readManagedGatewayServiceForUpdate(
         ? { ...state, command: state.command, verdict: inspection }
         : null;
     } catch (error) {
-      if (hasCommandProcessCleanupError(error)) {
+      if (isServiceInspectionControlFailure(error)) {
         throw error;
       }
       if (error instanceof GatewayServiceUpdateOwnershipError && service) {
@@ -303,7 +303,7 @@ export async function readManagedGatewayServiceForUpdate(
         const available = await service.isLoaded({ env }).then(
           () => true,
           (probeError: unknown) => {
-            if (hasCommandProcessCleanupError(probeError)) {
+            if (isServiceInspectionControlFailure(probeError)) {
               throw probeError;
             }
             return false;

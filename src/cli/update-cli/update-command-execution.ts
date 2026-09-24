@@ -64,11 +64,13 @@ import {
 import { assertUpdateCommandRecovery } from "./update-command-recovery.js";
 import {
   collectServiceInspectionFailureFacts,
+  createGatewayMaintenanceWarningReporter,
   resolveMutableUpdateFailure,
   type MutableUpdateExecutionResult,
 } from "./update-command-result.js";
 import { captureUpdateActivationSchemas } from "./update-command-schema.js";
 import { isUpdatedInstallGatewayExecutorSupported } from "./update-command-service-command.js";
+import { createUpdateServiceConsumerChecks } from "./update-command-service-consumers.js";
 import { resolveUpdatedInstallCommandEnv } from "./update-command-service-env.js";
 import { GatewayServiceUpdateOwnershipError } from "./update-command-service-plan.js";
 import {
@@ -216,6 +218,14 @@ export async function executeMutableUpdate(
         ? [params.root, resolveGitInstallDir()]
         : [params.root]
       : null;
+  const serviceConsumers = createUpdateServiceConsumerChecks(
+    { ...params, mutationRoots: gitMutationRoots ?? [params.root] },
+    assertExecutionCurrent,
+  );
+  const warn = createGatewayMaintenanceWarningReporter({
+    updateRun: originalRun,
+    assertCurrent: assertExecutionCurrent,
+  });
   const stopManagedServiceBeforeMutableUpdate = async (
     mutationRoots: readonly string[] = [params.root],
     phase: "inspect" | "prepare" = "prepare",
@@ -242,6 +252,9 @@ export async function executeMutableUpdate(
           expectedService: admission?.services.get(mutationRoot),
           updateRun: opts.run,
           recovery: opts.recovery,
+          assertCurrent: assertExecutionCurrent,
+          beforeNativePreparation: (selectedState, reportWarning) =>
+            serviceConsumers.prepare(phase, selectedState, reportWarning),
           onStopped: (state) => {
             preManagedServiceStop = { ...state, ...(serviceIdentity ? { serviceIdentity } : {}) };
           },
@@ -368,12 +381,14 @@ export async function executeMutableUpdate(
   let mutationStarted = false;
   const validateCandidate = async (root: string) => {
     assertUpdateCommandRecovery(opts);
-    const env = ownedManagedUpdateContext?.env ?? opts.run?.env ?? process.env;
     if (opts.run) {
       recordUpdateRunPhase(opts.run.runId, "validating", undefined, { env: opts.run.env });
     }
     const validate = async () => {
       try {
+        if (stagedPluginAdmission) {
+          await stopManagedServiceBeforeMutableUpdate(undefined, "inspect");
+        }
         if (params.updateInstallKind === "package") {
           // The staged manifest owns schema support, including artifacts without registry metadata.
           await recheckSchemas(
@@ -397,6 +412,7 @@ export async function executeMutableUpdate(
         }
         throw error;
       }
+      const env = ownedManagedUpdateContext?.env ?? opts.run?.env ?? process.env;
       if (
         params.shouldRestart &&
         opts.run &&
@@ -539,6 +555,7 @@ export async function executeMutableUpdate(
     }
     await stopManagedServiceBeforeMutableUpdate(roots);
     await recheckSchemas(admittedTargetSchemaVersions);
+    await serviceConsumers.prepare("prepare", undefined, warn);
     assertExecutionCurrent();
     const serving = preManagedServiceStop;
     const servingVerdict = serving?.serviceUpdateVerdict;
@@ -566,9 +583,7 @@ export async function executeMutableUpdate(
     if (params.updateInstallKind === "package") {
       if (!stagedPluginAdmission) {
         await preflightPlugins(params.packageTargetVersion ?? null);
-      }
-      await stopManagedServiceBeforeMutableUpdate(undefined, "inspect");
-      if (!stagedPluginAdmission) {
+        await stopManagedServiceBeforeMutableUpdate(undefined, "inspect");
         await prepareMutableUpdate(admission?.managedEnv);
       }
       const packageUpdate: PackageInstallUpdateParams = {
@@ -593,7 +608,7 @@ export async function executeMutableUpdate(
         validateCandidate,
         beforeActivate,
         assertCurrent: assertExecutionCurrent,
-        managedServiceEnv: preManagedServiceStop?.serviceEnv,
+        managedServiceEnv: preManagedServiceStop?.serviceEnv ?? admission?.managedEnv,
         onTransaction,
         onConfigSnapshot,
         getDoctorContext,

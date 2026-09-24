@@ -16,6 +16,7 @@ import type { readUpdateStateSchemaVersions } from "../../infra/update-candidate
 import {
   markControlPlaneUpdateRestartSentinelFailure,
   writeControlPlaneUpdateRestartSentinel,
+  UPDATE_RUN_ID_ENV,
   type ControlPlaneUpdateSentinelMetaFile,
 } from "../../infra/update-control-plane-sentinel.js";
 import { formatUpdateFailureFact } from "../../infra/update-failure-facts-format.js";
@@ -136,6 +137,39 @@ export function recordServiceReconciliationWarning(
     exitCode: 0,
     advisory: { kind: "recoverable-maintenance", message },
   });
+}
+
+/** Maintenance diagnostics share emission and history recording across current owner scopes. */
+export function createGatewayMaintenanceWarningReporter(params: {
+  updateRun?: UpdateCommandOptions["run"];
+  assertCurrent: () => void;
+  warn?: (message: string) => void;
+}) {
+  let warningIndex = 0;
+  return (message: string) => {
+    params.assertCurrent();
+    (params.warn ?? defaultRuntime.error)(message);
+    const runId = params.updateRun?.runId ?? process.env[UPDATE_RUN_ID_ENV];
+    if (runId) {
+      try {
+        recordUpdateRunStep(
+          runId,
+          {
+            step: `warning:gateway-maintenance:${Date.now()}:${warningIndex++}`,
+            status: "completed",
+            endedAtMs: Date.now(),
+            detail: message,
+          },
+          { env: params.updateRun?.env },
+        );
+      } catch {
+        params.assertCurrent();
+        (params.warn ?? defaultRuntime.error)(
+          "Could not record the Gateway maintenance warning in update history.",
+        );
+      }
+    }
+  };
 }
 
 export function recordServiceReconciliationWarnings(

@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { sameFileIdentity } from "@openclaw/fs-safe/advanced";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { hasErrnoCode } from "./errors.js";
 import {
@@ -9,6 +10,11 @@ import {
 } from "./package-update-integrity.js";
 import type { StagedPackageSwapParams } from "./package-update-swap-contract.js";
 import { movePathWithCopyFallback } from "./replace-file.js";
+import {
+  createFreeBsdPkgOwnershipInspection,
+  FreeBsdPkgOwnershipError,
+  PKG_INSPECTION_TIMEOUT_MS,
+} from "./update-freebsd-pkg-ownership.js";
 
 export const PACKAGE_MANAGER_SWAP_SOURCE_HARDLINKS = "allow" as const;
 const log = createSubsystemLogger("update/package-launchers");
@@ -309,4 +315,63 @@ export async function removePackageUpdatePath(targetPath: string): Promise<boole
   } catch {
     return false;
   }
+}
+
+/** Removes leftover hidden global package directories from interrupted npm renames. */
+export async function cleanupGlobalRenameDirs(
+  params: Pick<StagedPackageSwapParams, "installTarget" | "packageName" | "assertCurrent">,
+): Promise<{ removed: string[] }> {
+  const removed: string[] = [];
+  const packageRoot = params.installTarget.packageRoot;
+  const name = params.packageName.trim();
+  if (params.installTarget.manager !== "npm" || !packageRoot || !name) {
+    return { removed };
+  }
+  const root = path.dirname(packageRoot).trim();
+  const prefix = `.${name}-`;
+  const inspectionDeadline = Date.now() + PKG_INSPECTION_TIMEOUT_MS;
+  let entries: string[];
+  try {
+    entries = await fs.readdir(root);
+  } catch {
+    return { removed };
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix)) {
+      continue;
+    }
+    const target = path.join(root, entry);
+    try {
+      const stat = await fs.lstat(target);
+      if (!stat.isDirectory()) {
+        continue;
+      }
+      if (process.platform === "freebsd") {
+        // A matching rename pattern does not establish ownership of its files.
+        const remainingMs = inspectionDeadline - Date.now();
+        if (remainingMs <= 0) {
+          break;
+        }
+        await createFreeBsdPkgOwnershipInspection(remainingMs).assertUnowned(target);
+        const current = await fs.lstat(target);
+        if (!current.isDirectory() || !sameFileIdentity(stat, current)) {
+          continue;
+        }
+      }
+      params.assertCurrent?.();
+      await fs.rm(target, { recursive: true, force: true });
+      params.assertCurrent?.();
+      removed.push(entry);
+    } catch (error) {
+      params.assertCurrent?.();
+      if (
+        error instanceof FreeBsdPkgOwnershipError &&
+        error.reason === "pkg-ownership-unavailable"
+      ) {
+        break;
+      }
+      // ignore cleanup failures
+    }
+  }
+  return { removed };
 }

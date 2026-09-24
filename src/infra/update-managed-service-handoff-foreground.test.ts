@@ -203,7 +203,13 @@ describe("foreground update through the prepared managed helper", () => {
           await new Promise(() => {});
         }
         if (!unchanged) {
-          await handoff.parkForegroundUpdateHandoff({ root, run });
+          if (mode === "success") {
+            const metaPath = process.env.OPENCLAW_CONTROL_PLANE_UPDATE_SENTINEL_META;
+            const retargeted = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+            retargeted.meta.foregroundOrigin.pid = process.pid;
+            fs.writeFileSync(metaPath, JSON.stringify(retargeted));
+          }
+          assert.equal(await handoff.parkForegroundUpdateHandoff({ root, run }), meta.foregroundOrigin.pid);
           assert.equal(run.gatewayRestartRequired, true);
           await handoff.parkForegroundUpdateHandoff({ root, run });
           assert(await handoff.isCurrentForegroundUpdateHandoffProcess({ root, ...run }));

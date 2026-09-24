@@ -4,11 +4,13 @@ import {
   parseStrictInteger,
   parseStrictPositiveInteger,
 } from "@openclaw/normalization-core/number-coercion";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { parseTcpPort, parseTcpPortFromArgs } from "../infra/tcp-port.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { sleep } from "../utils.js";
 import { GATEWAY_SERVICE_KIND } from "./constants.js";
+import { execFileUtf8 } from "./exec-file.js";
 import { resolveGatewayServiceProbeHosts } from "./gateway-service-probe-hosts.js";
 import {
   execLaunchctl,
@@ -43,6 +45,84 @@ import type {
   GatewayServiceEnvArgs,
   GatewayServiceReadOptions,
 } from "./service-types.js";
+
+// SMJobCopyDictionary is deprecated and its fields vary by OS release. Read only
+// typed retained command fields; neither launchctl prose nor the disk plist proves them.
+const LOADED_LAUNCHD_COMMAND_SCRIPT = `
+ObjC.import('Foundation');
+ObjC.import('ServiceManagement');
+function run(args) {
+  const domain = args[0] === 'system' ? $.kSMDomainSystemLaunchd : $.kSMDomainUserLaunchd;
+  const dictionary = ObjC.castRefToObject($.SMJobCopyDictionary(domain, $(args[1])));
+  if (!dictionary || dictionary.isNil() || !dictionary.isKindOfClass($.NSDictionary)) {
+    throw new Error('Loaded job dictionary unavailable');
+  }
+  const program = dictionary.objectForKey($('Program'));
+  const values = dictionary.objectForKey($('ProgramArguments'));
+  if (!program || program.isNil() || !program.isKindOfClass($.NSString) ||
+      !values || values.isNil() || !values.isKindOfClass($.NSArray)) {
+    throw new Error('Loaded command fields unavailable');
+  }
+  const programArguments = [];
+  for (let i = 0; i < Number(values.count); i++) {
+    const value = values.objectAtIndex(i);
+    if (!value.isKindOfClass($.NSString)) throw new Error('Invalid loaded argument');
+    programArguments.push(ObjC.unwrap(value));
+  }
+  return JSON.stringify({ program: ObjC.unwrap(program), programArguments });
+}`;
+
+export async function readLoadedLaunchdProgramArguments(
+  serviceTarget: string,
+  timeoutMs = 5_000,
+): Promise<GatewayServiceCommandConfig> {
+  const unavailable = () =>
+    new Error(
+      "Retained launchd executable and arguments could not be verified. Stop this service with its native manager before updating its installation.",
+    );
+  const separator = serviceTarget.lastIndexOf("/");
+  const domain = serviceTarget.slice(0, separator);
+  const label = serviceTarget.slice(separator + 1);
+  if (
+    process.platform !== "darwin" ||
+    separator < 0 ||
+    (domain !== "system" && domain !== resolveLaunchAgentGuiDomain()) ||
+    !label ||
+    label.includes("\0") ||
+    !Number.isFinite(timeoutMs) ||
+    timeoutMs <= 0
+  ) {
+    throw unavailable();
+  }
+  const result = await execFileUtf8(
+    "/usr/bin/osascript",
+    ["-l", "JavaScript", "-e", LOADED_LAUNCHD_COMMAND_SCRIPT, domain, label],
+    { timeout: timeoutMs },
+  );
+  if (result.code !== 0 || result.termination !== "exit") {
+    throw unavailable();
+  }
+  let command: Record<string, unknown> | undefined;
+  try {
+    command = asOptionalRecord(JSON.parse(result.stdout));
+  } catch {
+    throw unavailable();
+  }
+  const program = command?.program;
+  const args = command?.programArguments;
+  if (
+    typeof program !== "string" ||
+    !program ||
+    program.includes("\0") ||
+    !Array.isArray(args) ||
+    args.length === 0 ||
+    !args.every((arg): arg is string => typeof arg === "string" && !arg.includes("\0"))
+  ) {
+    throw unavailable();
+  }
+  // Program selects the executable independently of the authored argv[0].
+  return { programArguments: [program, ...args.slice(1)] };
+}
 
 export async function readLaunchAgentProgramArguments(
   env: GatewayServiceEnv,

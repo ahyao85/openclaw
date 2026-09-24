@@ -13,10 +13,12 @@ import {
   writeTaskXmlTempFile,
 } from "./schtasks-layout.js";
 import {
-  describeUnverifiedPortListeners,
   findInstalledProcessPid,
   isNodeHostArgv,
   readWindowsProcessSnapshot,
+} from "./schtasks-process-inspection.js";
+import {
+  describeUnverifiedPortListeners,
   resolveScheduledTaskCommandPort,
   resolveScheduledTaskGatewayContext,
   resolveScheduledTaskOwnedGatewayPids,

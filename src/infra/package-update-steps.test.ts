@@ -100,7 +100,7 @@ describe("runGlobalPackageUpdateSteps", () => {
         if (name !== "package-install") {
           throw new Error(`unexpected step ${name}`);
         }
-        await expectPathMissing(staleRenameDir);
+        expect((await fs.stat(staleRenameDir)).isDirectory()).toBe(true);
         const prefixIndex = argv.indexOf("--prefix");
         expect(prefixIndex).toBeGreaterThan(0);
         const stagePrefix = argv[prefixIndex + 1];
@@ -139,6 +139,7 @@ describe("runGlobalPackageUpdateSteps", () => {
       expect(result.failedStep).toBeNull();
       expect(result.activePackageRoot).toBe(packageRoot);
       expect(result.afterVersion).toBe("2.0.0");
+      await expectPathMissing(staleRenameDir);
       await expect(fs.readFile(path.join(packageRoot, "package.json"), "utf8")).resolves.toContain(
         '"version":"2.0.0"',
       );

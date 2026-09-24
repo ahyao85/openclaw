@@ -202,6 +202,7 @@ function setupLegacyMacService() {
       platform: "darwin",
       label: LEGACY_MAC_LABEL,
       detail: `plist: ${LEGACY_MAC_PLIST}`,
+      sourcePath: LEGACY_MAC_PLIST,
       scope: "user",
       legacy: true,
     },
@@ -1633,6 +1634,7 @@ describe("maybeScanExtraGatewayServices", () => {
       platform: "darwin" as const,
       label: "com.example.openclaw-gateway",
       detail: "plist: /Users/test/Library/LaunchAgents/com.example.openclaw-gateway.plist",
+      sourcePath: "/Users/test/Library/LaunchAgents/com.example.openclaw-gateway.plist",
       scope: "user" as const,
       legacy: false,
     };
@@ -1651,7 +1653,6 @@ describe("maybeScanExtraGatewayServices", () => {
 
   it("does not render generic cleanup hints for legacy gateway services", async () => {
     setupLegacyMacService();
-    mocks.renderGatewayServiceCleanupHints.mockReturnValue([]);
 
     await maybeScanExtraGatewayServices({ deep: false }, makeDoctorIo(), {
       ...makeDoctorPrompts(),
@@ -1663,8 +1664,6 @@ describe("maybeScanExtraGatewayServices", () => {
   });
 
   it("threads deep scans through structured extra gateway service detection", async () => {
-    mocks.findExtraGatewayServices.mockResolvedValue([]);
-
     await detectExtraGatewayServiceIssues({ deep: true });
 
     expect(mocks.findExtraGatewayServices).toHaveBeenCalledWith(process.env, { deep: true });

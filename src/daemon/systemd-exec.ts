@@ -324,13 +324,13 @@ export async function isSystemctlAvailable(env: GatewayServiceEnv): Promise<bool
   return res.code === 0 || !isSystemctlMissing(res);
 }
 
-/** Authenticate the existing unique manager owner before loading a bound unit.
- * The caller supplies its deadline- and custody-checked D-Bus query. */
+/** Bind one unique manager owner; control callers require their admitted account UID.
+ * A named machine broker already selects its account for read-only inventory. */
 export async function bindSystemdManagerOwner(
   query: (args: string[], signatures: string[]) => Promise<unknown[] | null>,
-  managerUid: number,
+  expectedManagerUid: number | undefined,
   unavailable: () => Error,
-): Promise<{ destination: string; verify: () => Promise<void> }> {
+): Promise<{ destination: string; managerUid: number; verify: () => Promise<void> }> {
   const manager = "org.freedesktop.systemd1";
   const readOwner = async () => {
     const [value] =
@@ -370,21 +370,25 @@ export async function bindSystemdManagerOwner(
       ],
       ["u"],
     )) ?? [];
+  const managerUid: unknown = Array.isArray(uid) && uid.length === 1 ? uid[0] : undefined;
   if (
+    typeof managerUid !== "number" ||
     !Number.isInteger(managerUid) ||
     managerUid < 0 ||
     managerUid >= 0xffffffff ||
-    !Array.isArray(uid) ||
-    uid.length !== 1 ||
-    !Number.isInteger(uid[0])
+    (expectedManagerUid !== undefined &&
+      (!Number.isInteger(expectedManagerUid) ||
+        expectedManagerUid < 0 ||
+        expectedManagerUid >= 0xffffffff))
   ) {
     throw unavailable();
   }
-  if (uid[0] !== managerUid) {
+  if (expectedManagerUid !== undefined && managerUid !== expectedManagerUid) {
     throw new ServiceOwnershipRefusalError("systemd-manager-changed");
   }
   return {
     destination,
+    managerUid,
     async verify() {
       if (destination !== (await readOwner())) {
         throw new ServiceOwnershipRefusalError("systemd-manager-changed");

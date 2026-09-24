@@ -1,36 +1,78 @@
-/** Inspects installed platform services for extra OpenClaw or legacy gateway jobs. */
+/** Discovers installed service candidates; native owners verify lifecycle authority. */
 import fs from "node:fs/promises";
 import path from "node:path";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { quoteCliArg } from "../cli/quote-cli-arg.js";
+import { hasErrnoCode } from "../infra/errno.js";
 import {
   GATEWAY_SERVICE_KIND,
   GATEWAY_SERVICE_MARKER,
   LEGACY_GATEWAY_SYSTEMD_SERVICE_NAMES,
+  NODE_SERVICE_KIND,
   resolveGatewayLaunchAgentLabel,
   resolveGatewaySystemdServiceName,
-  resolveGatewayWindowsTaskName,
+  resolveNodeLaunchAgentLabel,
 } from "./constants.js";
+import {
+  EXTRA_MARKERS,
+  detectCommandExecutionMarker,
+  detectMarkerLineWithService,
+  hasServiceMarker,
+  hasSystemdServiceMarker,
+} from "./inspect-markers.js";
+import { scanWindowsGatewayServices } from "./inspect-windows.js";
+import { findLoadedManagedLaunchdJobs } from "./launchd-foreign-jobs.js";
 import { resolveLaunchAgentLabel } from "./launchd-label.js";
 import { decodeLaunchdPlistMetadata } from "./launchd-plist.js";
+import { resolveLaunchAgentGuiDomain } from "./launchd-runtime.js";
 import { resolveDaemonHomeDir } from "./paths.js";
-import { execSchtasks } from "./schtasks-exec.js";
-import { parseSystemdExecStart, splitSystemdLogicalLines } from "./systemd-unit.js";
+import {
+  findServiceOwnershipRefusal,
+  isServiceInspectionControlFailure,
+} from "./service-inspection-error.js";
+import { listLoadedSystemdServices } from "./systemd-peer.js";
+import { isSystemdManagerAbsent } from "./systemd-scope.js";
+import { resolveSystemdServiceName } from "./systemd-service-files.js";
 
 export type ExtraGatewayService = {
   platform: "darwin" | "linux" | "win32";
   label: string;
   detail: string;
+  sourcePath?: string;
+  /** Native domain remains usable when the registered job's plist has disappeared. */
+  launchdDomain?: string;
   scope: "user" | "system";
   marker?: "openclaw" | "clawdbot";
   legacy?: boolean;
+  /** Exact Startup definition; a task label cannot identify this native owner. */
+  windowsStartupEntry?: string;
 };
 
 export type FindExtraGatewayServicesOptions = {
   deep?: boolean;
 };
 
-const EXTRA_MARKERS = ["openclaw", "clawdbot"] as const;
+export type GatewayServiceInventory = {
+  services: ExtraGatewayService[];
+  errors: Array<{ source: string; message: string }>;
+};
+
+function rethrowInspectionAuthorityFailure(error: unknown): void {
+  if (isServiceInspectionControlFailure(error)) {
+    throw findServiceOwnershipRefusal(error) ?? error;
+  }
+}
+
+function remainingInventoryBudget(deadline: number | undefined): number | undefined {
+  if (deadline === undefined) {
+    return undefined;
+  }
+  const remaining = deadline - performance.now();
+  if (remaining <= 0) {
+    throw new Error("Service inventory inspection timed out.");
+  }
+  return remaining;
+}
 
 export function renderGatewayServiceCleanupHints(
   services: readonly ExtraGatewayService[] = [],
@@ -40,9 +82,7 @@ export function renderGatewayServiceCleanupHints(
   for (const service of services) {
     switch (service.platform) {
       case "darwin": {
-        const plistPath = service.detail.startsWith("plist:")
-          ? service.detail.slice("plist:".length).trim()
-          : undefined;
+        const plistPath = service.sourcePath;
         // Global LaunchAgents still run in a GUI domain; only LaunchDaemons
         // belong to the system domain regardless of their shared file scope.
         const domain =
@@ -65,6 +105,12 @@ export function renderGatewayServiceCleanupHints(
         break;
       }
       case "win32":
+        if (service.windowsStartupEntry) {
+          hints.push(
+            `Get-Item -LiteralPath '${service.windowsStartupEntry.replaceAll("'", "''")}'`,
+          );
+          break;
+        }
         // The hint can be pasted into cmd.exe or PowerShell, so exclude names
         // that either shell can expand rather than guessing a common escape.
         if (/^[A-Za-z0-9_. ()\\/-]+$/.test(service.label)) {
@@ -77,113 +123,32 @@ export function renderGatewayServiceCleanupHints(
   return hints;
 }
 
-type Marker = (typeof EXTRA_MARKERS)[number];
-
-function hasGatewaySubcommandArg(args: string[]): boolean {
-  return args.some((arg) => {
-    const normalized = normalizeLowercaseStringOrEmpty(arg);
-    return normalized === "gateway" || /(^|\s)gateway(\s|$)/.test(normalized);
-  });
-}
-
-export function detectMarkerLineWithGateway(contents: string): Marker | null {
-  // Use the same physical-comment rules as service rewrites; comments must not
-  // hide a runnable extra service from diagnostics.
-  for (const line of splitSystemdLogicalLines(contents)) {
-    const trimmed = normalizeLowercaseStringOrEmpty(line);
-    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) {
-      continue;
-    }
-    const assignment = trimmed.indexOf("=");
-    if (assignment > 0) {
-      const key = trimmed.slice(0, assignment).trim();
-      if (
-        key !== "execstart" ||
-        !hasGatewaySubcommandArg(parseSystemdExecStart(trimmed.slice(assignment + 1).trim()))
-      ) {
-        continue;
-      }
-    }
-    if (!trimmed.includes("gateway")) {
-      continue;
-    }
-    for (const marker of EXTRA_MARKERS) {
-      if (trimmed.includes(marker)) {
-        return marker;
-      }
-    }
-  }
-  return null;
-}
-
-function hasGatewayServiceMarker(content: string): boolean {
-  const lower = normalizeLowercaseStringOrEmpty(content);
-  return (
-    lower.includes("openclaw_service_marker") &&
-    lower.includes("openclaw_service_kind") &&
-    lower.includes(normalizeLowercaseStringOrEmpty(GATEWAY_SERVICE_MARKER)) &&
-    lower.includes(normalizeLowercaseStringOrEmpty(GATEWAY_SERVICE_KIND))
-  );
-}
-
-function detectLaunchdGatewayExecutionMarker(plist: Record<string, unknown>): Marker | null {
-  const programArguments = Array.isArray(plist.ProgramArguments)
-    ? plist.ProgramArguments.filter((arg): arg is string => typeof arg === "string")
-    : [];
-  if (!hasGatewaySubcommandArg(programArguments)) {
-    return null;
-  }
-  // Only execution command fields identify gateway jobs; labels alone catch too
-  // many unrelated helper jobs.
-  const launchCommand = normalizeLowercaseStringOrEmpty(
-    [typeof plist.Program === "string" ? plist.Program : "", ...programArguments].join("\n"),
-  );
-  return EXTRA_MARKERS.find((marker) => launchCommand.includes(marker)) ?? null;
-}
-
-function isOpenClawGatewaySystemdService(name: string, contents: string): boolean {
-  if (hasGatewayServiceMarker(contents)) {
-    return true;
-  }
-  if (!name.startsWith("openclaw-gateway")) {
-    return false;
-  }
-  return normalizeLowercaseStringOrEmpty(contents).includes("gateway");
-}
-
-function isOpenClawGatewayTaskName(name: string): boolean {
-  const normalized = normalizeLowercaseStringOrEmpty(name);
-  if (!normalized) {
-    return false;
-  }
-  // Windows schtasks /Query returns task names prefixed with \ (e.g.
-  // \OpenClaw Gateway for root-folder tasks). Strip the leading
-  // backslash so the configured name matches correctly and the live
-  // gateway task is not misidentified as an extra gateway service.
-  const stripped = normalized.replace(/^\\+/, "");
-  const defaultName = normalizeLowercaseStringOrEmpty(resolveGatewayWindowsTaskName());
-  return stripped === defaultName || /^openclaw gateway \(.+\)$/.test(stripped);
-}
-
-function isIgnoredLaunchdLabel(label: string): boolean {
-  return label === resolveGatewayLaunchAgentLabel();
-}
-
-function isIgnoredSystemdName(name: string): boolean {
-  return name === resolveGatewaySystemdServiceName();
-}
-
 function isLegacyLabel(label: string): boolean {
   const lower = normalizeLowercaseStringOrEmpty(label);
   return lower.includes("clawdbot");
 }
 
-async function readDirEntries(dir: string): Promise<string[]> {
-  return fs.readdir(dir).catch(() => []);
-}
-
-async function readServiceFile(filePath: string): Promise<Buffer | null> {
-  return fs.readFile(filePath).catch(() => null);
+function isPotentialGatewayServiceName(
+  name: string,
+  platform: "darwin" | "linux",
+  selected?: string,
+  includeNode = false,
+): boolean {
+  if (
+    includeNode &&
+    (platform === "darwin"
+      ? name === resolveNodeLaunchAgentLabel()
+      : /^(?:openclaw|clawdbot)-node(?:$|[-.@])/.test(name))
+  ) {
+    return true;
+  }
+  return (
+    name === selected ||
+    (platform === "darwin"
+      ? (name.startsWith("ai.openclaw.") && name !== resolveNodeLaunchAgentLabel()) ||
+        /clawdbot.*gateway/.test(name)
+      : /^(?:openclaw|clawdbot)(?:$|@|-gateway(?:$|[-.@]))/.test(name))
+  );
 }
 
 type ServiceFileEntry = {
@@ -196,21 +161,39 @@ type ServiceFileEntry = {
 async function collectServiceFiles(params: {
   dir: string;
   extension: string;
-  isIgnoredName: (name: string) => boolean;
+  ignoredName?: string;
+  isPotentialName: (name: string) => boolean;
+  errors?: GatewayServiceInventory["errors"];
+  deadline?: number;
 }): Promise<ServiceFileEntry[]> {
   const out: ServiceFileEntry[] = [];
-  const entries = await readDirEntries(params.dir);
-  for (const entry of entries) {
+  let entries: string[];
+  remainingInventoryBudget(params.deadline);
+  try {
+    entries = await fs.readdir(params.dir);
+  } catch (error) {
+    if (!hasErrnoCode(error, "ENOENT")) {
+      params.errors?.push({ source: params.dir, message: "Service path could not be inspected." });
+    }
+    return out;
+  }
+  for (const entry of entries.toSorted()) {
+    remainingInventoryBudget(params.deadline);
     if (!entry.endsWith(params.extension)) {
       continue;
     }
     const name = entry.slice(0, -params.extension.length);
-    if (params.isIgnoredName(name)) {
+    if (name === params.ignoredName) {
       continue;
     }
     const fullPath = path.join(params.dir, entry);
-    const contents = await readServiceFile(fullPath);
-    if (contents === null) {
+    let contents: Buffer;
+    try {
+      contents = await fs.readFile(fullPath);
+    } catch {
+      if (params.isPotentialName(name)) {
+        params.errors?.push({ source: fullPath, message: "Service path could not be inspected." });
+      }
       continue;
     }
     out.push({ entry, name, fullPath, contents });
@@ -222,23 +205,53 @@ async function scanLaunchdDir(params: {
   dir: string;
   scope: "user" | "system";
   includeManagedOpenClaw?: boolean;
+  includeNode?: boolean;
   managedLabel?: string;
+  selectedName?: string;
+  errors?: GatewayServiceInventory["errors"];
+  deadline?: number;
 }): Promise<ExtraGatewayService[]> {
   const results: ExtraGatewayService[] = [];
+  const isPotentialName = (name: string) =>
+    isPotentialGatewayServiceName(name, "darwin", params.selectedName, params.includeNode);
   const candidates = await collectServiceFiles({
     dir: params.dir,
     extension: ".plist",
-    isIgnoredName: params.includeManagedOpenClaw ? () => false : isIgnoredLaunchdLabel,
+    ignoredName: params.includeManagedOpenClaw ? undefined : resolveGatewayLaunchAgentLabel(),
+    isPotentialName,
+    errors: params.errors,
+    deadline: params.deadline,
   });
 
   for (const { name: labelFromName, fullPath, contents } of candidates) {
-    const plist = await decodeLaunchdPlistMetadata(contents).catch(() => undefined);
+    const plist = await decodeLaunchdPlistMetadata(
+      contents,
+      remainingInventoryBudget(params.deadline),
+    ).catch((error: unknown) => {
+      rethrowInspectionAuthorityFailure(error);
+      const contentHint = normalizeLowercaseStringOrEmpty(
+        contents.toString("utf8").replaceAll("\0", ""),
+      );
+      if (
+        isPotentialName(labelFromName) ||
+        EXTRA_MARKERS.some((marker) => contentHint.includes(marker))
+      ) {
+        params.errors?.push({ source: fullPath, message: "Service plist could not be inspected." });
+      }
+      return undefined;
+    });
     if (!plist) {
       continue;
     }
     const label = typeof plist.Label === "string" && plist.Label ? plist.Label : labelFromName;
-    const executionMarker = detectLaunchdGatewayExecutionMarker(plist);
-    const serviceMarker = hasGatewayServiceMarker(JSON.stringify(plist.EnvironmentVariables) ?? "");
+    const executionMarker = detectCommandExecutionMarker(
+      Array.isArray(plist.ProgramArguments)
+        ? plist.ProgramArguments.filter((arg): arg is string => typeof arg === "string")
+        : [],
+      typeof plist.Program === "string" ? plist.Program : undefined,
+      params.includeNode,
+    );
+    const serviceMarker = hasServiceMarker(plist.EnvironmentVariables, params.includeNode);
     const legacyLabel = isLegacyLabel(labelFromName) || isLegacyLabel(label);
     const marker =
       label === params.managedLabel || serviceMarker
@@ -249,13 +262,11 @@ async function scanLaunchdDir(params: {
     }
     // Managed current services are expected; this scan reports extra jobs that
     // can compete for ports or survive old installs.
-    if (!params.includeManagedOpenClaw && isIgnoredLaunchdLabel(label)) {
-      continue;
-    }
     if (
       !params.includeManagedOpenClaw &&
-      marker === "openclaw" &&
-      (serviceMarker || (executionMarker === "openclaw" && label.startsWith("ai.openclaw.")))
+      (label === resolveGatewayLaunchAgentLabel() ||
+        (marker === "openclaw" &&
+          (serviceMarker || (executionMarker === "openclaw" && label.startsWith("ai.openclaw.")))))
     ) {
       continue;
     }
@@ -263,6 +274,7 @@ async function scanLaunchdDir(params: {
       platform: "darwin",
       label,
       detail: `plist: ${fullPath}`,
+      sourcePath: fullPath,
       scope: params.scope,
       marker,
       legacy: marker !== "openclaw" || isLegacyLabel(label),
@@ -276,26 +288,38 @@ async function scanSystemdDir(params: {
   dir: string;
   scope: "user" | "system";
   includeManagedOpenClaw?: boolean;
+  includeNode?: boolean;
+  selectedName?: string;
+  errors?: GatewayServiceInventory["errors"];
+  deadline?: number;
 }): Promise<ExtraGatewayService[]> {
   const results: ExtraGatewayService[] = [];
   const candidates = await collectServiceFiles({
     dir: params.dir,
     extension: ".service",
-    isIgnoredName: params.includeManagedOpenClaw ? () => false : isIgnoredSystemdName,
+    ignoredName: params.includeManagedOpenClaw ? undefined : resolveGatewaySystemdServiceName(),
+    isPotentialName: (name) =>
+      isPotentialGatewayServiceName(name, "linux", params.selectedName, params.includeNode),
+    errors: params.errors,
+    deadline: params.deadline,
   });
 
   for (const { entry, name, fullPath, contents: bytes } of candidates) {
+    remainingInventoryBudget(params.deadline);
     const contents = bytes.toString("utf8");
-    const marker = hasGatewayServiceMarker(contents)
+    const serviceMarker = hasSystemdServiceMarker(contents, params.includeNode);
+    const marker = serviceMarker
       ? "openclaw"
-      : detectMarkerLineWithGateway(contents);
+      : detectMarkerLineWithService(contents, params.includeNode);
     if (!marker) {
       continue;
     }
     if (
       !params.includeManagedOpenClaw &&
       marker === "openclaw" &&
-      isOpenClawGatewaySystemdService(name, contents)
+      (serviceMarker ||
+        (name.startsWith("openclaw-gateway") &&
+          normalizeLowercaseStringOrEmpty(contents).includes("gateway")))
     ) {
       continue;
     }
@@ -303,6 +327,7 @@ async function scanSystemdDir(params: {
       platform: "linux",
       label: entry,
       detail: `unit: ${fullPath}`,
+      sourcePath: fullPath,
       scope: params.scope,
       marker,
       legacy: marker !== "openclaw",
@@ -310,6 +335,71 @@ async function scanSystemdDir(params: {
   }
 
   return results;
+}
+
+async function scanLoadedSystemdServices(
+  env: Record<string, string | undefined>,
+  scope: "user" | "system",
+  includeNode: boolean,
+  inventory: GatewayServiceInventory,
+  deadline: number,
+): Promise<void> {
+  try {
+    const loadedInventory = await listLoadedSystemdServices(env, scope, deadline);
+    for (const label of loadedInventory.unavailableUnits) {
+      inventory.errors.push({
+        source: `systemd:${scope}/${label}`,
+        message: "Loaded service metadata could not be inspected.",
+      });
+    }
+    for (const loaded of loadedInventory.services) {
+      const commandMarker = loaded.commands
+        .map((argv) => detectCommandExecutionMarker(argv, undefined, includeNode))
+        .find((marker) => marker !== null);
+      const serviceMarker =
+        loaded.environment.includes(`OPENCLAW_SERVICE_MARKER=${GATEWAY_SERVICE_MARKER}`) &&
+        (loaded.environment.includes(`OPENCLAW_SERVICE_KIND=${GATEWAY_SERVICE_KIND}`) ||
+          (includeNode &&
+            loaded.environment.includes(`OPENCLAW_SERVICE_KIND=${NODE_SERVICE_KIND}`)));
+      const marker = serviceMarker ? "openclaw" : commandMarker;
+      if (!marker) {
+        continue;
+      }
+      // A deleted fragment still names the manager's loaded command; no disk read proves exit.
+      const sourcePath = loaded.fragmentPath || undefined;
+      if (!sourcePath) {
+        inventory.errors.push({
+          source: `systemd:${scope}/${loaded.label}`,
+          message: "Loaded service definition is missing or could not be inspected.",
+        });
+      }
+      if (
+        !inventory.services.some(
+          (service) =>
+            service.platform === "linux" &&
+            service.scope === scope &&
+            service.label === loaded.label &&
+            service.sourcePath === sourcePath,
+        )
+      ) {
+        inventory.services.push({
+          platform: "linux",
+          label: loaded.label,
+          scope,
+          marker,
+          detail: `loaded unit: ${loaded.label}`,
+          ...(sourcePath ? { sourcePath } : {}),
+          legacy: marker !== "openclaw",
+        });
+      }
+    }
+  } catch (error) {
+    rethrowInspectionAuthorityFailure(error);
+    inventory.errors.push({
+      source: `systemd:${scope}`,
+      message: "Loaded services could not be inspected.",
+    });
+  }
 }
 
 export async function findSystemGatewayServices(): Promise<ExtraGatewayService[]> {
@@ -335,59 +425,18 @@ export async function findSystemGatewayServices(): Promise<ExtraGatewayService[]
   return results;
 }
 
-type ScheduledTaskInfo = {
-  name: string;
-  taskToRun?: string;
-};
-
-function parseSchtasksList(output: string): ScheduledTaskInfo[] {
-  const tasks: ScheduledTaskInfo[] = [];
-  let current: ScheduledTaskInfo | null = null;
-
-  for (const rawLine of output.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) {
-      if (current) {
-        tasks.push(current);
-        current = null;
-      }
-      continue;
-    }
-    const idx = line.indexOf(":");
-    if (idx <= 0) {
-      continue;
-    }
-    const key = normalizeLowercaseStringOrEmpty(line.slice(0, idx));
-    const value = line.slice(idx + 1).trim();
-    if (!value) {
-      continue;
-    }
-    if (key === "taskname") {
-      if (current) {
-        tasks.push(current);
-      }
-      current = { name: value };
-      continue;
-    }
-    if (!current) {
-      continue;
-    }
-    if (key === "task to run") {
-      current.taskToRun = value;
-    }
-  }
-
-  if (current) {
-    tasks.push(current);
-  }
-  return tasks;
-}
-
-export async function findExtraGatewayServices(
+async function scanGatewayServices(
   env: Record<string, string | undefined>,
-  opts: FindExtraGatewayServicesOptions = {},
-): Promise<ExtraGatewayService[]> {
-  const results: ExtraGatewayService[] = [];
+  opts: FindExtraGatewayServicesOptions & {
+    includeManagedOpenClaw?: boolean;
+    includeNode?: boolean;
+    includeLoaded?: boolean;
+    timeoutMs?: number;
+  },
+): Promise<GatewayServiceInventory> {
+  const inventory: GatewayServiceInventory = { services: [], errors: [] };
+  const deadline = opts.timeoutMs === undefined ? undefined : performance.now() + opts.timeoutMs;
+  const { services, errors } = inventory;
   const seen = new Set<string>();
   const push = (svc: ExtraGatewayService) => {
     const key = `${svc.platform}:${svc.label}:${svc.detail}:${svc.scope}`;
@@ -395,39 +444,89 @@ export async function findExtraGatewayServices(
       return;
     }
     seen.add(key);
-    results.push(svc);
+    services.push(svc);
   };
 
   if (process.platform === "darwin") {
     try {
-      const home = resolveDaemonHomeDir(env);
-      const userDir = path.join(home, "Library", "LaunchAgents");
+      const userDir = path.join(resolveDaemonHomeDir(env), "Library", "LaunchAgents");
       for (const svc of await scanLaunchdDir({
         dir: userDir,
         scope: "user",
+        includeManagedOpenClaw: opts.includeManagedOpenClaw,
+        includeNode: opts.includeNode,
+        selectedName: resolveLaunchAgentLabel(env),
+        errors,
+        deadline,
       })) {
         push(svc);
       }
       if (opts.deep) {
-        for (const svc of await scanLaunchdDir({
-          dir: path.join(path.sep, "Library", "LaunchAgents"),
-          scope: "system",
-        })) {
-          push(svc);
-        }
-        for (const svc of await scanLaunchdDir({
-          dir: path.join(path.sep, "Library", "LaunchDaemons"),
-          scope: "system",
-          includeManagedOpenClaw: true,
-          managedLabel: resolveLaunchAgentLabel(env),
-        })) {
-          push(svc);
+        for (const directory of ["LaunchAgents", "LaunchDaemons"]) {
+          const systemDaemon = directory === "LaunchDaemons";
+          for (const svc of await scanLaunchdDir({
+            dir: path.join(path.sep, "Library", directory),
+            scope: "system",
+            includeManagedOpenClaw: systemDaemon || opts.includeManagedOpenClaw,
+            includeNode: opts.includeNode,
+            managedLabel: systemDaemon ? resolveLaunchAgentLabel(env) : undefined,
+            selectedName: resolveLaunchAgentLabel(env),
+            errors,
+            deadline,
+          })) {
+            push(svc);
+          }
         }
       }
-    } catch {
-      return results;
+    } catch (error) {
+      rethrowInspectionAuthorityFailure(error);
+      errors.push({ source: "launchd", message: "Gateway service discovery could not finish." });
     }
-    return results;
+    if (opts.includeLoaded) {
+      const guiDomain = resolveLaunchAgentGuiDomain();
+      const knownLabels = [
+        resolveLaunchAgentLabel(env),
+        ...(opts.includeNode ? [resolveNodeLaunchAgentLabel()] : []),
+      ];
+      for (const domain of [guiDomain, ...(opts.deep ? ["system"] : [])]) {
+        const definitions = services.filter(
+          (service) =>
+            service.platform === "darwin" &&
+            (domain === "system") ===
+              (service.scope === "system" &&
+                service.sourcePath?.startsWith("/Library/LaunchDaemons/") === true),
+        );
+        try {
+          const loaded = await findLoadedManagedLaunchdJobs({
+            domain,
+            knownLabels: [...knownLabels, ...definitions.map((service) => service.label)],
+            includeNode: opts.includeNode,
+            deadline: deadline ?? performance.now() + 5_000,
+          });
+          for (const label of loaded) {
+            if (!definitions.some((service) => service.label === label)) {
+              push({
+                platform: "darwin",
+                scope: domain === "system" ? "system" : "user",
+                launchdDomain: domain,
+                label,
+                detail: `loaded job: ${domain}/${label}`,
+              });
+            }
+          }
+        } catch (error) {
+          rethrowInspectionAuthorityFailure(error);
+          errors.push({
+            source: domain,
+            message:
+              error instanceof Error
+                ? error.message
+                : "Loaded launchd scope could not be inspected.",
+          });
+        }
+      }
+    }
+    return inventory;
   }
 
   if (process.platform === "linux") {
@@ -437,11 +536,16 @@ export async function findExtraGatewayServices(
       const userServices = await scanSystemdDir({
         dir: userDir,
         scope: "user",
+        includeManagedOpenClaw: opts.includeManagedOpenClaw,
+        includeNode: opts.includeNode,
+        selectedName: resolveSystemdServiceName(env),
+        errors,
+        deadline,
       });
       for (const svc of userServices) {
         push(svc);
       }
-      for (const name of LEGACY_GATEWAY_SYSTEMD_SERVICE_NAMES) {
+      for (const name of opts.includeManagedOpenClaw ? [] : LEGACY_GATEWAY_SYSTEMD_SERVICE_NAMES) {
         const label = `${name}.service`;
         // The unit and its managed backup are one cleanup target. Report the
         // backup separately only when it is the remaining orphaned artifact.
@@ -449,11 +553,17 @@ export async function findExtraGatewayServices(
           continue;
         }
         const backupPath = path.join(userDir, `${name}.service.bak`);
-        if ((await readServiceFile(backupPath)) !== null) {
+        if (
+          await fs.readFile(backupPath, "utf8").then(
+            () => true,
+            () => false,
+          )
+        ) {
           push({
             platform: "linux",
             label,
             detail: `unit backup: ${backupPath}`,
+            sourcePath: backupPath,
             scope: "user",
             marker: "clawdbot",
             legacy: true,
@@ -469,53 +579,59 @@ export async function findExtraGatewayServices(
           for (const svc of await scanSystemdDir({
             dir,
             scope: "system",
+            includeManagedOpenClaw: opts.includeManagedOpenClaw,
+            includeNode: opts.includeNode,
+            selectedName: resolveSystemdServiceName(env),
+            errors,
+            deadline,
           })) {
             push(svc);
           }
         }
       }
-    } catch {
-      return results;
+    } catch (error) {
+      rethrowInspectionAuthorityFailure(error);
+      errors.push({ source: "systemd", message: "Gateway service discovery could not finish." });
     }
-    return results;
+    if (opts.includeLoaded) {
+      for (const scope of opts.deep ? (["user", "system"] as const) : (["user"] as const)) {
+        if (!(await isSystemdManagerAbsent({ ...process.env, ...env }, scope))) {
+          await scanLoadedSystemdServices(
+            env,
+            scope,
+            opts.includeNode === true,
+            inventory,
+            deadline ?? performance.now() + 5_000,
+          );
+        }
+      }
+    }
+    return inventory;
   }
 
   if (process.platform === "win32") {
-    if (!opts.deep) {
-      return results;
-    }
-    const res = await execSchtasks(["/Query", "/FO", "LIST", "/V"]);
-    if (res.code !== 0) {
-      return results;
-    }
-    const tasks = parseSchtasksList(res.stdout);
-    for (const task of tasks) {
-      const name = task.name.trim();
-      if (!name) {
-        continue;
-      }
-      if (isOpenClawGatewayTaskName(name)) {
-        continue;
-      }
-      const lowerName = normalizeLowercaseStringOrEmpty(name);
-      const lowerCommand = normalizeLowercaseStringOrEmpty(task.taskToRun ?? "");
-      const marker = EXTRA_MARKERS.find(
-        (candidate) => lowerName.includes(candidate) || lowerCommand.includes(candidate),
-      );
-      if (!marker) {
-        continue;
-      }
-      push({
-        platform: "win32",
-        label: name,
-        detail: task.taskToRun ? `task: ${name}, run: ${task.taskToRun}` : name,
-        scope: "system",
-        marker,
-        legacy: marker !== "openclaw",
-      });
-    }
-    return results;
+    await scanWindowsGatewayServices(env, opts, errors, push);
   }
 
-  return results;
+  return inventory;
+}
+
+export async function findGatewayServices(
+  env: Record<string, string | undefined>,
+  opts: FindExtraGatewayServicesOptions & {
+    /** Shared-installation inventory only; Doctor retains its existing diagnostic scope. */
+    includeNode?: boolean;
+    includeLoaded?: boolean;
+    timeoutMs?: number;
+  } = {},
+): Promise<GatewayServiceInventory> {
+  return await scanGatewayServices(env, { ...opts, includeManagedOpenClaw: true });
+}
+
+export async function findExtraGatewayServices(
+  env: Record<string, string | undefined>,
+  opts: FindExtraGatewayServicesOptions = {},
+): Promise<ExtraGatewayService[]> {
+  return (await scanGatewayServices(env, { ...opts, includeNode: false, includeLoaded: false }))
+    .services;
 }

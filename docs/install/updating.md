@@ -108,6 +108,35 @@ older installed updater reports `managed-service-stop-failed` before activation,
 the candidate has not replaced that updater. Update from an external terminal
 using the same installation owner, then retry the Control UI update.
 
+When the installed updater includes shared-installation checks, it checks other
+Gateway and Node services that use the same physical installation or runtime
+output before replacing code. It refuses replacement while a detected shared
+consumer is live. Stop those consumers through their owners and keep them stopped
+until the update completes. A loaded launchd job can restart without a PID, so
+unload that job as well. Services verified to use a separate installation can
+continue running. On Windows, a positively identified running process also needs
+to stop if its installation cannot be resolved from its current command.
+Unavailable discovery alone records a warning; a previously verified
+shared-installation consumer still needs a safe current observation before
+replacement.
+
+The selected Linux system service also needs to stop before package replacement,
+so its background workers cannot lose modules during the update. Staging,
+validation, and already-current checks can run while it serves. If publication
+finds it still running, the refusal names `sudo systemctl stop <unit>`. Keep it
+stopped, rerun the original update command with the same account, profile, and
+options, then run `sudo systemctl restart <unit>`. OpenClaw does not control the
+system unit, and offline updates keep their normal options and results.
+
+The published 2026.9.2 and 2026.9.4 updaters do not run these shared-installation
+checks before code replacement. For the first update from either version,
+manually stop **all Gateway and Node consumers of the shared installation or
+runtime output, including the selected Gateway**, and unload their launchd jobs.
+Keep them stopped through the update, then restart through their owners.
+Installing a version with the guard does not protect that first update: candidate
+code and post-install checks run too late. Automatic refusal applies only when
+an installed updater containing the checks drives a later update.
+
 After package replacement, compatibility config reads from older updaters run
 in a fresh process using the updated package and its dependencies. This also
 applies to updates driven by 2026.9.4. If an optional read fails, the updater

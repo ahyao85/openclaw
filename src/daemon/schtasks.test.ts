@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeWindowsLauncherScript } from "../infra/windows-launcher-encoding.js";
+import { mockProcessPlatform, withRestoredMocks } from "../test-utils/vitest-spies.js";
+import * as taskLayout from "./schtasks-layout.js";
+import * as taskProcesses from "./schtasks-process.js";
 import {
   isScheduledTaskDefinitelyNotRunning,
   isScheduledTaskEnabled,
@@ -179,6 +182,79 @@ describe("scheduled task runtime derivation", () => {
     await expect(waitForScheduledTaskRunningEvidence({})).resolves.toBe(true);
     expect(spawnSync).toHaveBeenCalledTimes(2);
   });
+
+  it.each(
+    ["scheduled", "startup"].flatMap((kind) =>
+      [
+        { probeMs: 300, runtimeMs: 200, expected: [1000, 700, 500], captured: true },
+        { probeMs: 1000, runtimeMs: 0, expected: [1000], captured: false },
+        { probeMs: 300, runtimeMs: 700, expected: [1000, 700], captured: false },
+      ].map((timing) => Object.assign({ kind }, timing)),
+    ),
+  )(
+    "shares the $kind runtime deadline after $probeMs ms probe and $runtimeMs ms runtime",
+    async (test) => {
+      const platform = mockProcessPlatform("win32");
+      let time = 100;
+      const clock = vi.spyOn(performance, "now").mockImplementation(() => time);
+      const programArguments = [
+        "C:\\node.exe",
+        "C:\\openclaw\\openclaw.mjs",
+        "gateway",
+        "--port",
+        "18789",
+      ];
+      const command = vi
+        .spyOn(taskLayout, "readScheduledTaskCommand")
+        .mockImplementation(async () => {
+          time += test.runtimeMs;
+          return { programArguments };
+        });
+      const listener = vi
+        .spyOn(taskProcesses, "resolveListenerBackedScheduledTaskRuntime")
+        .mockImplementation(async () => {
+          time += test.runtimeMs;
+          return { status: "running", pid: 4300 };
+        });
+      const access = vi.spyOn(fs, "access").mockResolvedValue(undefined);
+      spawnSync.mockImplementation((_file: string, args: string[]) => {
+        if (args.includes("-EncodedCommand")) {
+          time += test.probeMs;
+          return test.kind === "startup"
+            ? { status: 1, stdout: "-2147024894" }
+            : { status: 0, stdout: JSON.stringify({ state: 4 }) };
+        }
+        return {
+          status: 0,
+          stdout: JSON.stringify([
+            {
+              ProcessId: 4300,
+              ParentProcessId: 800,
+              CreationDate: "638940000000000021",
+              Name: "node.exe",
+              CommandLine: programArguments.join(" "),
+            },
+          ]),
+        };
+      });
+      await withRestoredMocks([access, listener, command, clock, platform], async () => {
+        const runtime = await readScheduledTaskRuntime(
+          { USERPROFILE: "C:\\Users\\test", SystemRoot: "C:\\Windows" },
+          { timeoutMs: 1000.75 },
+        );
+        const expected = [...test.expected];
+        // Startup's preexisting runtime owner still performs its independent native lookup.
+        if (test.kind === "startup") {
+          expected.splice(test.probeMs < 1000 ? 2 : 1, 0, 5000);
+        }
+        expect(spawnSync.mock.calls.map((call) => call[2]?.timeout)).toEqual(expected);
+        expect(runtime).toMatchObject({ status: "running", pid: 4300 });
+        expect(runtime.windowsProcesses?.map((process) => process.pid)).toEqual(
+          test.captured ? [4300] : undefined,
+        );
+      });
+    },
+  );
 });
 
 describe("resolveTaskScriptPath", () => {

@@ -27,6 +27,7 @@ let assignments: string[];
 let unset: string[];
 let managerChanges: boolean;
 let ownerReads: number;
+let executionPid: number;
 
 const success = (stdout: string): ExecResult => ({
   code: 0,
@@ -52,6 +53,7 @@ beforeEach(async () => {
   unset = [];
   managerChanges = false;
   ownerReads = 0;
+  executionPid = 0;
   vi.spyOn(os, "userInfo").mockReturnValue({
     username: "gateway",
     uid: 2001,
@@ -80,7 +82,18 @@ beforeEach(async () => {
       NeedDaemonReload: property("b", false),
       LoadState: property("s", "loaded"),
       ExecStart: property("a(sasbttttuii)", [
-        ["/usr/bin/openclaw", ["/usr/bin/openclaw", "gateway"], false, 0, 0, 0, 0, 0, 0, 0],
+        [
+          "/usr/bin/openclaw",
+          ["/usr/bin/openclaw", "gateway"],
+          false,
+          0,
+          0,
+          0,
+          0,
+          executionPid,
+          0,
+          0,
+        ],
       ]),
       WorkingDirectory: property("s", "/home/gateway"),
       Environment: property("as", assignments),
@@ -104,6 +117,24 @@ beforeEach(async () => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("system-scope effective command", () => {
+  it.each([45001, 0, 45002])(
+    "binds a running-command read to ExecStart execution PID %i without changing configured reads",
+    async (pid) => {
+      executionPid = pid;
+      const configured = await readSystemdServiceExecStart(env, { requireLoaded: true });
+      expect(configured?.programArguments).toEqual(["/usr/bin/openclaw", "gateway"]);
+      const options = { requireLoaded: true, requireEffective: true, expectedRunningPid: 45001 };
+      const running = readSystemdServiceExecStart(env, options);
+      if (pid === options.expectedRunningPid) {
+        await expect(running).resolves.toEqual(configured);
+      } else {
+        await expect(running).rejects.toThrow(
+          "Effective systemd service command could not be inspected",
+        );
+      }
+    },
+  );
+
   it.each([false, true])(
     "reads the selected system unit with discovered target=%s",
     async (discover) => {

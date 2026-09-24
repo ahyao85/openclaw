@@ -238,11 +238,18 @@ export async function decodeLaunchdPlistMetadata(
   timeoutMs?: number,
 ): Promise<Record<string, unknown> | undefined> {
   const deadline = performance.now() + Math.min(timeoutMs ?? 5_000, 5_000);
-  const xml = await normalizeLaunchdPlistXml(contents, deadline - performance.now());
+  const remaining = () => {
+    const budget = deadline - performance.now();
+    if (budget <= 0) {
+      throw new Error("LaunchAgent plist inspection timed out.");
+    }
+    return budget;
+  };
+  const xml = await normalizeLaunchdPlistXml(contents, remaining());
   // Native XML escapes literal tag text; placeholders remain invalid command fields.
   const { stdout } = await runExec("/usr/bin/plutil", ["-convert", "json", "-o", "-", "--", "-"], {
     input: xml.replace(/<(data|date)>[\s\S]*?<\/\1>/g, "<integer>0</integer>"),
-    timeoutMs: Math.max(1, deadline - performance.now()),
+    timeoutMs: remaining(),
     maxBuffer: 1024 * 1024,
     logOutput: false,
   });

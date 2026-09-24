@@ -9,7 +9,7 @@ import {
   formatLaunchctlResultDetail,
   isLaunchctlNotLoaded,
 } from "./launchd-exec.js";
-import { resolveLaunchAgentLabel } from "./launchd-label.js";
+import { assertValidLaunchAgentLabel, resolveLaunchAgentLabel } from "./launchd-label.js";
 import { resolveLaunchAgentGuiDomain } from "./launchd-runtime.js";
 
 type GatewayAction = "restart" | "start" | "stop";
@@ -218,6 +218,129 @@ async function readOwnedText(filePath: string): Promise<string | undefined> {
   }
 }
 
+function readJobArguments(output: string): string[] {
+  return (output.match(/^\targuments = \{\n([\s\S]*?)^\t\}/m)?.[1] ?? "")
+    .split("\n")
+    .filter((line) => line.startsWith("\t\t"))
+    .map((line) => line.slice(2));
+}
+
+function managedJobKind(
+  output: string,
+  label: string,
+  args: string[],
+): "gateway" | "node" | "wrapper" | undefined {
+  const environment = output.match(/^\tenvironment = \{\n([\s\S]*?)^\t\}/m)?.[1] ?? "";
+  if (/^\t\tOPENCLAW_SERVICE_MARKER => openclaw$/m.test(environment)) {
+    const kind = environment.match(/^\t\tOPENCLAW_SERVICE_KIND => (gateway|node)$/m)?.[1];
+    if (kind === "gateway" || kind === "node") {
+      return kind;
+    }
+  }
+  return args.some((arg) => arg.endsWith(`/service-env/${label}-env-wrapper.sh`))
+    ? "wrapper"
+    : undefined;
+}
+
+/** Maintained LABEL adapter for known/generated jobs in the current GUI and system domains.
+ * Native text is discovery evidence, not effective command authority; unmarked jobs are outside this claim. */
+export async function findLoadedManagedLaunchdJobs(params: {
+  domain: string;
+  knownLabels: readonly string[];
+  includeNode?: boolean;
+  deadline?: number;
+}): Promise<string[]> {
+  const { domain } = params;
+  if (domain !== "system" && domain !== resolveLaunchAgentGuiDomain()) {
+    throw new Error(`Unsupported launchd discovery domain: ${domain}`);
+  }
+  const unavailable = (target: string) =>
+    new Error(`Loaded launchd discovery could not inspect ${target}.`);
+  const deadline = params.deadline ?? performance.now() + MAX_JOBS * INSPECTION_TIMEOUT_MS;
+  const remaining = () => {
+    const budget = deadline - performance.now();
+    if (budget <= 0) {
+      throw unavailable(domain);
+    }
+    return budget;
+  };
+  const result = await execLaunchctl(["print", domain], remaining());
+  const output = result.stdout;
+  const tables = [...output.matchAll(/^\tservices = \{\n([\s\S]*?)^\t\}/gm)];
+  if (
+    result.termination !== "exit" ||
+    result.code !== 0 ||
+    !output.startsWith(`${domain} = {\n`) ||
+    !output.trimEnd().endsWith("\n}") ||
+    tables.length !== 1
+  ) {
+    throw unavailable(domain);
+  }
+  const labels = (tables[0]![1] ?? "")
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => {
+      const label = line.match(/^\s+(?:-|\d+)\s+\S+\s+(\S+)\s*$/)?.[1];
+      if (!label) {
+        throw unavailable(domain);
+      }
+      try {
+        return assertValidLaunchAgentLabel(label);
+      } catch {
+        throw unavailable(domain);
+      }
+    });
+  if (new Set(labels).size !== labels.length) {
+    throw unavailable(domain);
+  }
+  const known = new Set(params.knownLabels);
+  const jobs: string[] = [];
+  for (const label of labels) {
+    if (performance.now() >= deadline) {
+      throw unavailable(domain);
+    }
+    const target = `${domain}/${label}`;
+    const metadata = await execLaunchctl(["print", target], remaining());
+    if (metadata.code !== 0 && isLaunchctlNotLoaded(metadata)) {
+      continue;
+    }
+    const job = metadata.stdout;
+    const kind = managedJobKind(job, label, readJobArguments(job));
+    if (!known.has(label) && (!kind || (kind === "node" && !params.includeNode))) {
+      continue;
+    }
+    if (
+      metadata.termination !== "exit" ||
+      metadata.code !== 0 ||
+      !job.startsWith(`${target} = {\n`) ||
+      !job.trimEnd().endsWith("\n}") ||
+      !/^\tstate = .+$/m.test(job)
+    ) {
+      throw unavailable(target);
+    }
+    // Optional discovery blocks must retain their native line shape; never guess absent markers from malformed output.
+    for (const block of ["arguments", "environment"]) {
+      const starts = job.match(new RegExp(`^\\t${block} =`, "gm")) ?? [];
+      const body = job.match(new RegExp(`^\\t${block} = \\{\\n([\\s\\S]*?)^\\t\\}`, "m"))?.[1];
+      if (
+        starts.length > 1 ||
+        (starts.length === 1 && body === undefined) ||
+        body
+          ?.split("\n")
+          .some(
+            (line) =>
+              line.trim() &&
+              (block === "arguments" ? !line.startsWith("\t\t") : !/^\t\t.+? =>(?: |$)/.test(line)),
+          )
+      ) {
+        throw unavailable(target);
+      }
+    }
+    jobs.push(label);
+  }
+  return jobs;
+}
+
 async function inspectJob(
   label: string,
   env: NodeJS.ProcessEnv,
@@ -241,11 +364,7 @@ async function inspectJob(
   const program = field("program") ?? "unknown";
   const rawPath = field("path");
   const plistPath = rawPath?.startsWith("/") ? rawPath : undefined;
-  const args = (output.match(/^\targuments = \{\n([\s\S]*?)^\t\}/m)?.[1] ?? "")
-    .split("\n")
-    .filter((line) => line.startsWith("\t\t"))
-    .map((line) => line.slice(2));
-  const environment = output.match(/^\tenvironment = \{\n([\s\S]*?)^\t\}/m)?.[1] ?? "";
+  const args = readJobArguments(output);
   // launchd also injects the `inherited environment` and `default environment`
   // blocks into the process; a shell reads BASH_ENV/SHELLOPTS from any of them.
   const environmentBlocks = [
@@ -254,13 +373,8 @@ async function inspectJob(
     .map((match) => match[1] ?? "")
     .join("\n");
   const plist = plistPath ? await readOwnedText(plistPath) : undefined;
-  const hasServiceMarker =
-    /^\t\tOPENCLAW_SERVICE_MARKER => openclaw$/m.test(environment) &&
-    /^\t\tOPENCLAW_SERVICE_KIND => (gateway|node)$/m.test(environment);
-  const generatedWrapper = args.some((arg) => arg.endsWith(`/service-env/${label}-env-wrapper.sh`));
   if (
-    hasServiceMarker ||
-    generatedWrapper ||
+    managedJobKind(output, label, args) ||
     /<key>Comment<\/key>\s*<string>OpenClaw (Gateway|Node)\b/.test(plist ?? "")
   ) {
     return null;

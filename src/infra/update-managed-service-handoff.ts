@@ -49,6 +49,7 @@ import {
 } from "./update-managed-service-handoff-command.js";
 import {
   HANDOFF_OWNED_COMMAND_SCRIPT,
+  exchangeForegroundUpdateHandoffControl,
   HANDOFF_NOTICE_MARKER,
   HANDOFF_PARK_ADMITTED_MARKER,
   unrefHandoffPipe,
@@ -2106,7 +2107,7 @@ async function exchangeForegroundUpdateHandoff(
     env?: NodeJS.ProcessEnv;
   },
   operation: "foreground-inspect" | "foreground-park",
-): Promise<boolean> {
+): Promise<number | false> {
   const env = params.env ?? process.env;
   const meta = await readControlPlaneUpdateSentinelMeta(env);
   if (
@@ -2120,49 +2121,14 @@ async function exchangeForegroundUpdateHandoff(
     return false;
   }
   const lease = readManagedServiceUpdateHandoffLease(resolveUpdateInstallRoot(params.root));
-  const requestId = randomUUID();
-  const accepted = await new Promise<boolean>((resolve) => {
-    const finish = (ok: boolean) => {
-      clearTimeout(timer);
-      process.off("message", onMessage).off("disconnect", onDisconnect);
-      resolve(ok);
-    };
-    const onDisconnect = () => finish(false);
-    const onMessage = (message: unknown) => {
-      if (
-        typeof message !== "object" ||
-        message === null ||
-        !("requestId" in message) ||
-        message.requestId !== requestId
-      ) {
-        return;
-      }
-      finish(
-        "type" in message &&
-          message.type === operation &&
-          "version" in message &&
-          message.version === 2 &&
-          "ok" in message &&
-          message.ok === true,
-      );
-    };
-    const timer = setTimeout(
-      () => finish(false),
-      operation === "foreground-park" ? 30 * 60_000 : 30_000,
-    );
-    process.on("message", onMessage).once("disconnect", onDisconnect);
-    process.send!({ type: operation, version: 2, requestId }, (error: Error | null) => {
-      if (error) {
-        finish(false);
-      }
-    });
-  });
+  const accepted = await exchangeForegroundUpdateHandoffControl(operation);
   const current = readManagedServiceUpdateHandoffLease(resolveUpdateInstallRoot(params.root));
   return (
-    accepted &&
+    accepted !== false &&
     current?.payload === lease?.payload &&
     hasForegroundUpdatePaths(meta.foregroundOrigin, env) &&
-    (await isCurrentManagedServiceUpdateHandoffProcess(params))
+    (await isCurrentManagedServiceUpdateHandoffProcess(params)) &&
+    accepted
   );
 }
 
@@ -2171,22 +2137,22 @@ export async function isCurrentForegroundUpdateHandoffProcess(params: {
   runId: string | undefined;
   env?: NodeJS.ProcessEnv;
 }): Promise<boolean> {
-  return exchangeForegroundUpdateHandoff(params, "foreground-inspect");
+  return Boolean(await exchangeForegroundUpdateHandoff(params, "foreground-inspect"));
 }
 
 export async function parkForegroundUpdateHandoff(params: {
   root: string;
   run: { runId: string; env: NodeJS.ProcessEnv; gatewayRestartRequired?: true };
-}): Promise<void> {
-  if (
-    !(await exchangeForegroundUpdateHandoff(
-      { root: params.root, runId: params.run.runId, env: params.run.env },
-      "foreground-park",
-    ))
-  ) {
+}): Promise<number> {
+  const pid = await exchangeForegroundUpdateHandoff(
+    { root: params.root, runId: params.run.runId, env: params.run.env },
+    "foreground-park",
+  );
+  if (pid === false) {
     throw new Error("Foreground update helper could not verify Gateway closure");
   }
   params.run.gatewayRestartRequired = true;
+  return pid;
 }
 
 export function isForegroundUpdateHandoff(

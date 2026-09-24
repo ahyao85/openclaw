@@ -29,6 +29,11 @@ describe("mutable update execution", () => {
     "preserves a serving Git runtime when activation did not stop it: %s",
     async (destination) => {
       await withTestDir({ prefix: "git-live-runtime-custody-" }, async (dir) => {
+        const control = path.join(dir, "leases");
+        await fs.mkdir(control);
+        vi.spyOn(tempRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
+        const env = { OPENCLAW_STATE_DIR: dir };
+        const runId = createUpdateRun({ trigger: "cli" }, { env }).runId;
         const servingRoot = path.join(dir, "serving");
         const targetRoot = destination === "same" ? servingRoot : path.join(dir, "target");
         await fs.mkdir(path.join(servingRoot, "dist"), { recursive: true });
@@ -68,16 +73,21 @@ describe("mutable update execution", () => {
             return { ...successfulUpdate, mode: "git" };
           },
         );
-        const execution = await executeMutableUpdate({
-          ...executionParams("git"),
-          root: targetRoot,
-          shouldRestart: false,
-          opts: { json: true, restart: false },
+        const execution = await withUpdateCommandExecutor(runId, async (executor) => {
+          mocks.prepareMutableUpdate.mockImplementation(async (_env, _timeout, admitExecutor) => {
+            admitExecutor(await executor.enter(targetRoot));
+          });
+          return executeMutableUpdate({
+            ...executionParams("git"),
+            root: targetRoot,
+            shouldRestart: false,
+            opts: { json: true, restart: false, run: { runId, env } },
+          });
         });
         expect(await fs.readFile(artifact, "utf8")).toBe("retained serving runtime");
         expect(mocks.serviceStopped).toBe(false);
         if (destination === "disjoint") {
-          expect(execution?.result.status).toBe("ok");
+          expect(execution?.result.status, JSON.stringify(execution?.result)).toBe("ok");
           expect(
             await fs.readFile(path.join(targetRoot, "dist", "prepare.runtime.js"), "utf8"),
           ).toBe("candidate runtime");
@@ -272,11 +282,12 @@ describe("mutable update execution", () => {
           events.push("rehearsal");
           return { status: "ok", phase: "readiness", steps: [], durationMs: 1, logTail: [] };
         });
-        mocks.runPackageUpdate.mockImplementation(async ({ validateCandidate }) => {
+        mocks.runPackageUpdate.mockImplementation(async (update) => {
           events.push("staged");
+          expect(update.managedServiceEnv).toEqual({ OPENCLAW_PROFILE: "default" });
           expect(mocks.prepareMutableUpdate).not.toHaveBeenCalled();
           try {
-            await validateCandidate(stage);
+            await update.validateCandidate(stage);
             return successfulUpdate;
           } catch (error) {
             if (!(error instanceof UpdatePreMutationError)) {

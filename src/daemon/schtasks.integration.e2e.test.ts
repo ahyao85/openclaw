@@ -16,7 +16,7 @@ import { withEnvAsync } from "../test-utils/env.js";
 import { resolveGatewayWindowsTaskName } from "./constants.js";
 import { execSchtasks } from "./schtasks-exec.js";
 import { resolveStartupEntryPaths, resolveTaskLauncherScriptPath } from "./schtasks-layout.js";
-import { readWindowsProcessSnapshot } from "./schtasks-process.js";
+import { readWindowsProcessSnapshot } from "./schtasks-process-inspection.js";
 import { probeScheduledTaskExists } from "./schtasks-state-probe.js";
 import {
   assertInteractiveLeastPrivilegeTask,

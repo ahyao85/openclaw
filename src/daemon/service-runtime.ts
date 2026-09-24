@@ -2,6 +2,7 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { sanitizeForLog } from "../../packages/terminal-core/src/ansi.js";
+import type { WindowsServiceProcess } from "./schtasks-process-inspection.js";
 import {
   findServiceOwnershipRefusal,
   ServiceInspectionError,
@@ -35,6 +36,7 @@ export type GatewayServiceRuntime = {
   state?: string;
   subState?: string;
   pid?: number;
+  windowsProcesses?: WindowsServiceProcess[];
   lastExitStatus?: number;
   lastExitReason?: string;
   lastRunResult?: string;
@@ -66,7 +68,9 @@ const SERVICE_RUNTIME_INSPECTION_FAILED_DETAIL = "service runtime inspection fai
 export function createServiceRuntimeInspectionFailure(
   error: unknown,
   timeoutMs?: number,
-): GatewayServiceRuntime {
+): GatewayServiceRuntime & {
+  inspectionFailure: NonNullable<GatewayServiceRuntime["inspectionFailure"]>;
+} {
   const refusal = findServiceOwnershipRefusal(error);
   if (refusal) {
     throw refusal;

@@ -14,12 +14,65 @@ import type {
 import { execSystemctl, isSystemdUnitActive } from "./systemd-exec.js";
 import { resolveSystemdServiceName, resolveSystemdUnitPath } from "./systemd-service-files.js";
 import { assertNoSystemSystemdOwnership, isSystemSystemdOwnershipError } from "./systemd-system.js";
+import { resolveSystemdUserServiceAccount } from "./systemd-user-transport.js";
 
 const SYSTEM_SYSTEMD_UNIT_DIRS = [
   "/etc/systemd/system",
   "/usr/lib/systemd/system",
   "/lib/systemd/system",
 ] as const;
+
+/** Runtime absence is scoped: a system manager does not imply a user manager exists. */
+export async function isSystemdManagerAbsent(
+  env: GatewayServiceEnv,
+  scope: "user" | "system",
+): Promise<boolean> {
+  if (scope === "system") {
+    if (env.DBUS_SYSTEM_BUS_ADDRESS) {
+      return false;
+    }
+    try {
+      await fs.lstat("/run/systemd");
+      return false;
+    } catch (error) {
+      return hasErrnoCode(error, "ENOENT");
+    }
+  }
+  if (
+    env.DBUS_SESSION_BUS_ADDRESS ||
+    env.SUDO_USER ||
+    isGatewayServiceEnv(env) ||
+    typeof process.geteuid !== "function"
+  ) {
+    return false;
+  }
+  try {
+    if (resolveSystemdUserServiceAccount(env) !== os.userInfo().username) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+  const roots = new Set(
+    [`/run/user/${process.geteuid()}`, env.XDG_RUNTIME_DIR].filter((value): value is string =>
+      Boolean(value),
+    ),
+  );
+  if (![...roots].every((root) => path.posix.isAbsolute(root))) {
+    return false;
+  }
+  for (const root of roots) {
+    try {
+      await fs.lstat(path.posix.join(root, "systemd"));
+      return false;
+    } catch (error) {
+      if (!hasErrnoCode(error, "ENOENT")) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
 
 /** Proves service absence without interpreting failed manager commands as absence. */
 export async function isSystemdServiceAbsent(
@@ -47,11 +100,12 @@ export async function isSystemdServiceAbsent(
     return false;
   }
   const home = resolveDaemonHomeDir(env);
-  const runtimeDirs = new Set(
-    [`/run/user/${process.geteuid()}`, env.XDG_RUNTIME_DIR].filter((value): value is string =>
-      Boolean(value),
-    ),
-  );
+  if (
+    !(await isSystemdManagerAbsent(env, "user")) ||
+    !(await isSystemdManagerAbsent(env, "system"))
+  ) {
+    return false;
+  }
   const configHome = env.XDG_CONFIG_HOME || path.posix.join(home, ".config");
   const dataHome = env.XDG_DATA_HOME || path.posix.join(home, ".local/share");
   const userRoots = [
@@ -66,14 +120,11 @@ export async function isSystemdServiceAbsent(
     "/lib",
   ];
   const unitName = `${resolveSystemdServiceName(env)}.service`;
-  if (![...runtimeDirs, ...userRoots].every((dir) => path.posix.isAbsolute(dir))) {
+  if (!userRoots.every((dir) => path.posix.isAbsolute(dir))) {
     return false;
   }
-  // sd_booted() uses /run/systemd/system; user managers own runtime/systemd/private.
-  // Require the complete runtime directory absent so transient/generated units cannot hide.
+  // Runtime absence alone does not prove the selected persistent definition is absent.
   const absentPaths = [
-    "/run/systemd",
-    ...[...runtimeDirs].map((dir) => path.posix.join(dir, "systemd")),
     ...userRoots.flatMap((dir) =>
       ["user", "user.control", "user.attached"].map((scope) =>
         path.posix.join(dir, "systemd", scope, unitName),

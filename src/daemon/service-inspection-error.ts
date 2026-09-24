@@ -1,4 +1,6 @@
 import { collectNestedErrorCandidates } from "../infra/error-graph-internal.js";
+import { hasCommandProcessCleanupError } from "../process/exec-result.js";
+import { GatewayServiceAuthorityError } from "./service-update-authority.js";
 
 /** Native probe facts are diagnostic only; they never grant lifecycle authority. */
 const SERVICE_INSPECTION_MESSAGES = {
@@ -44,6 +46,8 @@ export class ServiceInspectionError extends Error {
 }
 
 const SERVICE_OWNERSHIP_REFUSALS = {
+  "windows-service-changed":
+    "The Windows service registration or process identity changed during inspection; inspect its current owner before retrying.",
   "systemd-account-refused":
     "System systemd Gateway runs as another account; run Doctor as the service's User= account.",
   "systemd-manager-changed":
@@ -81,6 +85,14 @@ export function findServiceOwnershipRefusal(
     }
   }
   return undefined;
+}
+
+export function isServiceInspectionControlFailure(error: unknown): boolean {
+  return (
+    error instanceof GatewayServiceAuthorityError ||
+    hasCommandProcessCleanupError(error) ||
+    findServiceOwnershipRefusal(error) !== undefined
+  );
 }
 
 export class ServiceDefinitionInspectionError extends Error {

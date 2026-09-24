@@ -17,11 +17,12 @@ import {
   withRestoredMocks,
 } from "../test-utils/vitest-spies.js";
 import { PACKAGE_DIST_INVENTORY_RELATIVE_PATH } from "./package-dist-inventory.js";
+import { cleanupGlobalRenameDirs } from "./package-update-filesystem.js";
+import { createNpmTarget } from "./package-update-steps.test-support.js";
 import type { CommandRunner } from "./update-global-command-runner.js";
 import {
   canResolveRegistryVersionForPackageTarget,
   collectInstalledGlobalPackageErrors,
-  cleanupGlobalRenameDirs,
   detectGlobalInstallManagerByPresence,
   detectGlobalInstallManagerForRoot,
   createGlobalInstallEnv,
@@ -851,7 +852,7 @@ describe("update global helpers", () => {
 
       await expect(
         cleanupGlobalRenameDirs({
-          globalRoot: root,
+          installTarget: createNpmTarget(root),
           packageName: "openclaw",
         }),
       ).resolves.toEqual({

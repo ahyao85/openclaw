@@ -98,6 +98,9 @@ describe.runIf(process.platform !== "win32")("native package transactions", () =
         const metadata = path.join(project, "manager-metadata");
         const sibling = path.join(project, "sibling-package");
         await writePackageRoot(packageRoot, "1.0.0");
+        const renameWitness = path.join(path.dirname(packageRoot), ".openclaw-retained", "witness");
+        await fs.mkdir(path.dirname(renameWitness));
+        await fs.writeFile(renameWitness, "retained rename contents\n");
         const existingSibling = path.join(path.dirname(packageRoot), "existing-sibling");
         await fs.mkdir(existingSibling, { recursive: true });
         await fs.writeFile(
@@ -125,6 +128,7 @@ describe.runIf(process.platform !== "win32")("native package transactions", () =
         };
         let retained: PackageUpdateTransaction | undefined;
         let stagedLauncher: string;
+        let stagedRenameWitness: string;
         const preparationStarted = createDeferred();
         const finishPreparation = createDeferred();
         const phases: string[] = [];
@@ -193,6 +197,10 @@ describe.runIf(process.platform !== "win32")("native package transactions", () =
             expect(cwd).toBe(stageProject);
             expect(stageProject).not.toBe(project);
             expect(stageBin).not.toBe(binDir);
+            stagedRenameWitness = path.join(stageProject, path.relative(project, renameWitness));
+            await expect(fs.readFile(stagedRenameWitness, "utf8")).resolves.toBe(
+              "retained rename contents\n",
+            );
             await expect(
               fs.readFile(path.join(stageProject, "sibling-package"), "utf8"),
             ).resolves.toBe("unrelated package\n");
@@ -247,10 +255,21 @@ describe.runIf(process.platform !== "win32")("native package transactions", () =
               fs.readFile(path.join(packageRoot, "package.json"), "utf8"),
             ).resolves.toContain('"version":"1.0.0"');
             await expect(fs.readFile(metadata, "utf8")).resolves.toBe("original metadata\n");
+            await expect(fs.readFile(renameWitness, "utf8")).resolves.toBe(
+              "retained rename contents\n",
+            );
+            if (!shimFailure) {
+              await expect(fs.readFile(stagedRenameWitness, "utf8")).resolves.toBe(
+                "retained rename contents\n",
+              );
+            }
             return [];
           },
           beforeActivate: async () => {
             phases.push("stop");
+            await expect(fs.readFile(renameWitness, "utf8")).resolves.toBe(
+              "retained rename contents\n",
+            );
             preparationStarted.resolve();
             if (siblingChange === "before") {
               await finishPreparation.promise;
@@ -363,6 +382,9 @@ describe.runIf(process.platform !== "win32")("native package transactions", () =
             '"version":"1.0.0"',
           );
           expect(await fs.readFile(launcher, "utf8")).toBe("old launcher\n");
+          await expect(fs.readFile(renameWitness, "utf8")).resolves.toBe(
+            "retained rename contents\n",
+          );
           return;
         }
         if (siblingChange === "before") {
@@ -384,6 +406,9 @@ describe.runIf(process.platform !== "win32")("native package transactions", () =
             "stop",
           ]);
           await expect(fs.readFile(launcher, "utf8")).resolves.toBe("old launcher\n");
+          await expect(fs.readFile(renameWitness, "utf8")).resolves.toBe(
+            "retained rename contents\n",
+          );
           expect(
             (await fs.readdir(path.dirname(project))).filter((entry) => entry.startsWith(".")),
           ).toEqual([]);
@@ -396,6 +421,9 @@ describe.runIf(process.platform !== "win32")("native package transactions", () =
           "stop",
         ]);
         expect(result.afterVersion).toBe("2.0.0");
+        await expect(fs.readFile(renameWitness, "utf8")).resolves.toBe(
+          "retained rename contents\n",
+        );
         await expect(fs.readFile(metadata, "utf8")).resolves.toBe("candidate metadata\n");
         await expect(fs.readFile(sibling, "utf8")).resolves.toBe("unrelated package\n");
         await expect(fs.realpath(launcher)).resolves.toBe(
@@ -573,6 +601,9 @@ describe.runIf(process.platform !== "win32")("native package transactions", () =
         await expect(fs.readFile(metadata, "utf8")).resolves.toBe("original metadata\n");
         await expect(fs.readFile(sibling, "utf8")).resolves.toBe("unrelated package\n");
         await expect(fs.readFile(launcher, "utf8")).resolves.toBe("old launcher\n");
+        await expect(fs.readFile(renameWitness, "utf8")).resolves.toBe(
+          "retained rename contents\n",
+        );
         expect(
           (await fs.readdir(path.dirname(project))).filter((entry) => entry.startsWith(".")),
         ).toEqual([]);

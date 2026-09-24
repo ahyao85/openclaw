@@ -1,6 +1,4 @@
 // Physical runtime publication remains part of the managed-service maintenance boundary.
-import type { Stats } from "node:fs";
-import fs from "node:fs/promises";
 import path from "node:path";
 import { stableStringify } from "@openclaw/normalization-core/stable-stringify";
 import { resolveGatewayProfileSuffix } from "../../daemon/constants.js";
@@ -12,16 +10,26 @@ import {
 } from "../../daemon/schtasks-runtime.js";
 import { summarizeGatewayServiceLayout } from "../../daemon/service-layout.js";
 import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
+import {
+  DEFAULT_SERVICE_PUBLICATION_OUTPUT_PATHS,
+  inspectServicePublicationFootprint,
+  inspectServicePublicationPath,
+  servicePublicationFootprintsOverlap,
+  servicePublicationPathChanged,
+  type ServicePublicationPath,
+} from "../../daemon/service-publication-footprint.js";
 import type { GatewayServiceState } from "../../daemon/service-types.js";
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { resolveSystemdServiceName } from "../../daemon/systemd-service-files.js";
 import { readActiveGatewayLockIdentity } from "../../infra/gateway-lock.js";
-import { hasNodeErrorCode, isPathInside } from "../../infra/path-guards.js";
+import { isPathInside } from "../../infra/path-guards.js";
 import { probePortUsage } from "../../infra/ports-probe.js";
 import { acquireGatewayLifecycleCoordinator } from "../../infra/state-database-coordinator.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { formatCliCommand } from "../command-format.js";
 import { UpdatePreMutationError } from "./shared.js";
+import { createGatewayMaintenanceWarningReporter } from "./update-command-result.js";
+import { prepareUpdateServiceConsumers } from "./update-command-service-consumers.js";
 import {
   observedSystemdManagerUid,
   resolveUpdatedGatewayRestartPort,
@@ -61,6 +69,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
       assertCaller();
       assertNative();
     };
+    const warn = createGatewayMaintenanceWarningReporter({ assertCurrent });
     const refuse = (cause?: unknown): never => {
       throw new UpdatePreMutationError(
         "runtime-artifact-publication",
@@ -69,46 +78,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
       );
     };
     const service = resolveGatewayService();
-    type PathIdentity = { real: string; stat?: Stats };
-    const identity = async (file: string) => {
-      const real = await fs.realpath(file);
-      assertCurrent();
-      const stat = await fs.stat(file);
-      assertCurrent();
-      return { real, stat };
-    };
-    const outputIdentity = async (file: string): Promise<PathIdentity> => {
-      try {
-        return await identity(file);
-      } catch (error) {
-        assertCurrent();
-        if (!hasNodeErrorCode(error, "ENOENT")) {
-          throw error;
-        }
-        // Missing descendants retain their existing ancestor's physical namespace;
-        // a dangling symlink cannot attest a disjoint publication destination.
-        const present = await fs.lstat(file).catch((statError: unknown) => {
-          if (!hasNodeErrorCode(statError, "ENOENT")) {
-            throw statError;
-          }
-          return undefined;
-        });
-        assertCurrent();
-        if (present) {
-          throw error;
-        }
-        const parent = await outputIdentity(path.dirname(file));
-        assertCurrent();
-        return { real: path.join(parent.real, path.basename(file)) };
-      }
-    };
-    const same = (a: PathIdentity, b: PathIdentity) =>
-      a.real === b.real ||
-      Boolean(a.stat && b.stat && a.stat.dev === b.stat.dev && a.stat.ino === b.stat.ino);
-    const outputPaths = params.outputPaths ?? [
-      "dist-runtime",
-      path.join("dist", "extensions", "node_modules", "openclaw"),
-    ];
+    const outputPaths = [...(params.outputPaths ?? DEFAULT_SERVICE_PUBLICATION_OUTPUT_PATHS)];
     const parentPaths = new Set([""]);
     for (const output of outputPaths) {
       for (let parent = path.dirname(output); parent !== "."; parent = path.dirname(parent)) {
@@ -119,22 +89,26 @@ export async function withGatewayRuntimeArtifactPublication<T>(
     }
     const readInspection = async () => {
       assertCurrent();
+      const target = await inspectServicePublicationFootprint(
+        params.root,
+        assertCurrent,
+        false,
+        outputPaths,
+      );
       // Parents are stable across publication; output roots themselves are renamed.
       // Record missing descendants too, so creating them cannot redirect a later effect.
       const parents = await Promise.all(
-        [...parentPaths].map((relative) =>
-          relative ? outputIdentity(path.join(params.root, relative)) : identity(params.root),
+        [...parentPaths].map(async (relative) =>
+          relative
+            ? inspectServicePublicationPath(path.join(params.root, relative), assertCurrent, true)
+            : target.root,
         ),
       );
       assertCurrent();
       if (parents.some((parent) => parent.stat && !parent.stat.isDirectory())) {
         refuse();
       }
-      const target = parents[0]!;
-      const destinations = await Promise.all(
-        outputPaths.map((output) => outputIdentity(path.join(params.root, output))),
-      );
-      assertCurrent();
+      const destinations = target.outputs;
       const state = await readGatewayServiceState(service, {
         env: params.env,
         requireEffective: true,
@@ -144,7 +118,11 @@ export async function withGatewayRuntimeArtifactPublication<T>(
       assertCurrent();
       const layout = await summarizeGatewayServiceLayout(state.command);
       assertCurrent();
-      const database = await outputIdentity(resolveOpenClawStateSqlitePath(state.env));
+      const database = await inspectServicePublicationPath(
+        resolveOpenClawStateSqlitePath(state.env),
+        assertCurrent,
+        true,
+      );
       assertCurrent();
       const serviceName =
         process.platform === "darwin"
@@ -158,32 +136,24 @@ export async function withGatewayRuntimeArtifactPublication<T>(
         profile: resolveGatewayProfileSuffix(state.env.OPENCLAW_PROFILE),
         managerUid: observedSystemdManagerUid(state),
       });
-      let serving: { root: PathIdentity; entrypoint: PathIdentity } | undefined;
+      let serving: { root: ServicePublicationPath; entrypoint: ServicePublicationPath } | undefined;
       let disjoint = false;
       if (layout?.packageRootReal && layout.entrypointReal) {
         const [installed, entrypoint] = await Promise.all([
-          identity(layout.packageRootReal),
-          outputIdentity(layout.entrypointReal),
+          inspectServicePublicationFootprint(
+            layout.packageRootReal,
+            assertCurrent,
+            false,
+            outputPaths,
+          ),
+          inspectServicePublicationPath(layout.entrypointReal, assertCurrent, true),
         ]);
         assertCurrent();
-        serving = { root: installed, entrypoint };
-        const servingOutputs = await Promise.all(
-          outputPaths.map((output) => outputIdentity(path.join(installed.real, output))),
-        );
-        assertCurrent();
-        disjoint =
-          !same(target, installed) &&
-          !destinations.some(
-            (destination) =>
-              same(destination, installed) ||
-              isPathInside(destination.real, entrypoint.real) ||
-              servingOutputs.some(
-                (output) =>
-                  same(destination, output) ||
-                  isPathInside(destination.real, output.real) ||
-                  isPathInside(output.real, destination.real),
-              ),
-          );
+        serving = { root: installed.root, entrypoint };
+        disjoint = !servicePublicationFootprintsOverlap(target, installed, {
+          mode: "runtime-artifacts",
+          entrypoint,
+        });
       } else if (
         state.command ||
         state.installed ||
@@ -246,33 +216,46 @@ export async function withGatewayRuntimeArtifactPublication<T>(
     if (before.serving && !before.serving.entrypoint.stat) {
       refuse();
     }
+    const consumers = await prepareUpdateServiceConsumers({
+      roots: [params.root],
+      mode: "runtime-artifacts",
+      outputPaths,
+      env: params.env,
+      selectedState: before.disjoint ? undefined : before.state,
+      assertCurrent,
+      timeoutMs: params.timeoutMs,
+      warn,
+    });
+    assertCurrent();
     const assertPublicationCurrent = async () => {
+      await consumers.revalidate({
+        selectedState: before.disjoint ? undefined : before.state,
+        warn,
+      });
+      assertCurrent();
       const current = await inspect();
       assertCurrent();
-      const changedIdentity = (previous: PathIdentity, next: PathIdentity) =>
-        previous.real !== next.real ||
-        Boolean(
-          previous.stat &&
-          (!next.stat ||
-            previous.stat.dev !== next.stat.dev ||
-            previous.stat.ino !== next.stat.ino),
-        );
       if (
         before.disjoint !== current.disjoint ||
         before.database.real !== current.database.real ||
         before.nativeIdentity !== current.nativeIdentity ||
-        before.parents.some((parent, index) => changedIdentity(parent, current.parents[index]!)) ||
+        before.parents.some((parent, index) =>
+          servicePublicationPathChanged(parent, current.parents[index]!),
+        ) ||
         before.destinations.some(
           (destination, index) => destination.real !== current.destinations[index]!.real,
         ) ||
         (before.serving &&
           (!current.serving ||
-            changedIdentity(before.serving.root, current.serving.root) ||
+            servicePublicationPathChanged(before.serving.root, current.serving.root) ||
             before.serving.entrypoint.real !== current.serving.entrypoint.real ||
             (!before.destinations.some((destination) =>
               isPathInside(destination.real, current.serving!.entrypoint.real),
             ) &&
-              changedIdentity(before.serving.entrypoint, current.serving.entrypoint))))
+              servicePublicationPathChanged(
+                before.serving.entrypoint,
+                current.serving.entrypoint,
+              ))))
       ) {
         refuse();
       }

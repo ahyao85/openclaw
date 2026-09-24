@@ -7,33 +7,31 @@ import { inspectPortUsage } from "../infra/ports-inspect.js";
 import type { PortListener } from "../infra/ports-types.js";
 import { tryAcquireGatewayLifecycleCleanupCoordinator } from "../infra/state-database-coordinator.js";
 import { parseTcpPort, parseTcpPortFromArgs } from "../infra/tcp-port.js";
-import {
-  getWindowsPowerShellExePath,
-  getWindowsSystem32ExePath,
-} from "../infra/windows-install-roots.js";
+import { getWindowsSystem32ExePath } from "../infra/windows-install-roots.js";
 import { readWindowsProcessArgsSync } from "../infra/windows-port-pids.js";
 import { readWindowsProcessStartTimeSync } from "../infra/windows-process-start.js";
 import { killProcessTree } from "../process/kill-tree.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { sleep } from "../utils.js";
-import { parseCmdScriptCommandLine } from "./cmd-argv.js";
+import { splitArgsPreservingQuotes } from "./arg-split.js";
 import { NODE_SERVICE_KIND } from "./constants.js";
 import { resolveGatewayServiceProbeHosts } from "./gateway-service-probe-hosts.js";
 import { readScheduledTaskCommand, resolveTaskName } from "./schtasks-layout.js";
+import {
+  findInstalledGatewayChildPid,
+  findInstalledProcessPid,
+  getSnapshotProcessId,
+  isNodeHostArgv,
+  matchesInstalledProgramArguments,
+  matchesWindowsServiceProcess,
+  readWindowsProcessSnapshot,
+} from "./schtasks-process-inspection.js";
 import { mergeGatewayServiceEnv } from "./service-env-merge.js";
 import { resolveServiceManagerEnv } from "./service-process-env.js";
 import type { GatewayServiceRuntime } from "./service-runtime.js";
 import type { GatewayServiceCommandConfig, GatewayServiceEnv } from "./service-types.js";
 import { assertGatewayServiceUpdateCurrent } from "./service-update-authority.js";
-import {
-  readWindowsTaskSupervisorRestartExitCode,
-  WINDOWS_TASK_SUPERVISOR_FLAG,
-} from "./windows-task-supervisor-contract.js";
-
-type WindowsProcessSnapshotEntry = {
-  ProcessId?: number;
-  CommandLine?: string | null;
-};
+import { WINDOWS_TASK_SUPERVISOR_FLAG } from "./windows-task-supervisor-contract.js";
 
 const WINDOWS_FORCED_PROCESS_EXIT_TIMEOUT_MS = 15_000;
 
@@ -49,88 +47,6 @@ export function resolveScheduledTaskCommandPort(
     parseTcpPort(command?.environment?.OPENCLAW_GATEWAY_PORT) ??
     parseTcpPort(env.OPENCLAW_GATEWAY_PORT)
   );
-}
-
-export function isNodeHostArgv(programArguments: string[]): boolean {
-  const normalized = normalizeProgramArguments(programArguments);
-  return normalized.some((arg, index) => arg === "node" && normalized[index + 1] === "run");
-}
-
-function normalizeProgramArguments(programArguments: string[]): string[] {
-  return programArguments.map((arg) => normalizeLowercaseStringOrEmpty(arg.replaceAll("\\", "/")));
-}
-
-function matchesInstalledProgramArguments(
-  actualArguments: string[],
-  installedArguments: string[],
-): boolean {
-  const actual = normalizeProgramArguments(actualArguments);
-  const installed = normalizeProgramArguments(installedArguments);
-  return (
-    actual.length === installed.length && actual.every((arg, index) => arg === installed[index])
-  );
-}
-
-function getSnapshotProcessId(entry: WindowsProcessSnapshotEntry): number | null {
-  const pid = entry.ProcessId;
-  return typeof pid === "number" && Number.isFinite(pid) && pid > 0 ? pid : null;
-}
-
-export function findInstalledProcessPid(
-  entries: WindowsProcessSnapshotEntry[],
-  port: number,
-  installedArguments: string[],
-  matchesProcess: (argv: string[]) => boolean,
-  comparableArguments: (argv: string[]) => string[] = (argv) => argv,
-): number | null {
-  for (const entry of entries) {
-    const commandLine = normalizeLowercaseStringOrEmpty(entry.CommandLine ?? "");
-    if (!commandLine) {
-      continue;
-    }
-    const argv = parseCmdScriptCommandLine(entry.CommandLine ?? "");
-    if (
-      !matchesProcess(argv) ||
-      parseTcpPortFromArgs(argv) !== port ||
-      !matchesInstalledProgramArguments(comparableArguments(argv), installedArguments)
-    ) {
-      continue;
-    }
-    const pid = getSnapshotProcessId(entry);
-    if (pid) {
-      return pid;
-    }
-  }
-  return null;
-}
-
-function matchesInstalledGatewayChildArguments(
-  actualArguments: string[],
-  installedArguments: string[],
-): boolean {
-  return (
-    readWindowsTaskSupervisorRestartExitCode(actualArguments) !== undefined &&
-    matchesInstalledProgramArguments(actualArguments.slice(0, -1), installedArguments)
-  );
-}
-
-/** Finds the current supervised child or a legacy directly launched Gateway. */
-export function findInstalledGatewayChildPid(
-  entries: WindowsProcessSnapshotEntry[],
-  port: number,
-  installedArguments: string[],
-): number | null {
-  const supervisedPid = findInstalledProcessPid(
-    entries,
-    port,
-    installedArguments,
-    (argv) => readWindowsTaskSupervisorRestartExitCode(argv) !== undefined,
-    (argv) => argv.slice(0, -1),
-  );
-  if (supervisedPid) {
-    return supervisedPid;
-  }
-  return findInstalledProcessPid(entries, port, installedArguments, () => true);
 }
 
 async function resolveScheduledTaskNodeHostProcess(
@@ -175,10 +91,12 @@ export function resolveGatewayListenerPids(listeners: PortListener[]): number[] 
       listeners.flatMap((listener) =>
         typeof listener.pid === "number" &&
         listener.commandLine &&
-        classifyOpenClawArgv(parseCmdScriptCommandLine(listener.commandLine), {
-          command: "gateway",
-          pid: listener.pid,
-        }).kind === "openclaw"
+        classifyOpenClawArgv(
+          splitArgsPreservingQuotes(listener.commandLine, {
+            escapeMode: "backslash-quote-only",
+          }),
+          { command: "gateway", pid: listener.pid },
+        ).kind === "openclaw"
           ? [listener.pid]
           : [],
       ),
@@ -348,13 +266,12 @@ async function resolveLegacyScheduledTaskOwnedGatewayPids(
     return [];
   }
   const ownedPids = new Set<number>();
-  const supervisorArguments = [...installedArguments, WINDOWS_TASK_SUPERVISOR_FLAG];
   for (const listener of diagnostics.listeners) {
     if (typeof listener.pid !== "number") {
       continue;
     }
     const argv = listener.commandLine
-      ? parseCmdScriptCommandLine(listener.commandLine)
+      ? splitArgsPreservingQuotes(listener.commandLine, { escapeMode: "backslash-quote-only" })
       : process.platform === "win32"
         ? readWindowsProcessArgsSync(listener.pid)
         : null;
@@ -362,10 +279,9 @@ async function resolveLegacyScheduledTaskOwnedGatewayPids(
       continue;
     }
     if (
-      matchesInstalledProgramArguments(argv, installedArguments) ||
-      (process.platform === "win32" &&
-        (matchesInstalledProgramArguments(argv, supervisorArguments) ||
-          matchesInstalledGatewayChildArguments(argv, installedArguments)))
+      process.platform === "win32"
+        ? matchesWindowsServiceProcess(argv, installedArguments)
+        : matchesInstalledProgramArguments(argv, installedArguments)
     ) {
       ownedPids.add(listener.pid);
     }
@@ -387,7 +303,9 @@ export async function describeUnverifiedPortListeners(
   }
   const described = listeners.map((listener) => {
     const pid = typeof listener.pid === "number" ? listener.pid : null;
-    const argv = listener.commandLine ? parseCmdScriptCommandLine(listener.commandLine) : null;
+    const argv = listener.commandLine
+      ? splitArgsPreservingQuotes(listener.commandLine, { escapeMode: "backslash-quote-only" })
+      : null;
     const identity = argv
       ? classifyOpenClawArgv(argv, { command: "gateway" }).kind === "openclaw"
         ? "openclaw gateway"
@@ -594,35 +512,6 @@ export async function waitForGatewayPortRelease(
     await sleep(250);
   }
   return false;
-}
-
-export function readWindowsProcessSnapshot(): WindowsProcessSnapshotEntry[] | null {
-  if (process.platform !== "win32") {
-    return null;
-  }
-  const processSnapshot = spawnSync(
-    getWindowsPowerShellExePath(),
-    [
-      "-NoProfile",
-      "-Command",
-      "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
-    ],
-    { env: resolveServiceManagerEnv(), encoding: "utf8", timeout: 5_000, windowsHide: true },
-  );
-  if (processSnapshot.error || processSnapshot.status !== 0) {
-    return null;
-  }
-  let parsedSnapshot: unknown;
-  try {
-    parsedSnapshot = JSON.parse(processSnapshot.stdout.trim() || "[]");
-  } catch {
-    return null;
-  }
-  const entries = (Array.isArray(parsedSnapshot) ? parsedSnapshot : [parsedSnapshot]).filter(
-    (entry): entry is WindowsProcessSnapshotEntry => typeof entry === "object" && entry !== null,
-  );
-  // Healthy CIM includes PowerShell itself; empty output cannot prove target exit.
-  return entries.length > 0 ? entries : null;
 }
 
 export async function assertReplacementPortAvailableForTakeover(params: {

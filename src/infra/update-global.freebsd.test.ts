@@ -6,13 +6,17 @@ import { withTestDir } from "../test-helpers/temp-dir.js";
 import { withMockedPlatform } from "../test-utils/vitest-spies.js";
 import * as gitExec from "./git-exec.js";
 import * as openclawRoot from "./openclaw-root.js";
-import { createRootRunner, writePackageRoot } from "./package-update-steps.test-support.js";
+import { cleanupGlobalRenameDirs } from "./package-update-filesystem.js";
+import {
+  createNpmTarget,
+  createRootRunner,
+  writePackageRoot,
+} from "./package-update-steps.test-support.js";
 import * as restartSentinel from "./restart-sentinel.js";
 import { checkUpdateStatus } from "./update-check.js";
 import { pkgQueryResult } from "./update-freebsd-pkg-ownership.test-support.js";
 import {
   detectGlobalInstallManagerByPresence,
-  cleanupGlobalRenameDirs,
   detectGlobalInstallManagerForRoot,
   resolveGlobalInstallTarget,
 } from "./update-global.js";
@@ -38,7 +42,10 @@ describe("FreeBSD package-manager admission", () => {
         });
         await withMockedPlatform("freebsd", async () => {
           await expect(
-            cleanupGlobalRenameDirs({ globalRoot: base, packageName: "openclaw" }),
+            cleanupGlobalRenameDirs({
+              installTarget: createNpmTarget(base),
+              packageName: "openclaw",
+            }),
           ).resolves.toEqual({ removed: [] });
         });
         expect(query).toHaveBeenCalledTimes(1);
@@ -69,7 +76,10 @@ describe("FreeBSD package-manager admission", () => {
         .mockImplementation(async () => pkgQueryResult(claimed ? `${retained}\n` : ""));
       await withMockedPlatform("freebsd", async () => {
         await expect(
-          cleanupGlobalRenameDirs({ globalRoot: base, packageName: "openclaw" }),
+          cleanupGlobalRenameDirs({
+            installTarget: createNpmTarget(base),
+            packageName: "openclaw",
+          }),
         ).resolves.toEqual({ removed: [firstName] });
       });
       expect(query).toHaveBeenCalledTimes(2);
@@ -89,7 +99,10 @@ describe("FreeBSD package-manager admission", () => {
       });
       await withMockedPlatform("freebsd", async () => {
         await expect(
-          cleanupGlobalRenameDirs({ globalRoot: base, packageName: "openclaw" }),
+          cleanupGlobalRenameDirs({
+            installTarget: createNpmTarget(base),
+            packageName: "openclaw",
+          }),
         ).resolves.toEqual({ removed: [] });
       });
       await expect(fs.readFile(path.join(candidate, "marker"), "utf8")).resolves.toBe(
@@ -113,7 +126,10 @@ describe("FreeBSD package-manager admission", () => {
         );
         await withMockedPlatform("freebsd", async () => {
           await expect(
-            cleanupGlobalRenameDirs({ globalRoot: base, packageName: "openclaw" }),
+            cleanupGlobalRenameDirs({
+              installTarget: createNpmTarget(base),
+              packageName: "openclaw",
+            }),
           ).resolves.toEqual({ removed: ownership === "unowned" ? [".openclaw-interrupted"] : [] });
         });
         if (ownership !== "unowned") {

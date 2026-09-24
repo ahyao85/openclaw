@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
+import { resolvePositiveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { findVerifiedGatewayListenerPidsOnPortSync } from "../infra/gateway-processes.js";
 import { inspectPortUsage } from "../infra/ports-inspect.js";
 import { mergeProcessEnv } from "../infra/process-env.js";
@@ -22,15 +23,22 @@ import {
   findInstalledGatewayChildPid,
   findInstalledProcessPid,
   isNodeHostArgv,
-  probeProcessState,
   readWindowsProcessSnapshot,
+  readWindowsServiceProcessObservation,
+} from "./schtasks-process-inspection.js";
+import {
+  probeProcessState,
   resolveGatewayListenerPids,
   resolveListenerBackedScheduledTaskRuntime,
   resolveScheduledTaskCommandPort,
   shouldManageGatewayListenerPort,
   terminateGatewayProcessTree,
 } from "./schtasks-process.js";
-import { probeScheduledTaskExists, probeScheduledTaskState } from "./schtasks-state-probe.js";
+import {
+  probeScheduledTaskExists,
+  probeScheduledTaskState,
+  WindowsServiceObservationChangedError,
+} from "./schtasks-state-probe.js";
 import { mergeGatewayServiceEnv } from "./service-env-merge.js";
 import { resolveServiceManagerEnv } from "./service-process-env.js";
 import {
@@ -454,15 +462,46 @@ export async function isScheduledTaskInstalled(args: GatewayServiceEnvArgs): Pro
   );
 }
 
+function captureRuntimeProcesses(
+  runtime: GatewayServiceRuntime,
+  observation: ReturnType<typeof readWindowsServiceProcessObservation>,
+): GatewayServiceRuntime {
+  if (runtime.status !== "running" || !runtime.pid || process.platform !== "win32") {
+    return runtime;
+  }
+  if (!observation) {
+    return runtime;
+  }
+  try {
+    const windowsProcesses = observation.family(runtime.pid);
+    observation.verify();
+    return { ...runtime, windowsProcesses };
+  } catch (error) {
+    if (error instanceof WindowsServiceObservationChangedError) {
+      throw error;
+    }
+    // No captured facts means publication cannot exempt this selected process.
+    return runtime;
+  }
+}
+
 export async function readScheduledTaskRuntime(
   env: GatewayServiceEnv = process.env as GatewayServiceEnv,
   opts?: GatewayServiceReadOptions,
 ): Promise<GatewayServiceRuntime> {
-  const probe = probeScheduledTaskState(resolveTaskName(env), opts?.timeoutMs);
+  const timeoutMs = resolvePositiveTimerTimeoutMs(opts?.timeoutMs, 5_000);
+  const deadline = performance.now() + timeoutMs;
+  const observeProcesses = () => {
+    const remaining = deadline - performance.now();
+    return remaining > 0 ? readWindowsServiceProcessObservation(env, remaining) : null;
+  };
+  const probe = probeScheduledTaskState(resolveTaskName(env), timeoutMs);
   if (probe.status === "missing") {
-    return (await isStartupEntryInstalled(env))
-      ? resolveFallbackRuntime(env)
-      : { status: "stopped", missingUnit: true };
+    if (!(await isStartupEntryInstalled(env))) {
+      return { status: "stopped", missingUnit: true };
+    }
+    const observation = observeProcesses();
+    return captureRuntimeProcesses(await resolveFallbackRuntime(env), observation);
   }
   if (probe.status === "unknown") {
     return {
@@ -475,12 +514,16 @@ export async function readScheduledTaskRuntime(
     probe.state === 4 ? "running" : probe.state === 1 || probe.state === 3 ? "stopped" : "unknown";
   // A detached/lingering process may outlive its task. Retain exact persisted-argv ownership
   // evidence (including PID) without treating it as proof of Scheduler supervision.
+  const observation = status === "unknown" ? null : observeProcesses();
   const observedRuntime = await resolveListenerBackedScheduledTaskRuntime(env);
-  return {
-    ...observedRuntime,
-    status: status === "unknown" ? status : (observedRuntime?.status ?? status),
-    state: ["Unknown", "Disabled", "Queued", "Ready", "Running"][probe.state ?? 0],
-    lastRunTime: probe.lastRunTime,
-    lastRunResult: probe.lastRunResult,
-  };
+  return captureRuntimeProcesses(
+    {
+      ...observedRuntime,
+      status: status === "unknown" ? status : (observedRuntime?.status ?? status),
+      state: ["Unknown", "Disabled", "Queued", "Ready", "Running"][probe.state ?? 0],
+      lastRunTime: probe.lastRunTime,
+      lastRunResult: probe.lastRunResult,
+    },
+    observation,
+  );
 }

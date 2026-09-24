@@ -4,19 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import {
-  detectMarkerLineWithGateway,
-  findExtraGatewayServices,
-  renderGatewayServiceCleanupHints,
-} from "./inspect.js";
-
-const { execSchtasksMock } = vi.hoisted(() => ({
-  execSchtasksMock: vi.fn(),
-}));
-
-vi.mock("./schtasks-exec.js", () => ({
-  execSchtasks: (...args: unknown[]) => execSchtasksMock(...args),
-}));
+import { detectMarkerLineWithService } from "./inspect-markers.js";
+import { findExtraGatewayServices, renderGatewayServiceCleanupHints } from "./inspect.js";
 
 const nativePlistHost = vi.hoisted(() => process.platform === "darwin");
 vi.mock("../process/exec.js", async (importOriginal) => {
@@ -99,17 +88,17 @@ Description=Custom OpenClaw gateway
 ExecStart=/usr/bin/node /opt/openclaw/dist/entry.js gateway --port 18888
 `;
 
-describe("detectMarkerLineWithGateway", () => {
+describe("detectMarkerLineWithService", () => {
   it("returns null for openclaw-test.service (openclaw only in description, no gateway on same line)", () => {
-    expect(detectMarkerLineWithGateway(TEST_SERVICE_CONTENTS)).toBeNull();
+    expect(detectMarkerLineWithService(TEST_SERVICE_CONTENTS)).toBeNull();
   });
 
   it("returns openclaw for the canonical gateway unit (ExecStart has both openclaw and gateway)", () => {
-    expect(detectMarkerLineWithGateway(GATEWAY_SERVICE_CONTENTS)).toBe("openclaw");
+    expect(detectMarkerLineWithService(GATEWAY_SERVICE_CONTENTS)).toBe("openclaw");
   });
 
   it("returns clawdbot for a clawdbot gateway unit", () => {
-    expect(detectMarkerLineWithGateway(CLAWDBOT_GATEWAY_CONTENTS)).toBe("clawdbot");
+    expect(detectMarkerLineWithService(CLAWDBOT_GATEWAY_CONTENTS)).toBe("clawdbot");
   });
 
   it.each([
@@ -118,23 +107,23 @@ describe("detectMarkerLineWithGateway", () => {
     "; comment \\\nExecStart=/usr/bin/openclaw gateway",
     "ExecStart=/usr/bin/openclaw \\\n# comment\n  gateway",
   ])("detects commands through native comments and continuations: %s", (command) => {
-    expect(detectMarkerLineWithGateway(`[Service]\n${command}\n`)).toBe("openclaw");
+    expect(detectMarkerLineWithService(`[Service]\n${command}\n`)).toBe("openclaw");
   });
 
   it.each(["After", "Requires", "Description", "Environment"])(
     "ignores gateway mentions in %s instead of an executable directive",
     (key) => {
-      expect(detectMarkerLineWithGateway(`${key}=openclaw gateway\n`)).toBeNull();
+      expect(detectMarkerLineWithService(`${key}=openclaw gateway\n`)).toBeNull();
     },
   );
 
   it("ignores dependency-only references to the gateway unit", () => {
-    expect(detectMarkerLineWithGateway(COMPANION_SERVICE_CONTENTS)).toBeNull();
+    expect(detectMarkerLineWithService(COMPANION_SERVICE_CONTENTS)).toBeNull();
   });
 
   it("ignores non-gateway ExecStart commands that only pass gateway-named options", () => {
     const contents = `[Service]\nExecStart=/usr/bin/openclaw-helper --gateway-url http://127.0.0.1:18789 sync\n`;
-    expect(detectMarkerLineWithGateway(contents)).toBeNull();
+    expect(detectMarkerLineWithService(contents)).toBeNull();
   });
 });
 
@@ -148,7 +137,7 @@ describe("renderGatewayServiceCleanupHints", () => {
       title: "targets the detected macOS LaunchAgent instead of the active gateway",
       platform: "darwin",
       serviceName: "com.example.openclaw-gateway",
-      source: "plist: /Users/test/Library/LaunchAgents/com.example.openclaw-gateway.plist",
+      sourcePath: "/Users/test/Library/LaunchAgents/com.example.openclaw-gateway.plist",
       scope: "user",
       firstHint: "launchctl bootout gui/$UID/com.example.openclaw-gateway",
       secondHint: "rm /Users/test/Library/LaunchAgents/com.example.openclaw-gateway.plist",
@@ -157,7 +146,7 @@ describe("renderGatewayServiceCleanupHints", () => {
       title: "uses the system domain for a detected macOS LaunchDaemon",
       platform: "darwin",
       serviceName: "com.example.openclaw-gateway",
-      source: "plist: /Library/LaunchDaemons/com.example.openclaw-gateway.plist",
+      sourcePath: "/Library/LaunchDaemons/com.example.openclaw-gateway.plist",
       scope: "system",
       firstHint: "sudo launchctl bootout system/com.example.openclaw-gateway",
       secondHint: "sudo rm /Library/LaunchDaemons/com.example.openclaw-gateway.plist",
@@ -166,7 +155,7 @@ describe("renderGatewayServiceCleanupHints", () => {
       title: "keeps global macOS LaunchAgents in the GUI domain",
       platform: "darwin",
       serviceName: "com.example.openclaw-gateway",
-      source: "plist: /Library/LaunchAgents/com.example.openclaw-gateway.plist",
+      sourcePath: "/Library/LaunchAgents/com.example.openclaw-gateway.plist",
       scope: "system",
       firstHint: "launchctl bootout gui/$UID/com.example.openclaw-gateway",
       secondHint: "sudo rm /Library/LaunchAgents/com.example.openclaw-gateway.plist",
@@ -175,7 +164,7 @@ describe("renderGatewayServiceCleanupHints", () => {
       title: "inspects the detected user-level systemd unit without removing it",
       platform: "linux",
       serviceName: "custom-gateway.service",
-      source: "unit: /home/test/.config/systemd/user/custom-gateway.service",
+      sourcePath: "/home/test/.config/systemd/user/custom-gateway.service",
       scope: "user",
       firstHint: "systemctl --user status -- custom-gateway.service",
       secondHint: "systemctl --user cat -- custom-gateway.service",
@@ -184,7 +173,7 @@ describe("renderGatewayServiceCleanupHints", () => {
       title: "inspects the detected system-level systemd unit without removing it",
       platform: "linux",
       serviceName: "custom-gateway.service",
-      source: "unit: /etc/systemd/system/custom-gateway.service",
+      sourcePath: "/etc/systemd/system/custom-gateway.service",
       scope: "system",
       firstHint: "systemctl --system status -- custom-gateway.service",
       secondHint: "systemctl --system cat -- custom-gateway.service",
@@ -193,7 +182,7 @@ describe("renderGatewayServiceCleanupHints", () => {
       title: "terminates systemctl options before a detected unit that begins with a dash",
       platform: "linux",
       serviceName: "-custom-gateway.service",
-      source: "unit: /home/test/.config/systemd/user/-custom-gateway.service",
+      sourcePath: "/home/test/.config/systemd/user/-custom-gateway.service",
       scope: "user",
       firstHint: "systemctl --user status -- -custom-gateway.service",
       secondHint: "systemctl --user cat -- -custom-gateway.service",
@@ -202,18 +191,19 @@ describe("renderGatewayServiceCleanupHints", () => {
       title: "shell-quotes detected POSIX service labels and paths",
       platform: "darwin",
       serviceName: "com.example.gateway; touch injected",
-      source: "plist: /Users/test/Launch Agents/example's gateway.plist",
+      sourcePath: "/Users/test/Launch Agents/example's gateway.plist",
       scope: "user",
       firstHint: "launchctl bootout gui/$UID/'com.example.gateway; touch injected'",
       secondHint: "rm '/Users/test/Launch Agents/example'\\''s gateway.plist'",
     },
-  ] as const)("$title", ({ platform, serviceName, source, scope, firstHint, secondHint }) => {
+  ] as const)("$title", ({ platform, serviceName, sourcePath, scope, firstHint, secondHint }) => {
     expect(
       renderGatewayServiceCleanupHints([
         {
           platform,
           label: serviceName,
-          detail: source,
+          detail: "native service description",
+          sourcePath,
           scope,
         },
       ]),
@@ -306,6 +296,7 @@ describe("findExtraGatewayServices (linux / scanSystemdDir) — real filesystem"
           platform: "linux",
           label: "clawdbot-gateway.service",
           detail: `unit: ${unitPath}`,
+          sourcePath: unitPath,
           scope: "user",
           marker: "clawdbot",
           legacy: true,
@@ -328,6 +319,7 @@ describe("findExtraGatewayServices (linux / scanSystemdDir) — real filesystem"
         platform: "linux",
         label: "clawdbot-gateway.service",
         detail: `unit backup: ${backupPath}`,
+        sourcePath: backupPath,
         scope: "user",
         marker: "clawdbot",
         legacy: true,
@@ -350,6 +342,7 @@ describe("findExtraGatewayServices (linux / scanSystemdDir) — real filesystem"
         platform: "linux",
         label: "clawdbot-gateway.service",
         detail: `unit: ${unitPath}`,
+        sourcePath: unitPath,
         scope: "user",
         marker: "clawdbot",
         legacy: true,
@@ -389,6 +382,7 @@ describe("findExtraGatewayServices (linux / scanSystemdDir) — real filesystem"
           platform: "linux",
           label: "custom-openclaw.service",
           detail: `unit: ${unitPath}`,
+          sourcePath: unitPath,
           scope: "user",
           marker: "openclaw",
           legacy: false,
@@ -484,6 +478,7 @@ describe("findExtraGatewayServices (darwin / scanLaunchdDir) — real filesystem
         platform: "darwin",
         label: "com.example.openclaw-gateway",
         detail: `plist: ${plistPath}`,
+        sourcePath: plistPath,
         scope: "user",
         marker: "openclaw",
         legacy: false,
@@ -492,107 +487,6 @@ describe("findExtraGatewayServices (darwin / scanLaunchdDir) — real filesystem
     expect(renderGatewayServiceCleanupHints(result)).toEqual([
       "launchctl bootout gui/$UID/com.example.openclaw-gateway",
       `rm ${plistPath}`,
-    ]);
-  });
-});
-
-describe("findExtraGatewayServices (win32)", () => {
-  const originalPlatform = process.platform;
-
-  beforeEach(() => {
-    Object.defineProperty(process, "platform", {
-      configurable: true,
-      value: "win32",
-    });
-    execSchtasksMock.mockReset();
-  });
-
-  afterEach(() => {
-    Object.defineProperty(process, "platform", {
-      configurable: true,
-      value: originalPlatform,
-    });
-  });
-
-  it("skips schtasks queries unless deep mode is enabled", async () => {
-    const result = await findExtraGatewayServices({});
-    expect(result).toStrictEqual([]);
-    expect(execSchtasksMock).not.toHaveBeenCalled();
-  });
-
-  it("returns empty results when schtasks query fails", async () => {
-    execSchtasksMock.mockResolvedValueOnce({
-      code: 1,
-      stdout: "",
-      stderr: "error",
-    });
-
-    const result = await findExtraGatewayServices({}, { deep: true });
-    expect(result).toStrictEqual([]);
-  });
-
-  it("collects only non-openclaw marker tasks from schtasks output", async () => {
-    // Real schtasks /Query /FO LIST /V output prefixes root-folder task
-    // names with a backslash (e.g. TaskName:\OpenClaw Gateway).
-    execSchtasksMock.mockResolvedValueOnce({
-      code: 0,
-      stdout: [
-        "TaskName:\\OpenClaw Gateway",
-        "Task To Run: C:\\Program Files\\OpenClaw\\openclaw.exe gateway run",
-        "",
-        "TaskName: Clawdbot Legacy",
-        "Task To Run: C:\\clawdbot\\clawdbot.exe run",
-        "",
-        "TaskName: Other Task",
-        "Task To Run: C:\\tools\\helper.exe",
-        "",
-      ].join("\n"),
-      stderr: "",
-    });
-
-    const result = await findExtraGatewayServices({}, { deep: true });
-    // The \OpenClaw Gateway task is the live launcher — it must be skipped.
-    // Only the unrelated clawdbot task should be flagged.
-    expect(result).toEqual([
-      {
-        platform: "win32",
-        label: "Clawdbot Legacy",
-        detail: "task: Clawdbot Legacy, run: C:\\clawdbot\\clawdbot.exe run",
-        scope: "system",
-        marker: "clawdbot",
-        legacy: true,
-      },
-    ]);
-  });
-
-  it("reports duplicate root tasks that only share the gateway task prefix", async () => {
-    execSchtasksMock.mockResolvedValueOnce({
-      code: 0,
-      stdout: [
-        "TaskName:\\OpenClaw Gateway",
-        "Task To Run: C:\\Program Files\\OpenClaw\\openclaw.exe gateway run",
-        "",
-        "TaskName:\\OpenClaw Gateway (dev)",
-        "Task To Run: C:\\Program Files\\OpenClaw\\openclaw.exe gateway run --profile dev",
-        "",
-        "TaskName:\\OpenClaw Gateway Backup",
-        "Task To Run: C:\\Program Files\\OpenClaw\\openclaw.exe gateway run",
-        "",
-      ].join("\n"),
-      stderr: "",
-    });
-
-    const result = await findExtraGatewayServices({}, { deep: true });
-    expect(result).toEqual([
-      {
-        platform: "win32",
-        label: "\\OpenClaw Gateway Backup",
-        detail:
-          "task: \\OpenClaw Gateway Backup, run: C:\\Program Files\\OpenClaw\\openclaw.exe gateway run",
-        scope: "system",
-        marker: "openclaw",
-        legacy: false,
-      },
     ]);
   });
 });

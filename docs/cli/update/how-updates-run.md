@@ -655,6 +655,40 @@ Verified services still select their own installation and state directory;
 ownership conflicts, pending recovery, and active state writers retain their
 existing admission checks. Services owned by another install remain untouched.
 
+When the installed updater includes shared-installation checks, it inspects other
+Gateway and Node services before a selected native service stops and again before
+code replacement. Foreground updates check after their own Gateway has parked
+and before code replacement. Physical aliases and shared runtime output count as the same
+installation. A live shared consumer must be stopped by its owner and kept
+stopped until completion; loaded launchd jobs must also be unloaded. On Windows,
+a positively identified running process whose installation cannot be resolved
+also needs to stop; its registered working directory does not prove its current
+working directory. Unavailable inventory alone produces a warning without selecting
+package, Node, config, state, or native control authority. Once a verified native
+binding establishes physical overlap, losing its definition or inspection does
+not erase that evidence. Changing its launcher path to another installation also
+does not clear the association during that update: the service must remain
+stopped or unloaded until completion. A new update invocation can inspect the
+changed installation afresh.
+
+The selected Linux system service also needs to be stopped before its package
+is replaced. Staging and validation can run while it serves; the final
+publication check refuses a verified running consumer before changing its code.
+The refusal names the operator's `sudo systemctl stop <unit>` command. Keep the
+service stopped, rerun the original update command with the same account,
+profile, and options, then run `sudo systemctl restart <unit>`. OpenClaw never
+controls the system unit. Already-current checks and offline updates retain
+their normal behavior.
+
+The published 2026.9.2 and 2026.9.4 updaters lack this guard before code replacement.
+For the first update from either version, manually stop every Gateway and Node
+consumer of the shared installation or runtime output, including the selected
+Gateway, through its actual owner. Unload their launchd jobs and keep all consumers
+stopped until the update completes, then restart through their owners. The new
+candidate cannot add this protection to the already-running updater, and
+post-install checks cannot protect an earlier code replacement. Automatic refusal
+applies only to updates driven by an installed updater containing the guard.
+
 The published 2026.8.2 CLI also refuses updates on service-less Linux installs.
 Use `openclaw update --no-restart` for that upgrade after confirming that no Gateway
 is running; the new CLI cannot fix the old CLI's pre-update inspection.

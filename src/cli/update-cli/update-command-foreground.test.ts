@@ -465,6 +465,7 @@ it.each([
     handoff.park.mockImplementation(async ({ run }) => {
       events.push("park");
       run.gatewayRestartRequired = true;
+      return process.pid;
     });
     mocks.runPackageUpdate.mockImplementation(async ({ validateCandidate, beforeActivate }) => {
       await validateCandidate(root);

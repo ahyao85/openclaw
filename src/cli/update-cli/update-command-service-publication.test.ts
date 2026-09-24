@@ -2,7 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { runNodeMain } from "../../../scripts/run-node.mts";
+import { listTsdownOutputRoots } from "../../../scripts/tsdown-build.mts";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { findGatewayServices } from "../../daemon/inspect.js";
 import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
 import type { GatewayService } from "../../daemon/service.js";
 import {
@@ -24,13 +26,21 @@ import { completeSourceUpdateRuntime } from "./update-command-runtime.js";
 import { withGatewayRuntimeArtifactPublication } from "./update-command-service-maintenance.js";
 
 const mocks = vi.hoisted(() => ({ service: vi.fn<() => GatewayService>() }));
+// The fixture owns its inventory; never enumerate services on the test host.
+vi.mock("../../daemon/inspect.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../daemon/inspect.js")>()),
+  findGatewayServices: vi.fn(async () => ({ services: [], errors: [] })),
+}));
 vi.mock("../../daemon/service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../daemon/service.js")>()),
   resolveGatewayService: mocks.service,
 }));
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-beforeEach(() => mockSystemAccountHome());
+beforeEach(() => {
+  mockSystemAccountHome();
+  vi.mocked(findGatewayServices).mockResolvedValue({ services: [], errors: [] });
+});
 afterEach(() => vi.restoreAllMocks());
 
 async function withServiceHome(run: (home: string) => Promise<void>): Promise<void> {
@@ -330,21 +340,86 @@ it.each(["stopped", "absent"])(
     }),
 );
 
+it.each(["before publication", "after await", "inspection expires"])(
+  "refuses a live shared-installation sibling %s without mutating service or artifacts",
+  (when) =>
+    withRuntimePublicationFixture(async ({ home, root, env }) => {
+      const sourcePath = path.join(home, "sibling.service");
+      const target = { scope: "system" as const, unit: "sibling.service", managerUid: 0 };
+      let running = when !== "after await";
+      let elapsedMs = 0;
+      let runtimeReads = 0;
+      vi.spyOn(performance, "now").mockImplementation(() => elapsedMs);
+      vi.mocked(findGatewayServices).mockResolvedValue({
+        services: [
+          { platform: "linux", scope: "system", label: target.unit, sourcePath, detail: "fixture" },
+        ],
+        errors: [],
+      });
+      const runtime = await import("../../daemon/systemd-runtime.js");
+      const command = await import("../../daemon/systemd-service-files.js");
+      vi.spyOn(runtime, "readSystemdServiceRuntime").mockImplementation(async () => {
+        if (++runtimeReads === 2 && when === "inspection expires") {
+          elapsedMs = 201;
+        }
+        return {
+          status: running ? "running" : "stopped",
+          ...(running ? { pid: 45211 } : {}),
+          systemd: target,
+        };
+      });
+      vi.spyOn(command, "readSystemdServiceExecStart").mockImplementation(async (_env, options) => {
+        options?.onCommandInspection?.({ kind: "present" });
+        return {
+          sourcePath,
+          programArguments: [process.execPath, path.join(root, "dist", "entry.js"), "gateway"],
+        };
+      });
+      const artifact = path.join(root, "dist-runtime", "unchanged.txt");
+      await fs.writeFile(artifact, "original");
+      const publish = vi.fn(async (assertPublicationCurrent: () => Promise<void>) => {
+        await Promise.resolve();
+        running = true;
+        await assertPublicationCurrent();
+        await fs.writeFile(artifact, "published");
+      });
+      await expect(
+        withGatewayRuntimeArtifactPublication(
+          { root, env, timeoutMs: 200, assertCurrent() {} },
+          publish,
+        ),
+      ).rejects.toThrow(
+        when === "inspection expires" ? "previously verified" : "consumes the installation",
+      );
+      expect(publish).toHaveBeenCalledTimes(when === "after await" ? 1 : 0);
+      expect(await fs.readFile(artifact, "utf8")).toBe("original");
+    }),
+);
+
 it.each([
   "disjoint",
   "shared overlay",
   "shared SDK alias",
   "shared SDK parent",
   "nested shared output",
+  "shared build output",
 ])("distinguishes physical runtime paths from current/releases ownership: %s", (scenario) =>
   withRuntimePublicationFixture(async ({ home, root, env, service, coordinatorPath }) => {
+    const outputPaths = scenario === "shared build output" ? listTsdownOutputRoots() : undefined;
     const snapshot = path.join(home, "releases", "previous");
     await fs.mkdir(path.join(snapshot, "dist"), { recursive: true });
     await fs.writeFile(path.join(snapshot, "package.json"), JSON.stringify({ name: "openclaw" }));
     await fs.writeFile(path.join(snapshot, "dist", "entry.js"), "export {};\n");
     const current = path.join(home, "current");
     await fs.symlink(snapshot, current, "junction");
-    if (scenario === "shared overlay") {
+    if (scenario === "shared build output") {
+      const output = outputPaths!.at(-1)!;
+      const target = path.join(root, output);
+      const serving = path.join(snapshot, output);
+      await fs.mkdir(target, { recursive: true });
+      await fs.mkdir(path.dirname(serving), { recursive: true });
+      await fs.symlink(target, serving, "junction");
+    } else if (scenario === "shared overlay") {
       await fs.symlink(
         path.join(root, "dist-runtime"),
         path.join(snapshot, "dist-runtime"),
@@ -389,7 +464,7 @@ it.each([
     });
     try {
       const result = withGatewayRuntimeArtifactPublication(
-        { root, env, timeoutMs: 200, assertCurrent() {} },
+        { root, env, outputPaths, timeoutMs: 200, assertCurrent() {} },
         publish,
       );
       if (scenario === "disjoint") {
@@ -544,27 +619,44 @@ it.each(["repository", "existing alias parent", "missing alias parent"])(
     }),
 );
 
-it("permits its output-root replacement and new alias descendants while retaining parent identity", () =>
-  withRuntimePublicationFixture(async ({ root, env }) => {
-    const runtime = path.join(root, "dist-runtime");
-    const previous = path.join(root, "previous-runtime");
-    const alias = path.join(root, "dist", "extensions", "node_modules", "openclaw");
-    await withGatewayRuntimeArtifactPublication(
-      { root, env, timeoutMs: 200, assertCurrent() {} },
-      async (assertCurrent) => {
-        await assertCurrent();
-        await fs.rename(runtime, previous);
-        await assertCurrent();
-        await fs.mkdir(runtime);
-        await assertCurrent();
-        await fs.mkdir(alias, { recursive: true });
-        await assertCurrent();
-        await fs.writeFile(path.join(runtime, "published.txt"), "new runtime");
-      },
-    );
-    expect(await fs.readFile(path.join(runtime, "published.txt"), "utf8")).toBe("new runtime");
-    expect((await fs.stat(alias)).isDirectory()).toBe(true);
-  }));
+it.each(["runtime artifacts", "source build"] as const)(
+  "permits its %s output replacement and new alias descendants while retaining parent identity",
+  (publication) =>
+    withRuntimePublicationFixture(async ({ root, env, service }) => {
+      const outputPaths = publication === "source build" ? listTsdownOutputRoots() : undefined;
+      const replaced = outputPaths?.filter((output) => path.dirname(output) === ".") ?? [
+        "dist-runtime",
+      ];
+      const entry = path.join(root, "openclaw.mjs");
+      await fs.writeFile(entry, "export {};\n");
+      vi.mocked(service.readCommand).mockResolvedValue({
+        programArguments: [process.execPath, entry, "gateway"],
+      });
+      for (const output of replaced) {
+        await fs.mkdir(path.join(root, output), { recursive: true });
+      }
+      const runtime = path.join(root, "dist-runtime");
+      const alias = path.join(root, "dist", "extensions", "node_modules", "openclaw");
+      await withGatewayRuntimeArtifactPublication(
+        { root, env, outputPaths, timeoutMs: 200, assertCurrent() {} },
+        async (assertCurrent) => {
+          for (const output of replaced) {
+            const destination = path.join(root, output);
+            await assertCurrent();
+            await fs.rename(destination, `${destination}-before`);
+            await assertCurrent();
+            await fs.mkdir(destination);
+            await assertCurrent();
+          }
+          await fs.mkdir(alias, { recursive: true });
+          await assertCurrent();
+          await fs.writeFile(path.join(runtime, "published.txt"), "new runtime");
+        },
+      );
+      expect(await fs.readFile(path.join(runtime, "published.txt"), "utf8")).toBe("new runtime");
+      expect((await fs.stat(alias)).isDirectory()).toBe(true);
+    }),
+);
 
 it("holds native and Gateway exclusion through publication rollback and closes its assertion", () =>
   withRuntimePublicationFixture(async ({ root, env, coordinatorPath }) => {

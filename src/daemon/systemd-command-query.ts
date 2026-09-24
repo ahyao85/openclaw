@@ -23,13 +23,16 @@ export async function createSystemdCommandQuery(
   unitName: string,
   opts: GatewayServiceReadOptions | undefined,
   unavailable: () => Error,
+  readKind: "command" | "loaded-runtime" = "command",
 ) {
   const manager = "org.freedesktop.systemd1";
+  const runtimeRead = readKind === "loaded-runtime";
+  const requireLoaded = runtimeRead || opts?.requireLoaded;
   const SYSTEMD_MANAGER_QUERY_TIMEOUT_MS = 5_000;
   const timeoutMs =
     opts?.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : SYSTEMD_MANAGER_QUERY_TIMEOUT_MS;
   const deadlineAt = performance.now() + timeoutMs;
-  const inspection = opts?.requireLoaded ? opts.loadForInspection : undefined;
+  const inspection = requireLoaded ? opts?.loadForInspection : undefined;
   const scope = opts?.systemdReadTarget?.scope ?? "user";
   const peer = opts?.systemdReadBinding;
   if (
@@ -43,6 +46,9 @@ export async function createSystemdCommandQuery(
   if (scope === "system" && inspection && inspection.managerUid !== 0) {
     throw new ServiceOwnershipRefusalError("systemd-manager-changed");
   }
+  if (runtimeRead) {
+    peer?.verify();
+  }
   const transport =
     peer || scope === "system"
       ? undefined
@@ -50,13 +56,13 @@ export async function createSystemdCommandQuery(
           env,
           deadlineAt,
           inspection?.assertReadCurrent ?? inspection?.assertCurrent,
-          opts?.requireLoaded ? "admission" : "inspection",
+          requireLoaded ? "admission" : "inspection",
         );
-  if (transport?.kind === "private" && opts?.requireLoaded) {
+  if (transport?.kind === "private" && requireLoaded) {
     throw new ServiceInspectionError("systemd-user-bus-unavailable");
   }
   const managerPeer =
-    !opts?.requireLoaded && transport?.kind === "private"
+    !requireLoaded && transport?.kind === "private"
       ? await openSystemdUserManager(transport.address, deadlineAt).catch((error: unknown) => {
           assertGatewayServiceUpdateCurrent();
           const refusal = findServiceOwnershipRefusal(error);
@@ -67,7 +73,8 @@ export async function createSystemdCommandQuery(
         })
       : undefined;
   const managerUid = scope === "system" ? 0 : inspection?.managerUid;
-  let remainingCalls = managerUid !== undefined ? 6 : 3;
+  let remainingCalls = runtimeRead ? 7 : managerUid !== undefined ? 6 : 3;
+  let reservedProcessQuery = false;
   let legacyOutput = false;
   // All manager D-Bus calls share one deadline so wedged reads reach local fallback promptly.
   const query = async (args: string[], signatures: string[]): Promise<unknown[] | null> => {
@@ -89,14 +96,30 @@ export async function createSystemdCommandQuery(
     const assertCurrent =
       (args[0] === "call" && args[4] === "LoadUnit" ? undefined : inspection?.assertReadCurrent) ??
       inspection?.assertCurrent;
+    if (runtimeRead) {
+      assertCurrent?.();
+      // Unavailable task accounting permits one native cgroup query, without extending the deadline.
+      if (
+        !reservedProcessQuery &&
+        args[0] === "call" &&
+        (args[4] === "GetUnitProcesses" || args[4] === "GetProcesses")
+      ) {
+        reservedProcessQuery = true;
+        remainingCalls++;
+      }
+    }
     if (performance.now() >= deadlineAt) {
       throw new ServiceInspectionError("systemd-inspection-deadline-exceeded");
     }
-    if (managerUid !== undefined && remainingCalls <= 0) {
+    if ((runtimeRead || managerUid !== undefined) && remainingCalls <= 0) {
       throw unavailable();
     }
     if (peer) {
-      assertCurrent?.();
+      if (runtimeRead) {
+        remainingCalls--;
+      } else {
+        assertCurrent?.();
+      }
       const values = await peer.query(args, signatures, deadlineAt, inspection);
       assertCurrent?.();
       if (performance.now() >= deadlineAt) {
@@ -111,7 +134,9 @@ export async function createSystemdCommandQuery(
     const callDeadline = Math.min(deadlineAt, performance.now() + callTimeout);
     const exec = async (queryArgs: string[], budget: number) => {
       if (scope === "system") {
-        assertCurrent?.();
+        if (!runtimeRead) {
+          assertCurrent?.();
+        }
         return await execBusctlSystem(queryArgs, budget);
       }
       return await execBusctlUser(env, queryArgs, budget, assertCurrent);
@@ -119,7 +144,7 @@ export async function createSystemdCommandQuery(
     let result = await exec(
       [
         ...(legacyOutput ? [] : ["--json=short"]),
-        ...(opts?.requireLoaded ? ["--auto-start=no"] : []),
+        ...(requireLoaded ? ["--auto-start=no"] : []),
         ...args,
       ],
       callTimeout,
@@ -139,10 +164,7 @@ export async function createSystemdCommandQuery(
         throw new ServiceInspectionError("systemd-inspection-deadline-exceeded");
       }
       legacyOutput = true;
-      result = await exec(
-        [...(opts?.requireLoaded ? ["--auto-start=no"] : []), ...args],
-        remaining,
-      );
+      result = await exec([...(requireLoaded ? ["--auto-start=no"] : []), ...args], remaining);
       assertCurrent?.();
     }
     if (result.termination === "error" && result.errorCode === "ENOENT") {
@@ -163,7 +185,7 @@ export async function createSystemdCommandQuery(
     if (legacyOutput && result.termination !== "exit") {
       throw systemdInspectionError(result, unavailable().message, scope);
     }
-    if (managerUid !== undefined && result.termination !== "exit") {
+    if ((runtimeRead || managerUid !== undefined) && result.termination !== "exit") {
       throw systemdInspectionError(result, unavailable().message, scope);
     }
     if (result.code !== 0) {
@@ -199,7 +221,7 @@ export async function createSystemdCommandQuery(
   };
   const binding =
     peer ??
-    (managerUid !== undefined
+    (runtimeRead || managerUid !== undefined
       ? await bindSystemdManagerOwner(query, managerUid, unavailable)
       : undefined);
   const destination = binding?.destination ?? manager;

@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { forceKillChildProcessTree } from "../process/child-process-tree.js";
 import { scheduleAbsoluteDeadline } from "../utils/absolute-deadline.js";
 
@@ -177,7 +178,7 @@ async function runOwnedUpdateCommand(phase, commandArgv, timeoutMs, cwd = params
               if (!hasManagedUpdateLease() || managedUpdateLease.payload !== runnerIdentity ||
                 !child.connected || child.exitCode !== null || child.signalCode !== null)
                 throw new Error("foreground updater lost its current claim");
-              child.send({ type: message.type, version: 2, requestId: message.requestId, ok: true }, () => {});
+              child.send({ type: message.type, version: 2, requestId: message.requestId, ok: true, foregroundPid: params.foregroundOrigin.pid }, () => {});
             } catch (error) {
               if (child.connected) child.send({ type: message.type, version: 2, requestId: message.requestId, ok: false }, () => {});
               if (message.type === "foreground-park") rejectActivation(error);
@@ -442,5 +443,53 @@ export function waitForHandoffResponse(
         }
       });
     }
+  });
+}
+
+export function exchangeForegroundUpdateHandoffControl(
+  operation: "foreground-inspect" | "foreground-park",
+): Promise<number | false> {
+  const requestId = randomUUID();
+  return new Promise<number | false>((resolve) => {
+    const finish = (pid: number | false) => {
+      clearTimeout(timer);
+      process.off("message", onMessage).off("disconnect", onDisconnect);
+      resolve(pid);
+    };
+    const onDisconnect = () => finish(false);
+    const onMessage = (message: unknown) => {
+      if (
+        typeof message !== "object" ||
+        message === null ||
+        !("requestId" in message) ||
+        message.requestId !== requestId
+      ) {
+        return;
+      }
+      finish(
+        "type" in message &&
+          message.type === operation &&
+          "version" in message &&
+          message.version === 2 &&
+          "ok" in message &&
+          message.ok === true &&
+          "foregroundPid" in message &&
+          typeof message.foregroundPid === "number" &&
+          Number.isSafeInteger(message.foregroundPid) &&
+          message.foregroundPid > 0
+          ? message.foregroundPid
+          : false,
+      );
+    };
+    const timer = setTimeout(
+      () => finish(false),
+      operation === "foreground-park" ? 30 * 60_000 : 30_000,
+    );
+    process.on("message", onMessage).once("disconnect", onDisconnect);
+    process.send!({ type: operation, version: 2, requestId }, (error: Error | null) => {
+      if (error) {
+        finish(false);
+      }
+    });
   });
 }

@@ -14,6 +14,37 @@ const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
 
 describe("retained package backup retirement", () => {
+  it("preserves the installed package when authority expires during empty rename cleanup", async () => {
+    await withTestDir({ prefix: "openclaw-cleanup-authority-" }, async (base) => {
+      const { params, packageRoot, launcher } = await createPackageSwapFixture(base);
+      let current = true;
+      const revoked = new Error("update authority revoked");
+      await expect(
+        swapStagedPackageInstall({
+          ...params,
+          assertCurrent: () => {
+            if (!current) {
+              throw revoked;
+            }
+          },
+          beforeActivate: async () => {
+            vi.spyOn(fs, "readdir").mockImplementationOnce(async () => {
+              current = false;
+              return [];
+            });
+          },
+        }),
+      ).resolves.toMatchObject({
+        status: "failed",
+        step: { stderrTail: expect.stringContaining(revoked.message) },
+      });
+      await expect(fs.readFile(path.join(packageRoot, "package.json"), "utf8")).resolves.toContain(
+        '"version":"1.0.0"',
+      );
+      await expect(fs.readFile(launcher, "utf8")).resolves.toBe("old launcher\n");
+    });
+  });
+
   it("keeps launcher evidence with a published transaction when mutation admission throws", async () => {
     await withTestDir({ prefix: "openclaw-retained-admission-" }, async (base) => {
       const { params, packageRoot, globalRoot, launcher } = await createPackageSwapFixture(base);

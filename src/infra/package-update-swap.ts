@@ -10,6 +10,7 @@ import {
 import {
   activateStagedNpmPackageRoot,
   capturePackageLaunchers,
+  cleanupGlobalRenameDirs,
   type PackageLauncherBackup,
   discardPackageLauncherBackup,
   discardPackageUpdateBackup,
@@ -378,6 +379,7 @@ export async function swapStagedPackageInstall(
     }
     try {
       await params.beforeActivate?.();
+      await cleanupGlobalRenameDirs(params);
     } catch (error) {
       throw new PackageUpdateActivationError(error);
     }
@@ -552,10 +554,7 @@ export async function swapStagedPackageInstall(
       });
     }
     await rootLink?.assertLiveUnchanged();
-    if (process.platform === "freebsd") {
-      // Keep executor authority after the last asynchronous link observation.
-      params.assertCurrent?.();
-    }
+    params.assertCurrent?.();
     // A native refusal must still allow the unchanged Gateway to restart.
     // Mark mutation only now: a copy-fallback move can fail after partial publication,
     // and only a completed backup permits restoration.

@@ -3,10 +3,19 @@ import path from "node:path";
 import { getProcessStartTime, isPidAlive } from "../shared/pid-alive.js";
 import {
   findServiceOwnershipRefusal,
+  isServiceInspectionControlFailure,
+  ServiceInspectionError,
   ServiceOwnershipRefusalError,
 } from "./service-inspection-error.js";
 import type { GatewayServiceEnv, SystemdServiceReadBinding } from "./service-types.js";
-import { openSystemdBroker, openSystemdPrivatePeer } from "./systemd-peer-native.js";
+import { bindSystemdManagerOwner, type SystemdUnitScope } from "./systemd-exec.js";
+import {
+  openSystemdBroker,
+  openSystemdMachineBroker,
+  openSystemdPrivatePeer,
+  openSystemdSystemBroker,
+  openSystemdUserManager,
+} from "./systemd-peer-native.js";
 import { resolveSystemdServiceName } from "./systemd-service-files.js";
 import { resolveSystemdUserTransport } from "./systemd-user-transport.js";
 
@@ -229,5 +238,157 @@ export async function admitSystemdServiceReadBinding(
     return undefined;
   } finally {
     await broker?.close();
+  }
+}
+
+/** One passive manager snapshot; these facts confer no lifecycle authority. */
+export async function listLoadedSystemdServices(
+  env: GatewayServiceEnv,
+  scope: SystemdUnitScope,
+  deadline: number,
+) {
+  const assertBudget = () => {
+    if (performance.now() >= deadline) {
+      throw new ServiceInspectionError("systemd-inspection-deadline-exceeded");
+    }
+  };
+  assertBudget();
+  const route = { ...process.env, ...env };
+  const uid = process.geteuid?.();
+  const transport =
+    scope === "user"
+      ? await resolveSystemdUserTransport(route, deadline, undefined, "admission")
+      : undefined;
+  if (process.platform !== "linux" || uid === undefined) {
+    throw unavailable();
+  }
+  assertBudget();
+  let connection: Awaited<ReturnType<typeof openSystemdBroker>>;
+  const privateManager = transport?.kind === "private";
+  if (scope === "system") {
+    connection = await openSystemdSystemBroker(deadline);
+  } else if (transport?.kind === "machine") {
+    connection = await openSystemdMachineBroker(`${transport.user}@`, deadline);
+  } else {
+    if (!transport || !isLocalUnixAddress(transport.address)) {
+      throw unavailable();
+    }
+    connection = privateManager
+      ? await openSystemdUserManager(transport.address, deadline)
+      : await openSystemdBroker(transport.address, deadline);
+  }
+  const query = (args: string[], signatures: string[]) =>
+    connection.query(args, signatures, deadline);
+  const isStrings = (value: unknown): value is string[] =>
+    Array.isArray(value) && value.every((part) => typeof part === "string");
+  try {
+    const binding = privateManager
+      ? undefined
+      : await bindSystemdManagerOwner(
+          query,
+          scope === "system" ? 0 : transport?.kind === "machine" ? undefined : uid,
+          unavailable,
+        );
+    const destination = binding?.destination ?? MANAGER;
+    const [reply] =
+      (await query(
+        ["call", destination, "/org/freedesktop/systemd1", `${MANAGER}.Manager`, "ListUnits"],
+        ["a(ssssssouso)"],
+      )) ?? [];
+    const units = Array.isArray(reply) && reply.length === 1 ? reply[0] : null;
+    if (!Array.isArray(units)) {
+      throw unavailable();
+    }
+    const services: Array<{
+      label: string;
+      fragmentPath: string;
+      commands: string[][];
+      environment: string[];
+    }> = [];
+    const unavailableUnits: string[] = [];
+    for (const unit of units) {
+      assertBudget();
+      if (
+        !Array.isArray(unit) ||
+        unit.length !== 10 ||
+        !isStrings(unit.slice(0, 7)) ||
+        !Number.isInteger(unit[7]) ||
+        unit[7] < 0 ||
+        unit[7] > 0xffffffff ||
+        !isStrings(unit.slice(8))
+      ) {
+        throw unavailable();
+      }
+      const label: unknown = unit[0];
+      const objectPath: unknown = unit[6];
+      if (
+        typeof label !== "string" ||
+        typeof objectPath !== "string" ||
+        !/^\/org\/freedesktop\/systemd1\/unit\/[A-Za-z0-9_]+$/.test(objectPath)
+      ) {
+        throw unavailable();
+      }
+      if (!label.endsWith(".service")) {
+        continue;
+      }
+      try {
+        const [executions, environment] =
+          (await query(
+            [
+              "get-property",
+              destination,
+              objectPath,
+              `${MANAGER}.Service`,
+              "ExecStart",
+              "Environment",
+            ],
+            ["a(sasbttttuii)", "as"],
+          )) ?? [];
+        const [fragmentPath] =
+          (await query(
+            ["get-property", destination, objectPath, `${MANAGER}.Unit`, "FragmentPath"],
+            ["s"],
+          )) ?? [];
+        if (
+          !Array.isArray(executions) ||
+          !isStrings(environment) ||
+          typeof fragmentPath !== "string" ||
+          (fragmentPath !== "" && !path.posix.isAbsolute(fragmentPath))
+        ) {
+          throw unavailable();
+        }
+        const commands = executions.map((execution: unknown) => {
+          if (
+            !Array.isArray(execution) ||
+            execution.length !== 10 ||
+            typeof execution[0] !== "string" ||
+            !execution[0] ||
+            !isStrings(execution[1]) ||
+            typeof execution[2] !== "boolean" ||
+            !execution.slice(3).every(Number.isInteger)
+          ) {
+            throw unavailable();
+          }
+          return execution[1].toSpliced(0, 1, execution[0]);
+        });
+        services.push({ label, fragmentPath, commands, environment });
+      } catch (error) {
+        if (
+          isServiceInspectionControlFailure(error) ||
+          (error instanceof ServiceInspectionError &&
+            error.reason === "systemd-inspection-deadline-exceeded")
+        ) {
+          throw findServiceOwnershipRefusal(error) ?? error;
+        }
+        unavailableUnits.push(label);
+      }
+    }
+    assertBudget();
+    await binding?.verify();
+    assertBudget();
+    connection.verify();
+    return { services, unavailableUnits };
+  } finally {
+    await connection.close();
   }
 }

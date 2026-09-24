@@ -46,7 +46,6 @@ import { readBuiltGatewayBuildId, type GitRuntimeIdentity } from "./update-git-r
 import type { CommandRunner } from "./update-global-command-runner.js";
 import {
   collectInstalledGlobalPackageErrors,
-  cleanupGlobalRenameDirs,
   globalInstallArgs,
   globalInstallFallbackArgs,
   listActivePnpmIsolatedGlobalPackages,
@@ -467,14 +466,6 @@ export async function runGlobalPackageUpdateSteps(params: {
     if (pnpmPreflight.failedStep) {
       return await packageUpdateFailure(pnpmPreflight.failedStep);
     }
-    const packageRoot = params.packageRoot ?? params.installTarget.packageRoot;
-    if (packageRoot && !params.beforeVerifyCandidate) {
-      // Lifecycle policy must refuse before cleanup can remove an interrupted update backup.
-      await cleanupGlobalRenameDirs({
-        globalRoot: path.dirname(packageRoot),
-        packageName: params.packageName,
-      });
-    }
     const bunOwner =
       params.installTarget.manager === "bun"
         ? resolveBunGlobalInstallOwner(
@@ -704,14 +695,6 @@ export async function runGlobalPackageUpdateSteps(params: {
 
     const verificationPackageRoot = stagedInstall.packageRoot;
     await params.beforeVerifyCandidate?.(verificationPackageRoot);
-    if (packageRoot && params.beforeVerifyCandidate) {
-      // Admission staging owns only its private prefix. Retire old backups only
-      // after the supervisor resumes admitted package preparation.
-      await cleanupGlobalRenameDirs({
-        globalRoot: path.dirname(packageRoot),
-        packageName: params.packageName,
-      });
-    }
     const candidateVersion = await readPackageVersion(verificationPackageRoot);
     const expectedVersion = resolveExpectedInstalledVersionFromSpec(
       params.packageName,

@@ -1,8 +1,19 @@
 // systemd 239's format_cmdline counts arrays and flattens structs. This adapter
-// only accepts the effective-command reader's signatures, not arbitrary D-Bus.
+// only accepts the maintained service readers' signatures, not arbitrary D-Bus.
 const MAX_BYTES = 1024 * 1024;
 const MAX_VALUES = 16_384;
-const SIGNATURES = new Set(["s", "o", "u", "b", "as", "a(sb)", "a(sasbttttuii)"]);
+const SIGNATURES = new Set([
+  "s",
+  "o",
+  "u",
+  "i",
+  "t",
+  "b",
+  "as",
+  "a(sb)",
+  "a(sus)",
+  "a(sasbttttuii)",
+]);
 const ESCAPES: Record<string, number> = {
   a: 7,
   b: 8,
@@ -127,6 +138,9 @@ export function decodeLegacyBusctlOutput(
       }
       if (type === "(sb)") {
         return [read("s"), read("b")];
+      }
+      if (type === "(sus)") {
+        return [read("s"), read("u"), read("s")];
       }
       if (type === "(sasbttttuii)") {
         return ["s", "as", "b", "t", "t", "t", "t", "u", "i", "i"].map(read);

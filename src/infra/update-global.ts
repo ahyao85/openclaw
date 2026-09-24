@@ -4,7 +4,6 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { sameFileIdentity } from "@openclaw/fs-safe/advanced";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { valid as validSemver } from "semver";
 import { BUNDLED_RUNTIME_SIDECAR_PATHS } from "../plugins/runtime-sidecar-paths.js";
@@ -26,7 +25,6 @@ import { parseSemver } from "./runtime-guard.js";
 import {
   createFreeBsdPkgOwnershipInspection,
   FreeBsdPkgOwnershipError,
-  PKG_INSPECTION_TIMEOUT_MS,
   type FreeBsdPkgOwnershipInspection,
 } from "./update-freebsd-pkg-ownership.js";
 import { collectGitRuntimeErrors, type GitRuntimeIdentity } from "./update-git-runtime.js";
@@ -67,7 +65,6 @@ export type ResolvedGlobalInstallTarget = ResolvedGlobalInstallCommand & {
 };
 
 const PRIMARY_PACKAGE_NAME = "openclaw";
-const GLOBAL_RENAME_PREFIX = ".";
 /** npm-compatible spec used when the user asks to install the moving main branch. */
 const OPENCLAW_MAIN_PACKAGE_SPEC = "github:openclaw/openclaw#main";
 const COREPACK_ENABLE_DOWNLOAD_PROMPT_DEFAULT = "0";
@@ -1370,59 +1367,4 @@ export function globalInstallFallbackArgs(
   ];
 }
 
-/** Removes leftover hidden global package directories from interrupted renames. */
-export async function cleanupGlobalRenameDirs(params: {
-  globalRoot: string;
-  packageName: string;
-}): Promise<{ removed: string[] }> {
-  const removed: string[] = [];
-  const root = params.globalRoot.trim();
-  const name = params.packageName.trim();
-  if (!root || !name) {
-    return { removed };
-  }
-  const prefix = `${GLOBAL_RENAME_PREFIX}${name}-`;
-  const inspectionDeadline = Date.now() + PKG_INSPECTION_TIMEOUT_MS;
-  let entries: string[];
-  try {
-    entries = await fs.readdir(root);
-  } catch {
-    return { removed };
-  }
-  for (const entry of entries) {
-    if (!entry.startsWith(prefix)) {
-      continue;
-    }
-    const target = path.join(root, entry);
-    try {
-      const stat = await fs.lstat(target);
-      if (!stat.isDirectory()) {
-        continue;
-      }
-      if (process.platform === "freebsd") {
-        // A matching rename pattern does not establish ownership of its files.
-        const remainingMs = inspectionDeadline - Date.now();
-        if (remainingMs <= 0) {
-          break;
-        }
-        await createFreeBsdPkgOwnershipInspection(remainingMs).assertUnowned(target);
-        const current = await fs.lstat(target);
-        if (!current.isDirectory() || !sameFileIdentity(stat, current)) {
-          continue;
-        }
-      }
-      await fs.rm(target, { recursive: true, force: true });
-      removed.push(entry);
-    } catch (error) {
-      if (
-        error instanceof FreeBsdPkgOwnershipError &&
-        error.reason === "pkg-ownership-unavailable"
-      ) {
-        break;
-      }
-      // ignore cleanup failures
-    }
-  }
-  return { removed };
-}
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

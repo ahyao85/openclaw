@@ -37,6 +37,8 @@ import {
 const SYSTEMD_GATEWAY_DOTENV_FILENAME = "gateway.systemd.env";
 const SYSTEMD_NODE_DOTENV_FILENAME = "node.systemd.env";
 
+type SystemdCommandReadOptions = GatewayServiceReadOptions & { expectedRunningPid?: number };
+
 export function assertSystemdServiceAccount(user: string) {
   const account = os.userInfo();
   if (
@@ -104,7 +106,7 @@ async function readSystemdManagerCommand(
   env: GatewayServiceEnv,
   localDefinition: GatewayServiceCommandSnapshot | null,
   managedUnsetEnvironment: string[],
-  opts?: GatewayServiceReadOptions,
+  opts?: SystemdCommandReadOptions,
 ): Promise<GatewayServiceCommandConfig | null> {
   const manager = "org.freedesktop.systemd1";
   const target = opts?.systemdReadTarget;
@@ -222,6 +224,14 @@ async function readSystemdManagerCommand(
       ) ||
       !isStringArray(unset) ||
       unset.some((assignment) => !assignment || assignment.startsWith("="))
+    ) {
+      throw unavailable();
+    }
+    // A reload can replace ExecStart while the previous command still owns the running PID.
+    const expectedRunningPid = opts?.expectedRunningPid;
+    if (
+      expectedRunningPid !== undefined &&
+      (execution[7] !== expectedRunningPid || expectedRunningPid <= 0)
     ) {
       throw unavailable();
     }
@@ -391,7 +401,7 @@ async function readSystemdDropInOverrides(
 
 export async function readSystemdServiceExecStart(
   env: GatewayServiceEnv,
-  options?: GatewayServiceReadOptions,
+  options?: SystemdCommandReadOptions,
 ): Promise<GatewayServiceCommandConfig | null> {
   try {
     const target =
