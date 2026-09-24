@@ -886,6 +886,7 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
     }
 
     /// Read headers without buffering a response body, while retaining the route's TLS policy.
+    // periphery:ignore - Public response-only probe for app-owned ingress authorization.
     public func response(for request: URLRequest) async throws -> URLResponse {
         self.registerExpectedAuthority(url: request.url)
         try Task.checkCancellation()
@@ -1025,6 +1026,7 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
     }
 }
 
+// periphery:ignore - Owns response delivery for the public ingress probe above.
 private final class GatewayHTTPResponseDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     let responses = AsyncThrowingStream<URLResponse, Error>.makeStream(bufferingPolicy: .bufferingNewest(1))
     private let owner: GatewayTLSPinningSession
