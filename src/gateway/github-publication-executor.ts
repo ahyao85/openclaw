@@ -447,13 +447,15 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
     });
 
     const config = currentGitHubPublicationConfig();
-    const attribution = resolveGitCoauthorAttribution({
+    const attribution = await resolveGitCoauthorAttribution({
       agentId: row.agent_id,
       config,
       excludeAccountId: identity.account.accountId,
       sessionKey: row.session_key,
+      sessionId: row.session_id,
       storePath: loaded.storePath,
     });
+    assertAction();
     const contributorCredit = attribution?.logins.map((login) => `- @${login}`).join("\n");
     const messageLines = currentMessage.split(/\r?\n/u);
     if (

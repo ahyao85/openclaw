@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { GIT_COAUTHOR_PREFERENCE_KEY } from "../../packages/gateway-protocol/src/index.js";
@@ -75,22 +76,50 @@ function syncEmailGitHubProfile(
 }
 
 describe("multi-account people", () => {
-  it("adds the nullable primary column to existing profiles without advancing the schema", () => {
+  it("does not initialize missing profile storage during attribution reads", async () => {
+    const options = stateOptions();
+    expect(await resolveUserProfileGitHubAttribution(["missing-person"], options)).toEqual(
+      new Map(),
+    );
+    expect(existsSync(options.path)).toBe(false);
+    const { db } = openOpenClawStateDatabase(options);
+    expect(await resolveUserProfileGitHubAttribution(["missing-person"], options)).toEqual(
+      new Map(),
+    );
+    expect(
+      db.prepare("SELECT name FROM sqlite_schema WHERE name = 'user_profiles'").get(),
+    ).toBeUndefined();
+  });
+
+  it("adds the nullable primary column to existing profiles without advancing the schema", async () => {
     const options = stateOptions();
     const db = openOpenClawStateDatabase(options).db;
     db.exec(
       "CREATE TABLE user_profiles (id TEXT NOT NULL PRIMARY KEY, display_name TEXT, avatar BLOB, avatar_mime TEXT, avatar_sha256 TEXT, merged_into TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL) STRICT",
     );
     db.exec(
-      "CREATE TABLE user_profile_identities (provider TEXT NOT NULL, subject TEXT NOT NULL, profile_id TEXT NOT NULL, canonical_login TEXT, created_at INTEGER NOT NULL, PRIMARY KEY (provider, subject)) STRICT",
+      "CREATE TABLE user_profile_identities (provider TEXT NOT NULL, subject TEXT NOT NULL, profile_id TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (provider, subject)) STRICT",
     );
     db.prepare(
       "INSERT INTO user_profiles (id, display_name, created_at, updated_at) VALUES (?, ?, 1, 1)",
     ).run("legacy-person", "Saved Person Name");
     db.prepare(
-      "INSERT INTO user_profile_identities (provider, subject, profile_id, canonical_login, created_at) VALUES ('github', '70', ?, 'legacy', 1)",
+      "INSERT INTO user_profile_identities (provider, subject, profile_id, created_at) VALUES ('github', '70', ?, 1)",
     ).run("legacy-person");
     const version = db.prepare("PRAGMA user_version").get()?.user_version;
+    expect(
+      (await resolveUserProfileGitHubAttribution(["legacy-person"], options)).get("legacy-person"),
+    ).toBeNull();
+    db.exec("ALTER TABLE user_profile_identities ADD COLUMN canonical_login TEXT");
+    db.prepare(
+      "UPDATE user_profile_identities SET canonical_login = 'legacy' WHERE subject = '70'",
+    ).run();
+    expect(
+      (await resolveUserProfileGitHubAttribution(["legacy-person"], options)).get("legacy-person"),
+    ).toEqual({ accountId: 70, login: "legacy" });
+    expect(db.prepare("PRAGMA table_info(user_profiles)").all()).not.toContainEqual(
+      expect.objectContaining({ name: "primary_github_account_id" }),
+    );
     expect(getUserProfileListItem("legacy-person", options)).toMatchObject({
       displayName: "Saved Person Name",
       githubIdentity: { login: "legacy" },
@@ -115,6 +144,15 @@ describe("multi-account people", () => {
       }),
     );
     expect(db.prepare("PRAGMA user_version").get()?.user_version).toBe(version);
+    db.prepare("UPDATE user_profiles SET primary_github_account_id = 999 WHERE id = ?").run(
+      profile.id,
+    );
+    expect(
+      (await resolveUserProfileGitHubAttribution([profile.id], options)).get(profile.id),
+    ).toBeNull();
+    db.prepare("UPDATE user_profiles SET primary_github_account_id = 70 WHERE id = ?").run(
+      profile.id,
+    );
     closeOpenClawStateDatabaseForTest();
     expect(getUserProfileListItem(profile.id, options)).toMatchObject({
       displayName: "Saved Person Name",
@@ -196,12 +234,12 @@ describe("multi-account people", () => {
       await resolveCanonicalCachedGitHubIdentity({ accountId: 73, email: primary.email }, options),
     ).toBeUndefined();
     expect(
-      resolveUserProfileGitHubAttribution([person.id, work.id], options).get(work.id),
+      (await resolveUserProfileGitHubAttribution([person.id, work.id], options)).get(work.id),
     ).toBeNull();
     setUserPreferences(person.id, { [GIT_COAUTHOR_PREFERENCE_KEY]: true }, options);
-    expect(resolveUserProfileGitHubAttribution([work.id], options).get(work.id)?.accountId).toBe(
-      primary.accountId,
-    );
+    expect(
+      (await resolveUserProfileGitHubAttribution([work.id], options)).get(work.id)?.accountId,
+    ).toBe(primary.accountId);
     expect(
       openOpenClawStateDatabase(options).db.prepare("PRAGMA user_version").get()?.user_version,
     ).toBe(version);
@@ -237,7 +275,7 @@ describe("multi-account people", () => {
     });
   });
 
-  it("leaves ambiguous or invalid primary accounts out of public credit without breaking sign-in", () => {
+  it("leaves ambiguous or invalid primary accounts out of public credit without breaking sign-in", async () => {
     const options = stateOptions();
     const person = syncEmailGitHubProfile(
       { accountId: 90, canonicalLogin: "first", email: "first@example.test" },
@@ -258,7 +296,9 @@ describe("multi-account people", () => {
           options,
         ),
       ).toMatchObject({ id: person.id, githubIdentity: null });
-      expect(resolveUserProfileGitHubAttribution([person.id], options).get(person.id)).toBeNull();
+      expect(
+        (await resolveUserProfileGitHubAttribution([person.id], options)).get(person.id),
+      ).toBeNull();
     }
   });
 });

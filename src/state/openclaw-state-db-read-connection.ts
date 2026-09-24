@@ -8,6 +8,7 @@ import {
 } from "../infra/sqlite-coordinator.js";
 import { SQLITE_IDLE_HANDLE_TTL_MS } from "../infra/sqlite-handle-lifecycle.js";
 import type { PreparedSqliteReadOnlyLocation } from "../infra/sqlite-readonly-location.types.js";
+import { admitSqliteSchema } from "../infra/sqlite-schema-facts.js";
 import { acquireSqliteSnapshotReadToken } from "../infra/sqlite-snapshot-staging.js";
 import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
 import {
@@ -169,6 +170,7 @@ function assertStateReadSchemaForPolicy(
   } else {
     assertSupportedStateSchemaVersion(database, pathname);
   }
+  admitSqliteSchema(database);
 }
 
 export function withOpenClawStateReadOnlyLocation<T>(

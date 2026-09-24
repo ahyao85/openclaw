@@ -6,12 +6,20 @@ import {
 } from "../../packages/gateway-protocol/src/schema/user-profile-constants.js";
 import type { UserProfileGitHubIdentity } from "../../packages/gateway-protocol/src/schema/users.js";
 import { executeSqliteQuerySync, executeSqliteQueryTakeFirstSync } from "../infra/kysely-sync.js";
+import { parseSqliteTableDefinition } from "../infra/sqlite-schema-contract-assembly.js";
+import {
+  getAdmittedSqliteSchemaFacts,
+  type SqliteSchemaFacts,
+} from "../infra/sqlite-schema-facts.js";
+import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { normalizeGitHubLogin } from "../utils/github-login.js";
+import { executeExistingOpenClawStateRead } from "./openclaw-state-db-readonly.js";
 import { tableExists, tableHasColumn } from "./openclaw-state-db-schema-helpers.js";
 import {
   openOpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
+import type { OpenClawStateReadCommand } from "./openclaw-state-read.types.js";
 import { deleteUserPreference, selectUserPreferenceValues } from "./user-preferences.store.js";
 import { publishUserProfileAuthorityChange } from "./user-profile-events.js";
 import type { UserProfileMutationContext } from "./user-profile-mutation.js";
@@ -25,6 +33,33 @@ import type { CachedGitHubIdentity } from "./user-profiles.types.js";
 
 const GITHUB_PROVIDER = "github";
 const GITHUB_LOGIN_SUBJECT_PREFIX = "login:";
+const githubColumnFacts = new WeakMap<
+  SqliteSchemaFacts,
+  { primaryAccount: boolean; verifiedLogin: boolean }
+>();
+
+function readGitHubColumns(db: DatabaseSync) {
+  const schema = getAdmittedSqliteSchemaFacts(db);
+  if (!schema) {
+    return {
+      primaryAccount: tableHasColumn(db, "user_profiles", "primary_github_account_id"),
+      verifiedLogin: tableHasColumn(db, "user_profile_identities", "canonical_login"),
+    };
+  }
+  let columns = githubColumnFacts.get(schema);
+  if (!columns) {
+    const hasColumn = (table: "user_profiles" | "user_profile_identities", column: string) => {
+      const sql = schema.tableSql.get(table);
+      return sql !== undefined && parseSqliteTableDefinition(sql, table).columns.has(column);
+    };
+    columns = {
+      primaryAccount: hasColumn("user_profiles", "primary_github_account_id"),
+      verifiedLogin: hasColumn("user_profile_identities", "canonical_login"),
+    };
+    githubColumnFacts.set(schema, columns);
+  }
+  return columns;
+}
 
 type StoredGitHubIdentity = {
   accountId: number;
@@ -55,13 +90,17 @@ export function selectStoredGitHubIdentities(
   if (profileIds?.length === 0) {
     return new Map();
   }
+  const columns = readGitHubColumns(db);
+  if (!columns.verifiedLogin) {
+    return new Map();
+  }
   let query = userProfilesDb(db)
     .selectFrom("user_profile_identities")
     .innerJoin("user_profiles", "user_profiles.id", "user_profile_identities.profile_id")
     .select(["profile_id", "subject", "canonical_login"])
     // Read-only catalog projections must not initialize a pre-feature database.
     .select((eb) => [
-      tableHasColumn(db, "user_profiles", "primary_github_account_id")
+      columns.primaryAccount
         ? "user_profiles.primary_github_account_id"
         : eb.val<number | null>(null).as("primary_github_account_id"),
     ])
@@ -103,7 +142,7 @@ export function selectStoredGitHubIdentities(
   );
 }
 
-export function resolveCachedGitHubIdentityInDatabase(
+function resolveCachedGitHubIdentityInDatabase(
   db: DatabaseSync,
   params: { accountId: number; email: string },
 ): CachedGitHubIdentity | undefined {
@@ -115,7 +154,7 @@ export function resolveCachedGitHubIdentityInDatabase(
     !tableExists(db, "user_profiles") ||
     !tableExists(db, "user_profile_emails") ||
     !tableExists(db, "user_profile_identities") ||
-    !tableHasColumn(db, "user_profile_identities", "canonical_login")
+    !readGitHubColumns(db).verifiedLogin
   ) {
     return undefined;
   }
@@ -170,17 +209,34 @@ export function selectUserProfileGitHubIdentities(
   );
 }
 
-/** Resolves bounded participants for verified identities that have not opted out of public credit. */
-export function resolveUserProfileGitHubAttribution(
+/** Resolves current verified identities and public-credit preferences without initializing storage. */
+export async function resolveUserProfileGitHubAttribution(
   profileIds: readonly string[],
   options: OpenClawStateDatabaseOptions = {},
-): Map<string, StoredGitHubIdentity | null> {
+): Promise<Map<string, StoredGitHubIdentity | null>> {
   if (profileIds.length === 0) {
     return new Map();
   }
-  const database = openOpenClawStateDatabase(options);
-  ensureUserProfilesSchema(options, database);
-  const { db } = database;
+  const reply = await executeExistingOpenClawStateRead(options, {
+    type: "userProfiles.githubAttribution.resolve",
+    profileIds,
+  });
+  if (!reply) {
+    return new Map();
+  }
+  if (!reply.ok || reply.type !== "userProfiles.githubAttribution.resolve") {
+    throw new Error("GitHub attribution reader returned an unexpected result");
+  }
+  return reply.identities;
+}
+
+function resolveUserProfileGitHubAttributionInDatabase(
+  db: DatabaseSync,
+  profileIds: readonly string[],
+): Map<string, StoredGitHubIdentity | null> {
+  if (profileIds.length === 0 || !tableExists(db, "user_profiles")) {
+    return new Map();
+  }
   const profiles = executeSqliteQuerySync(
     db,
     userProfilesDb(db)
@@ -192,7 +248,12 @@ export function resolveUserProfileGitHubAttribution(
     profiles.map((profile) => [profile.id, profile.merged_into ?? profile.id] as const),
   );
   const canonicalIds = [...new Set(canonicalBySource.values())];
-  const identities = selectStoredGitHubIdentities(db, canonicalIds);
+  const identities: ReturnType<typeof selectStoredGitHubIdentities> = tableExists(
+    db,
+    "user_profile_identities",
+  )
+    ? selectStoredGitHubIdentities(db, canonicalIds)
+    : new Map();
   const preferences = selectUserPreferenceValues(db, canonicalIds, GIT_COAUTHOR_PREFERENCE_KEY);
   return new Map(
     [...canonicalBySource].map(([sourceId, canonicalId]) => [
@@ -201,6 +262,31 @@ export function resolveUserProfileGitHubAttribution(
         ? (identities.get(canonicalId)?.primary ?? null)
         : null,
     ]),
+  );
+}
+
+export function readUserProfileGitHubCommand(
+  db: DatabaseSync,
+  command: Extract<
+    OpenClawStateReadCommand,
+    { type: "userProfiles.githubIdentity.cached" | "userProfiles.githubAttribution.resolve" }
+  >,
+):
+  | { type: "userProfiles.githubIdentity.cached"; identity: CachedGitHubIdentity | undefined }
+  | {
+      type: "userProfiles.githubAttribution.resolve";
+      identities: ReturnType<typeof resolveUserProfileGitHubAttributionInDatabase>;
+    } {
+  return runSqliteDeferredTransactionSync(db, () =>
+    command.type === "userProfiles.githubIdentity.cached"
+      ? {
+          type: command.type,
+          identity: resolveCachedGitHubIdentityInDatabase(db, command),
+        }
+      : {
+          type: command.type,
+          identities: resolveUserProfileGitHubAttributionInDatabase(db, command.profileIds),
+        },
   );
 }
 

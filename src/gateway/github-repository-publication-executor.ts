@@ -316,13 +316,15 @@ export async function executeRepositoryGitHubPublication(params: {
     };
     assertAction();
     const config = currentGitHubPublicationConfig();
-    const attribution = resolveGitCoauthorAttribution({
+    const attribution = await resolveGitCoauthorAttribution({
       agentId: row.agent_id,
       config,
       excludeAccountId: identity.account.accountId,
       sessionKey: row.session_key,
+      sessionId: row.session_id,
       storePath: params.storePath,
     });
+    assertAction();
     const credit = attribution?.logins.map((login) => "- @" + login).join("\n");
     const title = row.title?.trim() || "Publish " + branch;
     if (!headCommit) {
