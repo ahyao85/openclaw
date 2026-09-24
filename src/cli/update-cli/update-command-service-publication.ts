@@ -16,9 +16,9 @@ import type { GatewayServiceState } from "../../daemon/service-types.js";
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { resolveSystemdServiceName } from "../../daemon/systemd-service-files.js";
 import { readActiveGatewayLockIdentity } from "../../infra/gateway-lock.js";
+import { acquireGatewayStateOwner } from "../../infra/gateway-state-owner.js";
 import { hasNodeErrorCode, isPathInside } from "../../infra/path-guards.js";
 import { probePortUsage } from "../../infra/ports-probe.js";
-import { acquireGatewayLifecycleCoordinator } from "../../infra/state-database-coordinator.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { formatCliCommand } from "../command-format.js";
 import { UpdatePreMutationError } from "./shared.js";
@@ -57,9 +57,11 @@ export async function withGatewayRuntimeArtifactPublication<T>(
   const assertCaller = params.assertCurrent;
   assertCaller();
   return await withGatewayServiceOperationLock(params.env, async (assertNative) => {
+    let processOwner: ReturnType<typeof acquireGatewayStateOwner> | undefined;
     const assertCurrent = () => {
       assertCaller();
       assertNative();
+      processOwner?.assertCurrent();
     };
     const refuse = (cause?: unknown): never => {
       throw new UpdatePreMutationError(
@@ -278,15 +280,11 @@ export async function withGatewayRuntimeArtifactPublication<T>(
       }
       assertCurrent();
     };
-    let coordinator: ReturnType<typeof acquireGatewayLifecycleCoordinator> | undefined;
     try {
       try {
         assertCurrent();
         if (!before.disjoint) {
-          coordinator = acquireGatewayLifecycleCoordinator({
-            databasePath: before.database.real,
-            busyTimeoutMs: 0,
-          });
+          processOwner = acquireGatewayStateOwner({ databasePath: before.database.real });
         }
         await assertPublicationCurrent();
         assertCurrent();
@@ -303,7 +301,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
       assertCurrent();
       return result;
     } finally {
-      coordinator?.release();
+      processOwner?.release();
     }
   });
 }

@@ -12,10 +12,6 @@ import {
 } from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import {
-  captureStateDatabaseCoordinatorRuntime,
-  withStateDatabaseCoordinatorRuntimeDirectory,
-} from "../infra/state-database-coordinator.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../state/openclaw-agent-db.js";
@@ -263,29 +259,24 @@ async function withFixture(
   // Only the physical stores survive; every case owns its reader, projection and session rows.
   sharedState ??= await createOpenClawTestState({ scenario: "minimal" });
   sharedState.applyEnv();
-  await withStateDatabaseCoordinatorRuntimeDirectory(
-    { ...captureStateDatabaseCoordinatorRuntime(), keepAlive: false },
-    async () => {
-      const work = new AsyncWorkScope();
-      let fixture: Awaited<ReturnType<typeof createFixture>> | undefined;
+  const work = new AsyncWorkScope();
+  let fixture: Awaited<ReturnType<typeof createFixture>> | undefined;
+  try {
+    await work.track(async () => {
+      fixture = await createFixture(scope);
       try {
-        await work.track(async () => {
-          fixture = await createFixture(scope);
-          try {
-            await run(fixture);
-          } finally {
-            await fixture.close();
-          }
-        });
+        await run(fixture);
       } finally {
-        try {
-          await work.drain();
-        } finally {
-          await fixture?.removeSessions();
-        }
+        await fixture.close();
       }
-    },
-  );
+    });
+  } finally {
+    try {
+      await work.drain();
+    } finally {
+      await fixture?.removeSessions();
+    }
+  }
 }
 
 function frames(socket: ReturnType<typeof createGatewayWsTestSocket>) {

@@ -55,7 +55,6 @@ export function runSqliteWorkerStoreOperation<Operations extends SqliteWorkerOpe
   stateContext?: SqliteWorkerStateContext,
   assertCurrent?: (commandType: PropertyKey) => void,
   createAdmission?: SqliteWorkerAdmissionFactory,
-  requireStateLifecycle = false,
 ): Promise<T> {
   return withCallerErrors(
     resolveSqliteWorkerBroker().runOperation(
@@ -64,7 +63,6 @@ export function runSqliteWorkerStoreOperation<Operations extends SqliteWorkerOpe
       stateContext,
       assertCurrent,
       createAdmission,
-      requireStateLifecycle,
     ),
   );
 }

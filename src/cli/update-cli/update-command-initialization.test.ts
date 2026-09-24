@@ -4,7 +4,6 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { SQLITE_SIDECAR_SUFFIXES } from "../../infra/sqlite-files.js";
-import { resolveStateLifecycleRuntimeDirectory } from "../../infra/state-database-coordinator.js";
 import { createRetainedCheckpointFixture } from "../../infra/update-retained-checkpoint.test-support.js";
 import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
 import { preflightOpenClawDatabaseSchemas } from "../../state/openclaw-database-preflight.js";
@@ -50,22 +49,26 @@ function freshEnvironment() {
 function runIndependentSchemaWriter(env: ReturnType<typeof freshEnvironment>, value: string) {
   const params = {
     databasePath: resolveOpenClawStateSqlitePath(env),
-    runtimeDirectory: resolveStateLifecycleRuntimeDirectory(),
   };
   return execNodeEvalSync(
     `import {
       StateSchemaMutationConflictError,
-      withStateSchemaFence,
-    } from ${JSON.stringify(new URL("../../infra/state-database-coordinator.ts", import.meta.url).href)};
+      withStateDatabaseSchemaMaintenance,
+    } from ${JSON.stringify(new URL("../../infra/state-database-maintenance.ts", import.meta.url).href)};
     try {
-      console.log(withStateSchemaFence(${JSON.stringify(params)}, () => ${JSON.stringify(value)}));
+      console.log(withStateDatabaseSchemaMaintenance(${JSON.stringify(params)}, () => ${JSON.stringify(value)}));
     } catch (error) {
       if (!(error instanceof StateSchemaMutationConflictError)) throw error;
       console.log(error.message);
     }`,
     {
       imports: ["tsx"],
-      env: { ...env, PATH: process.env.PATH, SystemRoot: process.env.SystemRoot },
+      env: {
+        ...env,
+        USERPROFILE: process.env.USERPROFILE,
+        PATH: process.env.PATH,
+        SystemRoot: process.env.SystemRoot,
+      },
       timeout: 20_000,
     },
   ).trim();

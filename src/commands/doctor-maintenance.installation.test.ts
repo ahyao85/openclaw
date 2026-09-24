@@ -19,10 +19,10 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
-import { mockProcessPlatform } from "../test-utils/vitest-spies.js";
 import { maybeRepairGatewayServiceConfig } from "./doctor-gateway-services.js";
 import { prepareWriterContext } from "./doctor-gateway-services.writer-order.test-support.js";
 import { beginDoctorMaintenance } from "./doctor-maintenance.js";
+import { mockDoctorServicePlatform } from "./doctor-maintenance.state-owner.test-support.js";
 import {
   stoppedSystemdBinding,
   useDoctorMaintenanceRuntimeDirectory,
@@ -33,7 +33,6 @@ const mocks = vi.hoisted(() => ({
   service: vi.fn<() => GatewayService>(),
   resident: vi.fn<() => { pid: number } | undefined>(),
   activeRoot: "",
-  runtimeDirectory: "",
   runtimePath: "",
   installPlanBuilt: false,
   audit: vi.fn<typeof import("../daemon/service-audit.js").auditGatewayServiceConfig>(),
@@ -118,10 +117,7 @@ vi.mock("../cli/daemon-cli/restart-health.js", async (importOriginal) => ({
 vi.mock("../../packages/terminal-core/src/note.js", () => ({ note: mocks.note }));
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-useDoctorMaintenanceRuntimeDirectory(() => {
-  mocks.runtimeDirectory = tempDirs.make("openclaw-doctor-installation-runtime-");
-  return mocks.runtimeDirectory;
-});
+useDoctorMaintenanceRuntimeDirectory(() => tempDirs.make("openclaw-doctor-installation-runtime-"));
 const originalStdinIsTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 beforeEach(() => {
   vi.clearAllMocks();
@@ -196,7 +192,7 @@ async function runInstallationCase(params: {
       configurable: true,
     });
   }
-  mockProcessPlatform(params.platform);
+  mockDoctorServicePlatform(params.platform);
   mockSystemAccountHome();
   const home = await fs.realpath(tempDirs.make("openclaw-doctor-installation-"));
   mocks.runtimePath =

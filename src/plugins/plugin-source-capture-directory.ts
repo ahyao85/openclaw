@@ -5,30 +5,32 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { resolveStateDir } from "../config/state-dir.js";
 import { hasErrnoCode } from "../infra/errno.js";
+import { isSqliteLockError } from "../infra/sqlite-error-diagnostics.js";
 import {
-  tryAcquireExclusiveSqliteCoordinator,
-  type SqliteCoordinatorLease,
-} from "../infra/sqlite-coordinator.js";
+  acquireSqliteStagingToken,
+  SQLITE_STAGING_TOKEN_FILES,
+  type SqliteStagingToken,
+} from "../infra/sqlite-staging-token.js";
 import { removeTemporaryArtifacts } from "../infra/temp-artifact-cleanup.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { runInPluginSourceCaptureContext } from "./plugin-source-capture-context.js";
 import { PLUGIN_SOURCE_CAPTURE_PREFIX } from "./plugin-source-capture-path.js";
 
 const CAPTURE_GRACE_MS = 60 * 60 * 1_000;
-const LEASE_FILE = "owner.sqlite";
+
 type Instance = {
   references: number;
   closing?: boolean;
   timer: ReturnType<typeof setInterval>;
   root?: string;
   managedRoot?: string;
-  lease?: SqliteCoordinatorLease;
+  token?: SqliteStagingToken;
 };
 const { instances, ownedRoots, sweeps, warningBackoff } = resolveGlobalSingleton(
   Symbol.for("openclaw.pluginSourceCaptureInstances"),
   () => {
     process.once("exit", () => {
-      // Explicit exits cannot await generation disposal. These native leases belong
+      // Explicit exits cannot await generation disposal. These captures belong
       // only to this exiting process; worker overrides remain with their parent.
       for (const [key, instance] of instances) {
         try {
@@ -52,8 +54,8 @@ const { instances, ownedRoots, sweeps, warningBackoff } = resolveGlobalSingleton
 
 function retireInstance(key: string, instance: Instance): string | undefined {
   instance.closing = true;
-  // Keep custody and the retryable handle if native close fails.
-  instance.lease?.release();
+  // Keep the exact native token available if retirement or close needs a retry.
+  instance.token?.(true);
   if (instance.root) {
     ownedRoots.delete(instance.root);
   }
@@ -71,6 +73,66 @@ function warn(error: unknown) {
   process.emitWarning(`Plugin source capture cleanup: ${String(error)}`);
 }
 
+/** Reclamation owns an existing native token until its captured payload is gone. */
+async function reclaimInstance(directory: string, originalDirectory: fs.Stats): Promise<void> {
+  const ownerPath = path.join(directory, SQLITE_STAGING_TOKEN_FILES[0]);
+  const family = SQLITE_STAGING_TOKEN_FILES.map((file) =>
+    fs.lstatSync(path.join(directory, file), { throwIfNoEntry: false }),
+  );
+  const originalOwner = family[0];
+  const captures = path.join(directory, "captures");
+  const captured = fs.lstatSync(captures, { throwIfNoEntry: false });
+  if (
+    (process.getuid && originalDirectory.uid !== process.getuid()) ||
+    !originalOwner ||
+    family.some(
+      (file) =>
+        file &&
+        (!file.isFile() || file.nlink !== 1 || (process.getuid && file.uid !== process.getuid())),
+    ) ||
+    (captured && !captured.isDirectory())
+  ) {
+    return;
+  }
+  const unchanged = () => {
+    const currentDirectory = fs.lstatSync(directory);
+    const currentOwner = fs.lstatSync(ownerPath);
+    return (
+      currentDirectory.dev === originalDirectory.dev &&
+      currentDirectory.ino === originalDirectory.ino &&
+      currentDirectory.isDirectory() &&
+      currentOwner.isFile() &&
+      currentOwner.nlink === 1 &&
+      currentOwner.dev === originalOwner.dev &&
+      currentOwner.ino === originalOwner.ino
+    );
+  };
+  // Reclaim refuses a missing token and never creates a replacement ownership database.
+  const release = acquireSqliteStagingToken(directory, "reclaim");
+  let released = false;
+  ownedRoots.add(directory);
+  try {
+    if (!unchanged()) {
+      return;
+    }
+    await fsPromises.rm(captures, { recursive: true, force: true });
+    release(true);
+    released = true;
+    // The shipped instance ID is never reused. Windows requires closing before unlink.
+    if (unchanged()) {
+      await fsPromises.rm(directory, { recursive: true, force: true });
+    }
+  } finally {
+    try {
+      if (!released) {
+        release();
+      }
+    } finally {
+      ownedRoots.delete(directory);
+    }
+  }
+}
+
 async function reclaimInstances(
   root: string,
   recordFailure: (error: unknown) => void,
@@ -84,62 +146,29 @@ async function reclaimInstances(
     }
     return;
   }
+  if (entries.length === 0) {
+    return;
+  }
   const cutoff = Date.now() - CAPTURE_GRACE_MS;
   for (const entry of entries) {
     if (!entry.isDirectory()) {
       continue;
     }
     const directory = path.join(root, entry.name);
-    let lease: SqliteCoordinatorLease | null = null;
     try {
       const stat = await fsPromises.lstat(directory);
       if (!stat.isDirectory() || stat.mtimeMs > cutoff) {
         continue;
       }
       const canonical = await fsPromises.realpath(directory);
-      // Opening/closing a second native connection can disturb this process's POSIX locks.
       if (ownedRoots.has(canonical)) {
         continue;
       }
-      const leasePath = path.join(canonical, LEASE_FILE);
-      const leaseStat = await fsPromises.lstat(leasePath);
-      const captures = path.join(canonical, "captures");
-      const captureStat = await fsPromises.lstat(captures).catch((error: unknown) => {
-        if (!hasErrnoCode(error, "ENOENT")) {
-          throw error;
-        }
-        // A prior pass may have removed the payload before instance removal failed.
-        return undefined;
-      });
-      if (
-        !leaseStat.isFile() ||
-        leaseStat.nlink !== 1 ||
-        (captureStat && !captureStat.isDirectory()) ||
-        ownedRoots.has(canonical)
-      ) {
-        continue;
-      }
-      lease = tryAcquireExclusiveSqliteCoordinator(leasePath);
-      if (!lease) {
-        continue;
-      }
-      ownedRoots.add(canonical);
-      try {
-        // The native lock proves released custody even across PID namespaces.
-        await fsPromises.rm(captures, { recursive: true, force: true });
-        lease.release();
-        lease = null;
-        // Instance IDs are never reused. Close the lease before removing its file on Windows.
-        await fsPromises.rm(canonical, { recursive: true, force: true });
-      } finally {
-        ownedRoots.delete(canonical);
-      }
+      await reclaimInstance(canonical, stat);
     } catch (error) {
-      if (!hasErrnoCode(error, "ENOENT")) {
+      if (!hasErrnoCode(error, "ENOENT") && !isSqliteLockError(error)) {
         recordFailure(error);
       }
-    } finally {
-      lease?.release();
     }
   }
 }
@@ -196,7 +225,7 @@ function createCaptureDirectory(instance: Instance, stateDir: string, prefix: st
   }
   const prepare = (fallback: boolean): string => {
     let directory: string | undefined;
-    let lease: SqliteCoordinatorLease | null = null;
+    let token: SqliteStagingToken | undefined;
     try {
       if (fallback) {
         directory = fs.mkdtempSync(path.join(tmpdir(), "openclaw-plugin-captures-"));
@@ -209,24 +238,20 @@ function createCaptureDirectory(instance: Instance, stateDir: string, prefix: st
         directory = candidate;
       }
       const canonical = fs.realpathSync(directory);
-      lease = tryAcquireExclusiveSqliteCoordinator(path.join(canonical, LEASE_FILE));
-      if (!lease) {
-        throw new Error("Could not acquire new plugin source instance");
-      }
+      token = acquireSqliteStagingToken(canonical, "create");
       const captures = path.join(canonical, "captures");
       fs.mkdirSync(captures, { mode: 0o700 });
       const capture = fs.mkdtempSync(path.join(captures, prefix));
       instance.root = canonical;
-      instance.lease = lease;
+      instance.token = token;
       ownedRoots.add(canonical);
       return capture;
     } catch (error) {
       try {
-        lease?.release();
+        token?.(true);
       } catch (releaseError) {
-        // Retain custody for release() to retry; never unlink a still-open coordinator.
         instance.root = directory;
-        instance.lease = lease ?? undefined;
+        instance.token = token;
         instance.closing = true;
         if (directory) {
           ownedRoots.add(directory);
@@ -255,7 +280,7 @@ function createCaptureDirectory(instance: Instance, stateDir: string, prefix: st
     if (instance.closing) {
       throw error;
     }
-    // The fallback covers the whole allocation, including SQLite and the first capture.
+    // The fallback covers the whole allocation, including the token and first capture.
     // Fallback instances have ordinary disposal, but no cross-instance automatic sweep.
     warn(error);
     return prepare(true);

@@ -1,4 +1,4 @@
-// Keep source lifetime pinned while the snapshot owner consumes live or private bytes.
+// Select an owned snapshot or native reader while retaining snapshot cleanup.
 import fs, { type BigIntStats } from "node:fs";
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
 import { prepareSqliteSnapshotFromLiveOwner } from "./sqlite-live-snapshot.js";
@@ -8,10 +8,6 @@ import {
   removeTempDirectoryAsync,
   SqliteSnapshotCleanupError,
 } from "./sqlite-readonly-location-cleanup.js";
-import {
-  prepareSqliteReadOnlyLocationInProcess,
-  prepareSqliteReadOnlyLocationSyncInProcess,
-} from "./sqlite-readonly-location.js";
 import type {
   AsyncPreparedSqliteReadOnlyLocation,
   PreparedSqliteReadOnlyLocation,
@@ -26,14 +22,6 @@ import {
   createSqliteSnapshotStagingDirectory,
   createSqliteSnapshotStagingDirectorySync,
 } from "./sqlite-snapshot-staging.js";
-import {
-  assertSqliteSourceReadAllowed,
-  withSqliteSourceHandleAsync,
-} from "./sqlite-source-handle.js";
-import {
-  assertStateDatabaseSourceReadContext,
-  hasStateDatabaseSourceExclusion,
-} from "./state-database-coordinator.js";
 
 // Keep parent launch orchestration out of the native snapshot child's import graph.
 export async function prepareSqliteReadOnlyLocation(
@@ -43,19 +31,6 @@ export async function prepareSqliteReadOnlyLocation(
   const signal = resolveSqliteInspectionSignal(options.signal);
   try {
     signal?.throwIfAborted();
-    if (hasStateDatabaseSourceExclusion(pathname)) {
-      const prepared = options.preserveSourceArtifacts
-        ? prepareSqliteReadOnlyLocationSyncInProcess(pathname)
-        : await prepareSqliteReadOnlyLocationInProcess(pathname, undefined, signal);
-      try {
-        signal?.throwIfAborted();
-        return prepared;
-      } catch (error) {
-        await prepared.cleanupAsync();
-        throw error;
-      }
-    }
-    assertSqliteSourceReadAllowed(pathname);
     if (!options.preserveSourceArtifacts) {
       const owned = prepareSqliteSnapshotFromLiveOwner(pathname, signal);
       if (owned) {
@@ -75,9 +50,6 @@ export function prepareSqliteReadOnlyLocationAsync(
   pathname: string,
   options: { preserveSourceArtifacts?: boolean; signal?: AbortSignal } = {},
 ): Promise<AsyncPreparedSqliteReadOnlyLocation> {
-  if (hasStateDatabaseSourceExclusion(pathname)) {
-    throw new Error("SQLite source requires its existing snapshot owner");
-  }
   return prepareWorkerSnapshot(
     pathname,
     options,
@@ -93,9 +65,6 @@ function prepareWorkerSnapshot(
   asynchronousCleanup: boolean,
 ): Promise<PreparedSqliteReadOnlyLocation> {
   signal?.throwIfAborted();
-  if (asynchronousCleanup) {
-    assertStateDatabaseSourceReadContext(pathname);
-  }
   return prepareSingleFlightSqliteSnapshot(
     pathname,
     `${options.preserveSourceArtifacts ? "worker-sync" : "worker-async"}:${options.signal ? "strict" : "best-effort"}:${asynchronousCleanup ? "async-token" : "sync-token"}`,
@@ -144,9 +113,6 @@ function prepareWorkerSnapshot(
 export function prepareSqliteReadOnlyLocationSync(
   pathname: string,
 ): PreparedSqliteReadOnlyLocation {
-  if (hasStateDatabaseSourceExclusion(pathname)) {
-    return prepareSqliteReadOnlyLocationSyncInProcess(pathname);
-  }
   const stagingRoot = createSqliteSnapshotStagingDirectorySync();
   try {
     return adoptPreparedLocation(runSqliteReadOnlyWorkerSync(pathname, stagingRoot), stagingRoot);
@@ -189,9 +155,7 @@ export async function withSqliteSnapshotSource<T>(
   let prepared = await prepareSqliteSnapshotSource(pathname);
   try {
     try {
-      return prepared
-        ? await operation(prepared.location)
-        : await withSqliteSourceHandleAsync(pathname, () => operation(pathname));
+      return prepared ? await operation(prepared.location) : await operation(pathname);
     } catch (error) {
       if (prepared) {
         throw error;

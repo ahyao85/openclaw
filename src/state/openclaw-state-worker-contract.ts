@@ -309,8 +309,6 @@ export type OpenClawStateWorkerRuntimeCommand = Exclude<
 /** Host-only admission options; never serialized with a worker command. */
 export type OpenClawStateWorkerOperationOptions = {
   preparation?: OpenClawStateWorkerOpenPreparation;
-  /** Acquire matching lifecycle custody for each dispatched command. */
-  requireStateLifecycle?: boolean;
   existingOnly?: boolean;
   assertCurrent?: (commandType?: PropertyKey) => void;
   createAdmission?: SqliteWorkerAdmissionFactory;

@@ -15,12 +15,11 @@ import { createMockGatewayService, mockSystemAccountHome } from "../daemon/servi
 import { createSystemdCommandQuery } from "../daemon/systemd-command-query.js";
 import { readLoadedSystemdServiceRuntime } from "../daemon/systemd-loaded-runtime.js";
 import * as gatewayLock from "../infra/gateway-lock.js";
+import { acquireGatewayStateOwner } from "../infra/gateway-state-owner.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import * as packageJson from "../infra/package-json.js";
 import * as portsInspect from "../infra/ports-inspect.js";
-import { tryAcquireExclusiveSqliteCoordinator } from "../infra/sqlite-coordinator.js";
 import * as sqliteSnapshotSource from "../infra/sqlite-snapshot-source.js";
-import { acquireGatewayLifecycleCoordinator } from "../infra/state-database-coordinator.js";
 import * as updateGitRuntime from "../infra/update-git-runtime.js";
 import * as updateRunDriver from "../infra/update-run-driver.js";
 import { readUpdateRunDriver } from "../infra/update-run-driver.js";
@@ -40,8 +39,8 @@ import {
 } from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { acquireTestPortBlock, type TestPortClaim } from "../test-utils/port-claims.js";
-import { mockProcessPlatform } from "../test-utils/vitest-spies.js";
 import { beginDoctorMaintenance } from "./doctor-maintenance.js";
+import { mockDoctorServicePlatform } from "./doctor-maintenance.state-owner.test-support.js";
 import {
   stoppedSystemdBinding,
   useDoctorMaintenanceRuntimeDirectory,
@@ -49,7 +48,7 @@ import {
 
 const mocks = vi.hoisted(() => ({
   resolveService: vi.fn<() => GatewayService>(),
-  coordinatorRuntimeDir: "",
+  nativeRuntimeDir: "",
   stops: 0,
 }));
 
@@ -76,22 +75,10 @@ vi.mock("../cli/daemon-cli/restart-health.js", async (importOriginal) => ({
   waitForGatewayHealthyRestart: vi.fn(async () => ({ healthy: true })),
 }));
 
-// Windows hosts cannot enforce the mocked Linux mode bits; retain real SQLite locking.
-vi.mock("../infra/sqlite-coordinator.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../infra/sqlite-coordinator.js")>();
-  const nodeFs = await import("node:fs");
-  return {
-    ...actual,
-    ensurePrivateSqliteCoordinatorDirectory: (directoryPath: string) => {
-      nodeFs.mkdirSync(directoryPath, { recursive: true });
-    },
-  };
-});
-
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 useDoctorMaintenanceRuntimeDirectory(() => {
-  mocks.coordinatorRuntimeDir = tempDirs.make("openclaw-doctor-finish-runtime-");
-  return mocks.coordinatorRuntimeDir;
+  mocks.nativeRuntimeDir = tempDirs.make("openclaw-doctor-finish-runtime-");
+  return mocks.nativeRuntimeDir;
 });
 let gatewayPort: TestPortClaim;
 beforeAll(async () => {
@@ -361,7 +348,7 @@ async function runDoctorFinishForStoppedUnit(
           };
         }
       }
-      mockProcessPlatform("linux");
+      mockDoctorServicePlatform("linux");
       let running =
         continuation !== "parked" &&
         continuation !== "normal-update-parked" &&
@@ -373,7 +360,7 @@ async function runDoctorFinishForStoppedUnit(
       const loadGuardDelays = [2602, 4770];
       let inspectionClock = 0;
       let competingUpdateStarted = false;
-      let otherOwner: ReturnType<typeof tryAcquireExclusiveSqliteCoordinator> | undefined;
+      let otherOwner: ReturnType<typeof acquireGatewayStateOwner> | undefined;
       let releaseDuringInspection: (() => Promise<void>) | undefined;
       const legacyGatewayPid = process.pid + 100_000;
       if (scenario === "legacy-gateway-lifecycle-contended") {
@@ -396,7 +383,7 @@ async function runDoctorFinishForStoppedUnit(
         },
       };
       const restart = vi.fn(async () => {
-        expect(fs.readdirSync(mocks.coordinatorRuntimeDir)).toEqual(
+        expect(fs.readdirSync(mocks.nativeRuntimeDir)).toEqual(
           expect.arrayContaining([expect.stringMatching(/^service-lifecycle-.+\.lock$/)]),
         );
         if (scenario === "restart-failed") {
@@ -569,19 +556,12 @@ async function runDoctorFinishForStoppedUnit(
       }
       const logs: string[] = [];
       const databasePath = path.join(home, ".openclaw", "state", "openclaw.sqlite");
-      const coordinator =
+      otherOwner =
         scenario === "lifecycle-contended" ||
         scenario === "gateway-lifecycle-contended" ||
         scenario === "legacy-gateway-lifecycle-contended"
-          ? acquireGatewayLifecycleCoordinator({
-              databasePath,
-              runtimeDirectory: mocks.coordinatorRuntimeDir,
-            })
+          ? acquireGatewayStateOwner({ databasePath })
           : undefined;
-      coordinator?.release();
-      otherOwner = coordinator
-        ? tryAcquireExclusiveSqliteCoordinator(coordinator.path, { busyTimeoutMs: 0 })
-        : undefined;
       const maintenance = await beginDoctorMaintenance({
         root: process.cwd(),
         ...(parentOwnsService ? { runId } : {}),
@@ -749,7 +729,7 @@ it("preserves the existing malformed continuation writer refusal before stopping
 
 it("refuses a foreign lifecycle holder before stopping the service", async () => {
   await expect(runDoctorFinishForStoppedUnit("lifecycle-contended")).rejects.toThrow(
-    "another OpenClaw process owns gateway-lifecycle",
+    "Another OpenClaw process owns state at",
   );
   expect(mocks.stops).toBe(0);
 });

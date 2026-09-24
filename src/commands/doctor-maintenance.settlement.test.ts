@@ -3,7 +3,7 @@ import { expect, it, vi } from "vitest";
 import { GatewayServiceStopUnsafeError } from "../daemon/service-inspection-error.js";
 import { collectNestedErrorCandidates } from "../infra/error-graph-internal.js";
 import { GATEWAY_SERVICE_STOP_TIMEOUT_MS } from "../infra/gateway-shutdown-budget.js";
-import { StateDatabaseCoordinatorContentionError } from "../infra/state-database-coordinator.js";
+import { GatewayStateOwnerContentionError } from "../infra/gateway-state-owner.js";
 import { DoctorStateMigrationRefusalError } from "../infra/state-migrations.messages.js";
 import { DoctorMaintenanceRefusalError } from "../infra/update-doctor-result.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
@@ -71,7 +71,7 @@ it("does not suggest an unsafe manual stop after a reported write-custody refusa
   expect(boundary.restart).not.toHaveBeenCalled();
 });
 
-it("releases its acquired coordinator without deferring a one-shot authority refusal", async () => {
+it("releases its acquired process owner without deferring a one-shot authority refusal", async () => {
   const refused = new Error("Synthetic revoked update authority");
   let revoked = false;
   const assertCurrent = vi.fn(() => {
@@ -82,7 +82,7 @@ it("releases its acquired coordinator without deferring a one-shot authority ref
   });
   await expect(begin(assertCurrent)).rejects.toBe(refused);
   expect(boundary.release).toHaveBeenCalledOnce();
-  expect(boundary.stateAcquire).not.toHaveBeenCalled();
+  expect(boundary.ownerAssert).not.toHaveBeenCalled();
   expect(boundary.restart).not.toHaveBeenCalled();
   expect(boundary.stop).toHaveBeenCalledOnce();
 });
@@ -101,7 +101,7 @@ it("preserves caller cancellation after a settled maintenance inspection", async
     };
   });
   boundary.gatewayAcquire.mockImplementation(() => {
-    throw new StateDatabaseCoordinatorContentionError("gateway-lifecycle");
+    throw new GatewayStateOwnerContentionError("/synthetic/doctor-state/state/openclaw.sqlite");
   });
   await expect(withCommandProcessScope(() => begin(), controller.signal)).rejects.toBe(cancelled);
   expect(boundary.stop).toHaveBeenCalledOnce();
@@ -286,7 +286,7 @@ it.each([false, true])(
     const acquire = boundary.gatewayAcquire.getMockImplementation()!;
     boundary.gatewayAcquire.mockImplementation(() => {
       if (expires || ticks < 3) {
-        throw new StateDatabaseCoordinatorContentionError("gateway-lifecycle");
+        throw new GatewayStateOwnerContentionError("/synthetic/doctor-state/state/openclaw.sqlite");
       }
       return acquire();
     });
@@ -309,10 +309,10 @@ it.each([false, true])(
     });
 
     if (expires) {
-      await expect(begin()).rejects.toThrow(/gateway-lifecycle/);
+      await expect(begin()).rejects.toThrow(/owns state|state ownership/);
       expect(elapsed).toBe(GATEWAY_SERVICE_STOP_TIMEOUT_MS);
       expect(boundary.log).toHaveBeenCalledWith(
-        expect.stringMatching(/Warning:.*gateway-lifecycle.*openclaw doctor --fix/),
+        expect.stringMatching(/Warning:.*state ownership.*openclaw doctor --fix/),
       );
     } else {
       const maintenance = await begin();
@@ -335,16 +335,16 @@ it("restores a service after state ownership fails without retaining a partial m
         release: () => {
           heldLeases--;
         },
-        createSchemaFenceDelegate: vi.fn(),
+        assertCurrent: boundary.ownerAssert,
       };
     })
     .mockImplementationOnce(() => {
-      throw new StateDatabaseCoordinatorContentionError("gateway-lifecycle");
+      throw new GatewayStateOwnerContentionError("/synthetic/doctor-state/state/openclaw.sqlite");
     });
-  boundary.stateAcquire.mockImplementation(() => {
-    throw new StateDatabaseCoordinatorContentionError("state-lifecycle");
+  boundary.ownerAssert.mockImplementation(() => {
+    throw new Error("state ownership changed before repair");
   });
-  await expect(begin()).rejects.toThrow(/state-lifecycle/);
+  await expect(begin()).rejects.toThrow(/state ownership changed before repair/);
   expect(boundary.restart).toHaveBeenCalledOnce();
   expect(heldLeases).toBe(0);
   expect(boundary.sleep).not.toHaveBeenCalled();
@@ -365,32 +365,28 @@ it.each(["drain", "acquired", "native-revoked", "install-drift"] as const)(
     }
     let ticks = 0;
     let gatewayHeld = false;
-    let stateHeld = false;
+    let ownerVerified = false;
     let conflict = false;
-    let checkedUnderBoth = false;
+    let checkedUnderOwner = false;
     let stopCustody: (() => void) | undefined;
     let capturedStopAdmission: (() => void) | undefined;
     boundary.owner.mockReturnValue({ state: "live", mode: "supervised" });
     boundary.gatewayAcquire.mockImplementation(() => {
       if (ticks < 2) {
-        throw new StateDatabaseCoordinatorContentionError("gateway-lifecycle");
+        throw new GatewayStateOwnerContentionError("/synthetic/doctor-state/state/openclaw.sqlite");
       }
       gatewayHeld = true;
       return {
         release: () => {
           gatewayHeld = false;
         },
-        createSchemaFenceDelegate: vi.fn(),
+        assertCurrent: boundary.ownerAssert,
       };
     });
-    boundary.stateAcquire.mockImplementation(() => {
-      stateHeld = true;
+    boundary.ownerAssert.mockImplementation(() => {
+      expect(gatewayHeld).toBe(true);
+      ownerVerified = true;
       conflict = true;
-      return {
-        release: () => {
-          stateHeld = false;
-        },
-      };
     });
     boundary.sleep.mockImplementation(async () => {
       ticks++;
@@ -399,7 +395,7 @@ it.each(["drain", "acquired", "native-revoked", "install-drift"] as const)(
       }
     });
     boundary.admission.mockImplementation(() => {
-      checkedUnderBoth ||= gatewayHeld && stateHeld;
+      checkedUnderOwner ||= gatewayHeld && ownerVerified;
       return conflict
         ? { kind: "conflict", message: "repair admission conflict" }
         : { kind: "recovery", runs: [] };
@@ -424,19 +420,19 @@ it.each(["drain", "acquired", "native-revoked", "install-drift"] as const)(
     boundary.restart.mockImplementation(async () => {
       expect(stopCustody).toBeTypeOf("function");
       stopCustody!();
-      expect(gatewayHeld || stateHeld).toBe(false);
+      expect(gatewayHeld).toBe(false);
     });
     const refusal = await begin().catch((error: unknown) => error);
     expect(String(refusal)).toMatch(/repair admission conflict|native operation custody retired/);
     expect(refusal).not.toBeInstanceOf(DoctorMaintenanceRefusalError);
-    expect(checkedUnderBoth).toBe(true);
+    expect(checkedUnderOwner).toBe(true);
     expect(boundary.restart).toHaveBeenCalledTimes(
       phase === "native-revoked" || phase === "install-drift" ? 0 : 1,
     );
     expect(boundary.repair).not.toHaveBeenCalled();
     expect(boundary.complete).toHaveBeenCalled();
     expect(boundary.close).not.toHaveBeenCalled();
-    expect(gatewayHeld || stateHeld).toBe(false);
+    expect(gatewayHeld).toBe(false);
   },
 );
 
@@ -451,7 +447,7 @@ it.each([false, true])(
       parked ? undefined : { state: "live", mode: "supervised" },
     );
     boundary.gatewayAcquire.mockImplementation(() => {
-      throw new StateDatabaseCoordinatorContentionError("gateway-lifecycle");
+      throw new GatewayStateOwnerContentionError("/synthetic/doctor-state/state/openclaw.sqlite");
     });
     boundary.sleep.mockImplementation(async (ms: number) => {
       expect(parked).toBe(true);
@@ -477,16 +473,16 @@ it.each([false, true])(
     if (stopFailed) {
       expect(collectNestedErrorCandidates(refusal)).toContain(stopError);
     } else {
-      expect(String(refusal)).toContain("gateway-lifecycle");
+      expect(String(refusal)).toMatch(/owns state|state ownership/);
     }
     expect(elapsed).toBe(GATEWAY_SERVICE_STOP_TIMEOUT_MS);
-    expect(boundary.stateAcquire).not.toHaveBeenCalled();
+    expect(boundary.ownerAssert).not.toHaveBeenCalled();
     expect(boundary.lease).not.toHaveBeenCalled();
     expect(boundary.close).not.toHaveBeenCalled();
     expect(boundary.restart).toHaveBeenCalledOnce();
     expect(boundary.health).toHaveBeenCalledOnce();
     expect(boundary.log).toHaveBeenCalledWith(
-      expect.stringMatching(/Warning:.*gateway-lifecycle.*Restoring its service/),
+      expect.stringMatching(/Warning:.*state ownership.*Restoring its service/),
     );
   },
 );

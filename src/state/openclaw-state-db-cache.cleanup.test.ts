@@ -2,7 +2,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as kyselyCache from "../infra/kysely-sync-cache-state.js";
-import { acquireStateDatabaseHandleExclusion } from "../infra/state-database-coordinator.js";
 import {
   openClawStateDatabaseCache as cache,
   readOpenClawStateWalHealth,
@@ -90,18 +89,10 @@ describe("shared-state disposal ownership", () => {
       expect(owner.db.isOpen).toBe(true);
       expect(cache.getOpenClawStateDatabaseIfOpenAtPath(owner.path)).toBeUndefined();
       expect(kyselyCache.kyselyByDatabase.has(owner.db)).toBe(false);
-      expect(() =>
-        acquireStateDatabaseHandleExclusion({ databasePath: owner.path, busyTimeoutMs: 0 }),
-      ).toThrow(/state-handles/);
       expect(healthy.db.isOpen).toBe(scope !== "all");
       close.mockRestore();
       expect(cache.closeOpenClawStateDatabaseByPath(owner.path)).toBe(true);
       expect(owner.db.isOpen).toBe(false);
-      const exclusion = acquireStateDatabaseHandleExclusion({
-        databasePath: owner.path,
-        busyTimeoutMs: 0,
-      });
-      exclusion.release();
       const reopened = openOpenClawStateDatabase({ path: owner.path });
       expect(reopened.db.prepare("SELECT value FROM retained").all()).toEqual([
         { value: "original" },
@@ -136,10 +127,5 @@ describe("shared-state disposal ownership", () => {
     expect(owner.db.isOpen).toBe(false);
     expect(healthy.db.isOpen).toBe(false);
     expect(cache.getOpenClawStateDatabaseIfOpenAtPath(owner.path)).toBeUndefined();
-    const exclusion = acquireStateDatabaseHandleExclusion({
-      databasePath: owner.path,
-      busyTimeoutMs: 0,
-    });
-    exclusion.release();
   });
 });

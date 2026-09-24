@@ -9,7 +9,6 @@ import {
   publishSqliteWalCheckpointObservation,
   type SqliteWalCheckpointSnapshot,
 } from "../../infra/sqlite-wal-checkpoint.js";
-import { captureStateDatabaseCoordinatorRuntime } from "../../infra/state-database-coordinator.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -276,9 +275,7 @@ export class SqliteReclamationWorker {
       !this.revoked &&
       isDeepStrictEqual(this.options, options) &&
       this.identity === claim.identity &&
-      resolveOpenClawStateSqlitePath(options.env) === this.stateContext.admission.databasePath &&
-      captureStateDatabaseCoordinatorRuntime().directory ===
-        this.stateContext.coordinatorRuntime.directory
+      resolveOpenClawStateSqlitePath(options.env) === this.stateContext.admission.databasePath
     );
   }
 
@@ -423,10 +420,7 @@ export class SqliteReclamationWorker {
           withWriteAdmission: params.withWriteAdmission,
           validationOwner: params.validationOwner,
           dispatch: () =>
-            worker.postMessage(params.request(operationId, coordination), [
-              ...params.transferList,
-              ...(coordination.stateLifecycle ? [coordination.stateLifecycle] : []),
-            ]),
+            worker.postMessage(params.request(operationId, coordination), [...params.transferList]),
         }),
     );
     const observeCompletion = (outcome: "resolved" | "rejected", failure?: unknown) =>
@@ -597,10 +591,7 @@ export class SqliteReclamationWorker {
         await runOpenClawAgentWorkerWrite(this.options, async () => {
           const operationId = ++this.operationId;
           await withSqliteMutationWorkerCoordination(
-            {
-              ...this.stateContext,
-              coordinatorRuntime: { ...this.stateContext.coordinatorRuntime, keepAlive: false },
-            },
+            this.stateContext,
             transport,
             operationId,
             async (coordination) => {
@@ -612,7 +603,7 @@ export class SqliteReclamationWorker {
                     operationId,
                     coordination,
                   } satisfies SqliteReclamationWorkerCloseRequest,
-                  coordination.stateLifecycle ? [coordination.stateLifecycle] : [],
+                  [],
                 );
               } catch (error) {
                 await terminateSqliteMutationWorker(transport);
@@ -626,7 +617,7 @@ export class SqliteReclamationWorker {
             },
           );
           if (transport.kind === "pooled") {
-            // The task cannot yield its slot until the parent's close delegate has released.
+            // The task cannot yield its slot until the parent's native close has settled.
             try {
               worker.postMessage({ type: "release", operationId }, []);
             } catch (error) {

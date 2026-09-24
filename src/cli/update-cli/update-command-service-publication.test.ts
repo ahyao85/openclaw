@@ -10,9 +10,8 @@ import {
   mockSystemAccountHome,
 } from "../../daemon/service.test-helpers.js";
 import * as gatewayLocks from "../../infra/gateway-lock.js";
+import { tryAcquireGatewayStateOwner } from "../../infra/gateway-state-owner.js";
 import * as portProbe from "../../infra/ports-probe.js";
-import { tryAcquireExclusiveSqliteCoordinator } from "../../infra/sqlite-coordinator.js";
-import { acquireGatewayLifecycleCoordinator } from "../../infra/state-database-coordinator.js";
 import * as openClawTmp from "../../infra/tmp-openclaw-dir.js";
 import * as updateCheck from "../../infra/update-check.js";
 import { withPluginLifecycleLease } from "../../plugins/plugin-lifecycle-lease.js";
@@ -60,7 +59,7 @@ async function withRuntimePublicationFixture(
     root: string;
     env: NodeJS.ProcessEnv;
     service: GatewayService;
-    coordinatorPath: string;
+    databasePath: string;
   }) => Promise<void>,
 ): Promise<void> {
   await withServiceHome(async (home) => {
@@ -85,12 +84,7 @@ async function withRuntimePublicationFixture(
     mocks.service.mockReturnValue(service);
     vi.spyOn(gatewayLocks, "readActiveGatewayLockIdentity").mockResolvedValue(undefined);
     vi.spyOn(portProbe, "probePortUsage").mockResolvedValue("free");
-    const coordinator = acquireGatewayLifecycleCoordinator({
-      databasePath: resolveOpenClawStateSqlitePath(env),
-      busyTimeoutMs: 0,
-    });
-    coordinator.release();
-    await run({ home, root, env, service, coordinatorPath: coordinator.path });
+    await run({ home, root, env, service, databasePath: resolveOpenClawStateSqlitePath(env) });
     expect(service.stop).not.toHaveBeenCalled();
     expect(service.start).not.toHaveBeenCalled();
     expect(service.restart).not.toHaveBeenCalled();
@@ -131,12 +125,12 @@ it.each([undefined, "stale-profile"])(
 );
 
 it("holds Gateway startup custody until the automatic source build exits", () =>
-  withRuntimePublicationFixture(async ({ root, env, coordinatorPath }) => {
+  withRuntimePublicationFixture(async ({ root, env, databasePath }) => {
     let builds = 0;
     const spawn = (_command: string, args: string[]) => {
       if (args.some((arg) => arg.endsWith("scripts/build-all.mts"))) {
         builds += 1;
-        const competingStartup = tryAcquireExclusiveSqliteCoordinator(coordinatorPath);
+        const competingStartup = tryAcquireGatewayStateOwner(databasePath);
         competingStartup?.release();
         expect(competingStartup).toBeNull();
       }
@@ -292,8 +286,8 @@ it.each([
 );
 
 it("refuses changed runtime publication while another process owns Gateway presence", () =>
-  withRuntimePublicationFixture(async ({ root, env, coordinatorPath }) => {
-    const other = tryAcquireExclusiveSqliteCoordinator(coordinatorPath);
+  withRuntimePublicationFixture(async ({ root, env, databasePath }) => {
+    const other = tryAcquireGatewayStateOwner(databasePath);
     expect(other).not.toBeNull();
     const publish = vi.fn(async () => "published");
     try {
@@ -312,7 +306,7 @@ it("refuses changed runtime publication while another process owns Gateway prese
 it.each(["stopped", "absent"])(
   "publishes changed artifacts for an affirmatively %s Gateway",
   (state) =>
-    withRuntimePublicationFixture(async ({ root, env, service, coordinatorPath }) => {
+    withRuntimePublicationFixture(async ({ root, env, service, databasePath }) => {
       if (state === "absent") {
         service.isAbsent = vi.fn(async () => true);
       }
@@ -322,7 +316,7 @@ it.each(["stopped", "absent"])(
           async (assertCurrent) => {
             await Promise.resolve();
             await assertCurrent();
-            expect(tryAcquireExclusiveSqliteCoordinator(coordinatorPath)).toBeNull();
+            expect(tryAcquireGatewayStateOwner(databasePath)).toBeNull();
             return "published";
           },
         ),
@@ -337,7 +331,7 @@ it.each([
   "shared SDK parent",
   "nested shared output",
 ])("distinguishes physical runtime paths from current/releases ownership: %s", (scenario) =>
-  withRuntimePublicationFixture(async ({ home, root, env, service, coordinatorPath }) => {
+  withRuntimePublicationFixture(async ({ home, root, env, service, databasePath }) => {
     const snapshot = path.join(home, "releases", "previous");
     await fs.mkdir(path.join(snapshot, "dist"), { recursive: true });
     await fs.writeFile(path.join(snapshot, "package.json"), JSON.stringify({ name: "openclaw" }));
@@ -381,7 +375,7 @@ it.each([
       systemd: { managerUid: 2001 },
     });
     vi.mocked(portProbe.probePortUsage).mockResolvedValue("busy");
-    const other = tryAcquireExclusiveSqliteCoordinator(coordinatorPath);
+    const other = tryAcquireGatewayStateOwner(databasePath);
     expect(other).not.toBeNull();
     const publish = vi.fn(async (assertCurrent: () => Promise<void>) => {
       await assertCurrent();
@@ -567,7 +561,7 @@ it("permits its output-root replacement and new alias descendants while retainin
   }));
 
 it("holds native and Gateway exclusion through publication rollback and closes its assertion", () =>
-  withRuntimePublicationFixture(async ({ root, env, coordinatorPath }) => {
+  withRuntimePublicationFixture(async ({ root, env, databasePath }) => {
     let retainedAssertion: (() => Promise<void>) | undefined;
     let rolledBack = false;
     await expect(
@@ -577,14 +571,14 @@ it("holds native and Gateway exclusion through publication rollback and closes i
           retainedAssertion = assertCurrent;
           try {
             await assertCurrent();
-            expect(tryAcquireExclusiveSqliteCoordinator(coordinatorPath)).toBeNull();
+            expect(tryAcquireGatewayStateOwner(databasePath)).toBeNull();
             throw new Error("publication failed");
           } finally {
             await withGatewayServiceOperationLock(env, async (assertNative) => {
               await Promise.resolve();
               await assertCurrent();
               assertNative();
-              expect(tryAcquireExclusiveSqliteCoordinator(coordinatorPath)).toBeNull();
+              expect(tryAcquireGatewayStateOwner(databasePath)).toBeNull();
               rolledBack = true;
             });
           }
@@ -593,7 +587,7 @@ it("holds native and Gateway exclusion through publication rollback and closes i
     ).rejects.toThrow("publication failed");
     expect(rolledBack).toBe(true);
     await expect(retainedAssertion!()).rejects.toThrow(/ownership has closed/);
-    const released = tryAcquireExclusiveSqliteCoordinator(coordinatorPath);
+    const released = tryAcquireGatewayStateOwner(databasePath);
     expect(released).not.toBeNull();
     released?.release();
   }));

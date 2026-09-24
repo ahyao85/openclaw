@@ -31,13 +31,16 @@ through their existing domain adapter, such as
 `runOpenClawStateWorkerOperation`. The connection-bound Kysely kernel and
 transaction callback remain synchronous **inside the worker**. Complete
 asynchronous planning first, then reread authoritative rows inside the admitted
-transaction. Preserve FIFO order, coordinator custody, transaction/commit grants,
+transaction. Preserve FIFO order, physical database identity, transaction/commit grants,
 and settlement of accepted write-capable work.
 
 Worker authority requests wait for the retained host owner's grant or refusal;
 host scheduling delays do not expire that authority. The host still checks current
 authority before granting, and broker failure joins worker exit before releasing
-custody. Coordinator-lock and broker-capacity admission keep their own deadlines.
+custody. Native SQLite and broker-capacity admission keep their own deadlines.
+Startup, schema work, and offline maintenance use the installation's single
+process owner. Ordinary writes acquire their actual SQLite transaction; they do
+not acquire a separate coordination database or carry a lock-directory namespace.
 
 Each SQLite broker worker admits up to 128 running and queued requests. A busy
 worker's admission queue does not consume another worker's request capacity;
@@ -300,9 +303,9 @@ commit, and publication. The worker rereads exact task and backing records, whil
 the host rechecks the captured runtime, registry entry, and execution authority at
 admission. Delivery callbacks await settlement before mirroring or cleanup. The
 shipped synchronous detached-task SDK remains a separate compatibility adapter;
-other native task mutation callers remain migration debt. Slow main-thread
-coordinator warnings include the caller stack as well as the operation label,
-captured only after a wait exceeds 100 ms. Schemas, retention, and update behavior
+other native task mutation callers remain migration debt. Transaction diagnostics
+report slow native admission and transaction holds with the operation label.
+Schemas, retention, and update behavior
 are unchanged.
 
 Background exec registration and terminal writes use the existing task creation
@@ -332,9 +335,9 @@ cutover preserves schemas, stored bytes, retention, configuration, and update be
 
 Native cron receipt guards read deletion authority through their transaction's
 admitted connection. Other synchronous current-authority readers may reuse that
-same thread's coordinated write transaction, including its pending lifecycle rows;
+same thread's managed write transaction, including its pending lifecycle rows;
 ordinary discovery reads retain committed-state isolation. This avoids preparing
-a child-process snapshot while holding the shared-state write coordinator. Agent
+a child-process snapshot while holding the shared-state write transaction. Agent
 database admission refusals remain with their in-memory admission owner. Schemas,
 retention, configuration, and update behavior are unchanged.
 

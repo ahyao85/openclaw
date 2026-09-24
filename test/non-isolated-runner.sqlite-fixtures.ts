@@ -27,7 +27,6 @@ async function useReadPool() {
     expect(await transport.read({
       context: {
         environment: {},
-        coordinatorRuntime: { directory: "/synthetic/coordinators", keepAlive: false },
         admission: {
           databasePath: "/synthetic/state.sqlite",
           identity: { key: "file:synthetic-state", canonicalPath: "/synthetic/state.sqlite" },
@@ -47,7 +46,6 @@ async function useReadPool() {
     ...failedDrainFixtureFiles(repoRoot, readPoolFixture),
     "11-a-sqlite-owner.test.ts": `
 import { afterAll, expect, it, vi } from "vitest";
-import fs from "node:fs";
 import path from "node:path";
 vi.mock(${source("infra/runtime-worker-url.ts")}, () => ({
   resolveRuntimeWorkerUrl: () => new URL("file:///synthetic/shared-state.worker.js"),
@@ -56,8 +54,6 @@ import { isSqliteWorkerStoreAvailable } from ${source("infra/sqlite-worker-store
 import { registerOpenClawStateDatabaseAsyncResource } from ${source("state/openclaw-state-db-cache.ts")};
 import { openOpenClawStateWorkerCleanupStore } from ${source("state/openclaw-state-worker-store.ts")};
 import { openOpenClawAgentDatabase } from ${source("state/openclaw-agent-db.ts")};
-import { tryAcquireExclusiveSqliteCoordinator } from ${source("infra/sqlite-coordinator.ts")};
-import { captureCoordinatorDatabase } from ${source("infra/sqlite-coordinator.test-support.ts")};
 ${readPoolFixture}
 const drainKey = Symbol.for("fixture.sqliteDrain");
 it("retains a real shared-state owner after host admission is refused", async () => {
@@ -65,32 +61,24 @@ it("retains a real shared-state owner after host admission is refused", async ()
   expect(isSqliteWorkerStoreAvailable({})).toBe(false);
   await expect(openOpenClawStateWorkerCleanupStore("/synthetic/state.sqlite", {
     environment: { OPENCLAW_STATE_DIR: "/synthetic" },
-    coordinatorRuntime: { directory: "/synthetic/coordinators", keepAlive: false },
   }, () => {})).rejects.toMatchObject({ code: "unavailable" });
   const database = openOpenClawAgentDatabase({
     agentId: "fixture",
     env: { OPENCLAW_STATE_DIR: path.join(import.meta.dirname, "agent-state") },
   });
-  const coordinatorPath = path.join(import.meta.dirname, "late-idle-coordinator.sqlite");
-  fs.writeFileSync(coordinatorPath, "");
-  const coordinator = captureCoordinatorDatabase(() =>
-    tryAcquireExclusiveSqliteCoordinator(coordinatorPath, { keepAlive: true }),
-  );
-  const retained = { database, coordinator, drains: 0 };
+  const retained = { database, drains: 0 };
   Reflect.set(globalThis, drainKey, retained);
   registerOpenClawStateDatabaseAsyncResource({ async close() {
     expect(Reflect.get(globalThis, drainKey)).toBe(retained);
     expect(database.db.isOpen).toBe(false);
     expect(retained.drains).toBe(0);
     await Promise.resolve();
-    coordinator.result.release();
     retained.drains++;
   } });
 });
 afterAll(() => {
   const retained = Reflect.get(globalThis, drainKey);
   expect(retained.database.db.isOpen).toBe(true);
-  expect(retained.coordinator.database.isTransaction).toBe(true);
   expect(retained.drains).toBe(0);
   vi.resetModules();
 });
@@ -117,7 +105,6 @@ const drainKey = Symbol.for("fixture.sqliteDrain");
 const retained = Reflect.get(globalThis, drainKey);
 expect(retained.drains).toBe(1);
 expect(retained.database.db.isOpen).toBe(false);
-expect(retained.coordinator.database.isOpen).toBe(false);
 Reflect.deleteProperty(globalThis, drainKey);
 
 const edge = vi.hoisted(() => ({
@@ -182,7 +169,6 @@ it("retains installed-schema repair ownership through retired agent lease cleanu
   const databasePath = "/synthetic/state/openclaw.sqlite";
   const context: OpenClawStateWorkerContext = {
     environment: { OPENCLAW_STATE_DIR: "/synthetic" },
-    coordinatorRuntime: { directory: "/synthetic/coordinators", keepAlive: true },
     existingSchemaPath: databasePath,
     admission: {
       databasePath,
@@ -231,7 +217,6 @@ function failedDrainFixtureFiles(
   const source = (name: string) => JSON.stringify(path.join(repoRoot, "src", name));
   return {
     "13-a-retained-lease.test.ts": `
-import fs from "node:fs";
 import path from "node:path";
 import { afterAll, expect, it, vi } from "vitest";
 vi.mock(${source("infra/runtime-worker-url.ts")}, () => ({
@@ -243,8 +228,6 @@ import { agentDatabaseLifecycle, closeOpenClawAgentDatabasesAsync } from ${sourc
 import { registerOpenClawAgentDatabaseAsyncResource } from ${source("state/openclaw-agent-db-resources.ts")};
 import { openOpenClawStateWorkerCleanupStore } from ${source("state/openclaw-state-worker-store.ts")};
 import { isSqliteWorkerStoreAvailable } from ${source("infra/sqlite-worker-store.ts")};
-import { closeIdleSqliteCoordinators, tryAcquireExclusiveSqliteCoordinator } from ${source("infra/sqlite-coordinator.ts")};
-import { captureCoordinatorDatabase } from ${source("infra/sqlite-coordinator.test-support.ts")};
 ${readPoolFixture}
 const probeKey = Symbol.for("fixture.retainedAgentLease");
 it("retains its native handle and lease when resource teardown refuses cleanup", async () => {
@@ -252,22 +235,15 @@ it("retains its native handle and lease when resource teardown refuses cleanup",
   expect(isSqliteWorkerStoreAvailable({})).toBe(false);
   await expect(openOpenClawStateWorkerCleanupStore("/synthetic/state.sqlite", {
     environment: { OPENCLAW_STATE_DIR: "/synthetic" },
-    coordinatorRuntime: { directory: "/synthetic/coordinators", keepAlive: false },
   }, () => {})).rejects.toMatchObject({ code: "unavailable" });
   const root = path.join(import.meta.dirname, "retained-agent-state");
   const database = openOpenClawAgentDatabase({ agentId: "retained", env: { OPENCLAW_STATE_DIR: root } });
   const lease = agentDatabaseLifecycle.leases.get(database.path);
   if (!lease) throw new Error("Fixture database did not acquire its native lease");
-  const coordinatorPath = path.join(import.meta.dirname, "retained-idle-coordinator.sqlite");
-  fs.writeFileSync(coordinatorPath, "");
-  const coordinator = captureCoordinatorDatabase(() =>
-    tryAcquireExclusiveSqliteCoordinator(coordinatorPath, { keepAlive: true }),
-  );
-  coordinator.result.release();
-  const keys = ["sharedStateWorkerOwner", "sqliteWorkerBroker", "sqliteCoordinatorPool", "stateDatabaseLifecycle", "stateReadWorkers", "agentDatabaseLifecycle"].map((name) => Symbol.for("openclaw." + name));
+  const keys = ["sharedStateWorkerOwner", "sqliteWorkerBroker", "stateDatabaseLifecycle", "stateReadWorkers", "agentDatabaseLifecycle"].map((name) => Symbol.for("openclaw." + name));
   const resets = Reflect.get(globalThis, Symbol.for("openclaw.globalSingletonLifecycleResets"));
   const probe = {
-    database, lease, root, coordinator, closeCoordinators: () => closeIdleSqliteCoordinators(import.meta.dirname), attempts: 0, allowClose: false, independentCloses: 0, failedIndependentCloses: 0, afterAll: false,
+    database, lease, root, attempts: 0, allowClose: false, independentCloses: 0, failedIndependentCloses: 0, afterAll: false,
     owners: keys.map((key) => [key, Reflect.get(globalThis, key)]),
     resets: keys.filter((key) => resets.has(key)).map((key) => [key, resets.get(key)]),
     close: closeOpenClawAgentDatabasesAsync,
@@ -303,7 +279,6 @@ it("retains its native handle and lease when resource teardown refuses cleanup",
 afterAll(() => {
   const probe = Reflect.get(globalThis, probeKey);
   expect(probe.database.db.isOpen).toBe(true);
-  expect(probe.coordinator.database.isOpen).toBe(true);
   expect(probe.attempts).toBe(0);
   probe.afterAll = true;
 });
@@ -322,7 +297,6 @@ it("preserves failed custody while independent cleanup and the next file still r
     expect(probe.afterAll).toBe(true);
     expect(probe.attempts, "file teardown must not retry the failed closer").toBe(1);
     expect(probe.database.db.isOpen).toBe(true);
-    expect(probe.coordinator.database.isOpen).toBe(true);
     for (const [key, owner] of probe.owners) expect(Reflect.get(globalThis, key)).toBe(owner);
     for (const [key, reset] of probe.resets) expect(resets.get(key)).toBe(reset);
     const owner = Reflect.get(globalThis, Symbol.for("openclaw.agentDatabaseLifecycle"));
@@ -335,14 +309,12 @@ it("preserves failed custody while independent cleanup and the next file still r
     // Explicitly discharge the fixture's fault after observing retained custody.
     probe.allowClose = true;
     await probe.close(probe.root);
-    probe.closeCoordinators();
     Reflect.deleteProperty(globalThis, probeKey);
     // Keep both singleton callbacks registered through observer teardown: the
     // successful callback must run again, while the failed callback must not.
   }
   expect(probe.attempts).toBe(2);
   expect(probe.database.db.isOpen).toBe(false);
-  expect(probe.coordinator.database.isOpen).toBe(false);
   const owner = Reflect.get(globalThis, Symbol.for("openclaw.agentDatabaseLifecycle"));
   expect(owner.leases.has(probe.database.path)).toBe(false);
 });

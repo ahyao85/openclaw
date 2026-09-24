@@ -177,8 +177,6 @@ function createSharedStateWorkerOwner() {
                       throw new Error("Shared-state worker resumed before idle inspection");
                     }
                   },
-                  undefined,
-                  true,
                 ),
               )) === "healthy" && isSqliteWorkerStoreAvailable(store);
             entry.context.admission.assertCurrent();
@@ -646,7 +644,6 @@ async function runAdmittedOpenClawStateWorkerOperation<T>(
         operation,
         options?.assertCurrent,
         options?.createAdmission,
-        options?.requireStateLifecycle === true,
       );
     } finally {
       releaseOperation();

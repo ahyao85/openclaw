@@ -7,6 +7,7 @@ import {
   cpSync,
   existsSync,
   mkdtempSync,
+  promises as fs,
   readFileSync,
   readdirSync,
   rmSync,
@@ -561,26 +562,31 @@ export async function runShardPlans(plans: ShardPlan[], options: RunShardOptions
   const persistentCacheRoot =
     baseEnv[FS_MODULE_CACHE_ROOT_ENV_KEY]?.trim() || baseEnv[FS_MODULE_CACHE_PATH_ENV_KEY]?.trim();
   const nodeCompileCacheRoot = baseEnv[NODE_COMPILE_CACHE_PATH_ENV_KEY]?.trim();
-  const clonedCacheSlots = clonePersistentCacheSlots(persistentCacheRoot, concurrency);
-  if (clonedCacheSlots > 0) {
-    process.stdout.write(
-      `[shard:cache] cloned restored Vitest seed into ${clonedCacheSlots} isolated lane(s)\n`,
-    );
-  }
-
-  const context = await createWorkerContext(baseEnv, admittedPlans);
+  let context: Awaited<ReturnType<typeof createWorkerContext>>;
+  let scratchReleased = true;
   let interrupted: NodeJS.Signals | undefined;
   const onSignal = (signal: NodeJS.Signals) => {
     interrupted ??= signal;
   };
-  if (context) {
-    process.on("SIGINT", onSignal);
-    process.on("SIGTERM", onSignal);
-  }
   try {
+    const clonedCacheSlots = clonePersistentCacheSlots(persistentCacheRoot, concurrency);
+    if (clonedCacheSlots > 0) {
+      process.stdout.write(
+        `[shard:cache] cloned restored Vitest seed into ${clonedCacheSlots} isolated lane(s)\n`,
+      );
+    }
+    context = await createWorkerContext(baseEnv, admittedPlans);
+    if (context) {
+      process.on("SIGINT", onSignal);
+      process.on("SIGTERM", onSignal);
+    }
     const runner: typeof runChild =
       options.runChild ??
-      ((args, childEnv, label, timingKey) => runChild(args, childEnv, label, timingKey, context));
+      ((args, childEnv, label, timingKey) => {
+        // A portable leader's close event cannot release descendant-owned caches.
+        scratchReleased &&= context !== undefined;
+        return runChild(args, childEnv, label, timingKey, context);
+      });
     let nextIndex = 0;
     let exitCode = 0;
     const workers = Array.from({ length: concurrency }, async (_, cacheSlot) => {
@@ -708,7 +714,21 @@ export async function runShardPlans(plans: ShardPlan[], options: RunShardOptions
     return exitCode;
   } finally {
     try {
-      await context?.workerRun.dispose();
+      let disposalCompleted = false;
+      try {
+        await context?.workerRun.dispose();
+        disposalCompleted = true;
+      } finally {
+        if (options.scratchDir === undefined) {
+          if (scratchReleased && disposalCompleted) {
+            await fs.rm(scratchDir, { recursive: true, force: true });
+          } else {
+            console.warn(
+              `[shard:cache] retained ${scratchDir}: descendant completion is unverified`,
+            );
+          }
+        }
+      }
     } finally {
       if (hostResources) {
         reportCiResourceSnapshot("end");

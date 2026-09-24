@@ -8,6 +8,7 @@ import {
 } from "../agents/workspace-state-identity.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { pathExists } from "../infra/fs-safe.js";
+import { acquireGatewayStateOwner } from "../infra/gateway-state-owner.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -15,7 +16,6 @@ import {
 } from "../infra/kysely-sync.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { movePathWithCopyFallback } from "../infra/replace-file.js";
-import { acquireStateDatabaseCoordinator } from "../infra/state-database-coordinator.js";
 import {
   isUpdateRehearsalReadOnlyPath,
   resolveUpdateRehearsalRoot,
@@ -34,6 +34,10 @@ import {
   readSkillProposalRollback,
   resolveSkillProposalTarget,
 } from "../skills/workshop/store.js";
+import {
+  createOpenClawDatabaseMaintenanceScope,
+  getOpenClawDatabaseMaintenanceScope,
+} from "../state/openclaw-state-db-async-lifecycle.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import type { DB as OpenClawStateDatabase } from "../state/openclaw-state-db.generated.js";
 import {
@@ -141,8 +145,10 @@ async function relocateLegacyWorkshopTargets(
   config: OpenClawConfig,
   env: NodeJS.ProcessEnv,
   backupRoots: readonly LegacyCollectionBackupRoot[],
+  assertCurrent: () => void,
   unavailableWorkspaceDirs: ReadonlyMap<string, string> = new Map(),
 ): Promise<WorkshopRelocationResult> {
+  assertCurrent();
   const database = openOpenClawStateDatabase({ env });
   const kysely = getNodeSqliteKysely<
     Pick<OpenClawStateDatabase, "skill_workshop_proposals" | "skill_workshop_proposal_rollbacks">
@@ -185,6 +191,7 @@ async function relocateLegacyWorkshopTargets(
   // Settle writes while their proposal and rollback still name the same files.
   // Recovery can establish a create's ownership or restore a partial update.
   for (const row of readRows()) {
+    assertCurrent();
     const record = parseSkillProposalRow(row);
     if (!record || record.status !== "pending") {
       continue;
@@ -211,7 +218,9 @@ async function relocateLegacyWorkshopTargets(
     }
     try {
       await readSkillProposalBundle(record, { config, env });
+      assertCurrent();
     } catch (error) {
+      assertCurrent();
       if (!(error instanceof SkillProposalDraftMissingError)) {
         recoveryWarnings.push(
           `Could not inspect Skill Workshop proposal ${record.id}: ${String(error)}`,
@@ -228,6 +237,7 @@ async function relocateLegacyWorkshopTargets(
         deferredSources.add(resolveCanonicalWorkspacePath(record.target.skillDir));
         continue;
       }
+      assertCurrent();
       await transitionPendingSkillProposalToStale({
         record,
         reason:
@@ -280,6 +290,7 @@ async function relocateLegacyWorkshopTargets(
       }
       const store = { config, env, agentId: ownerAgentId };
       const proposal = await readSkillProposalBundle(record, store);
+      assertCurrent();
       const recovered = await reconcileInterruptedSkillProposalApply({
         record,
         expectedRecordJson: row.record_json,
@@ -291,6 +302,7 @@ async function relocateLegacyWorkshopTargets(
         throw new Error("the interrupted apply could not be verified or restored");
       }
     } catch (error) {
+      assertCurrent();
       // Moving the create claim alone would strand its pending update's recovery.
       deferredSources.add(resolveCanonicalWorkspacePath(record.target.skillDir));
       recoveryWarnings.push(
@@ -319,6 +331,7 @@ async function relocateLegacyWorkshopTargets(
     // retry loses the create row that proves where its pending updates belong.
     const committed = runOpenClawStateWriteTransaction(
       ({ db }) => {
+        assertCurrent();
         const currentUpdates = updates.map((update) => {
           const expected = initialRows.get(update.record.id);
           const current = readStoredProposalInDatabase(db, update.record.id);
@@ -368,10 +381,12 @@ async function relocateLegacyWorkshopTargets(
     workspaceMoves.set(move.workspaceDir, moves);
   }
   for (const [workspaceDir, moves] of workspaceMoves) {
+    assertCurrent();
     await prepareWorkshopWorkspaceRelocation(workspaceDir, moves, env);
   }
   let movedSkills = 0;
   for (const move of plan.moves) {
+    assertCurrent();
     if (
       [move.source, move.destination].some((filePath) =>
         isUpdateRehearsalReadOnlyPath(filePath, env),
@@ -382,6 +397,7 @@ async function relocateLegacyWorkshopTargets(
     }
     if (move.operation === "move") {
       await fs.mkdir(path.dirname(move.destination), { recursive: true });
+      assertCurrent();
       await movePathWithCopyFallback({ from: move.source, to: move.destination });
       movedSkills += 1;
     } else if (move.operation === "remove-source") {
@@ -390,7 +406,9 @@ async function relocateLegacyWorkshopTargets(
     persistUpdates(move.updates);
   }
   persistUpdates(plan.updates);
+  assertCurrent();
   await finishWorkshopWorkspaceRelocations(env);
+  assertCurrent();
   const backupMigration = await migrateLegacyCollectionBackups(config, env, backupRoots);
   const staleProposals = persistedUpdates.filter(
     (update) => update.record.status === "stale",
@@ -414,43 +432,60 @@ export async function migrateLegacySkillWorkshopProposals(params: {
   unavailableWorkspaceDirs?: ReadonlyMap<string, string>;
 }): Promise<MigrationResult> {
   const env = params.env ?? process.env;
-  // Keep one owner through filesystem moves, receipt completion, and backup retirement.
-  const coordinator = acquireStateDatabaseCoordinator({
-    databasePath: resolveOpenClawStateSqlitePath(env),
-  });
+  let maintenance = getOpenClawDatabaseMaintenanceScope();
+  let owner: ReturnType<typeof acquireGatewayStateOwner> | undefined;
+  if (!maintenance?.ownsSchemaMaintenance) {
+    owner = acquireGatewayStateOwner({ databasePath: resolveOpenClawStateSqlitePath(env) });
+    maintenance = createOpenClawDatabaseMaintenanceScope({
+      schemaMaintenance: true,
+      assertOwnerCurrent: owner.assertCurrent,
+      assertDatabaseAccess: owner.assertDatabaseAccess,
+    });
+  }
+  const scope = maintenance;
+  const assertCurrent = () => scope.assertOwnerCurrent();
   try {
-    const backupRoots = await listPendingLegacyCollectionBackupRoots(params.config, env);
-    const sidecars = await importLegacySkillProposalSidecars({ config: params.config, env });
-    const relocation = await relocateLegacyWorkshopTargets(
-      params.config,
-      env,
-      backupRoots,
-      params.unavailableWorkspaceDirs,
-    );
-    if (
-      relocation.movedSkills > 0 ||
-      relocation.retargetedProposals > 0 ||
-      relocation.staleProposals > 0 ||
-      relocation.migratedBackupRoots > 0
-    ) {
-      sidecars.changes.push(
-        `Relocated ${relocation.movedSkills} Skill Workshop skill${relocation.movedSkills === 1 ? "" : "s"}, retargeted ${relocation.retargetedProposals} proposal${relocation.retargetedProposals === 1 ? "" : "s"}, marked ${relocation.staleProposals} stale, and migrated ${relocation.migratedBackupRoots} legacy collection backup root${relocation.migratedBackupRoots === 1 ? "" : "s"}.`,
+    return await scope.run(async () => {
+      assertCurrent();
+      const backupRoots = await listPendingLegacyCollectionBackupRoots(params.config, env);
+      assertCurrent();
+      const sidecars = await importLegacySkillProposalSidecars({ config: params.config, env });
+      assertCurrent();
+      const relocation = await relocateLegacyWorkshopTargets(
+        params.config,
+        env,
+        backupRoots,
+        assertCurrent,
+        params.unavailableWorkspaceDirs,
       );
-    }
-    const warnings = [...sidecars.warnings, ...relocation.warnings];
-    const recoverableWarningCount =
-      (sidecars.warningDisposition === "recoverable" ? sidecars.warnings.length : 0) +
-      relocation.recoverableWarningCount;
-    return {
-      changes: sidecars.changes,
-      detected: sidecars.detected,
-      migrated: sidecars.migrated,
-      warnings,
-      ...(warnings.length > 0 && warnings.length === recoverableWarningCount
-        ? { warningDisposition: "recoverable" as const }
-        : {}),
-    };
+      if (
+        relocation.movedSkills > 0 ||
+        relocation.retargetedProposals > 0 ||
+        relocation.staleProposals > 0 ||
+        relocation.migratedBackupRoots > 0
+      ) {
+        sidecars.changes.push(
+          `Relocated ${relocation.movedSkills} Skill Workshop skill${relocation.movedSkills === 1 ? "" : "s"}, retargeted ${relocation.retargetedProposals} proposal${relocation.retargetedProposals === 1 ? "" : "s"}, marked ${relocation.staleProposals} stale, and migrated ${relocation.migratedBackupRoots} legacy collection backup root${relocation.migratedBackupRoots === 1 ? "" : "s"}.`,
+        );
+      }
+      const warnings = [...sidecars.warnings, ...relocation.warnings];
+      const recoverableWarningCount =
+        (sidecars.warningDisposition === "recoverable" ? sidecars.warnings.length : 0) +
+        relocation.recoverableWarningCount;
+      return {
+        changes: sidecars.changes,
+        detected: sidecars.detected,
+        migrated: sidecars.migrated,
+        warnings,
+        ...(warnings.length > 0 && warnings.length === recoverableWarningCount
+          ? { warningDisposition: "recoverable" as const }
+          : {}),
+      };
+    });
   } finally {
-    coordinator.release();
+    if (owner) {
+      await scope.close();
+      owner.release();
+    }
   }
 }

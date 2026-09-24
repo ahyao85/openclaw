@@ -1,11 +1,6 @@
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
-import { requireNodeSqlite, resolveNodeSqliteLocation } from "../../infra/node-sqlite.js";
-import {
-  captureStateDatabaseCoordinatorRuntime,
-  resolveStateDatabaseCoordinatorPath,
-} from "../../infra/state-database-coordinator.js";
+import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import {
   beginSessionWorkAdmission,
   runExclusiveSessionLifecycleMutation,
@@ -13,7 +8,6 @@ import {
 import { sessionChanges, type SessionRowChange } from "../../sessions/session-row-changes.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
-import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
   loadSessionEntry,
@@ -76,13 +70,6 @@ it.each([false, true])(
           { type: "session", id: "stale", content: "synthetic maintenance archive" },
         ]);
       }
-      const coordinatorPath = resolveNodeSqliteLocation(
-        resolveStateDatabaseCoordinatorPath({
-          databasePath: resolveOpenClawStateSqlitePath(state.env),
-          runtimeDirectory: captureStateDatabaseCoordinatorRuntime().directory,
-          uid: process.getuid?.(),
-        }),
-      );
       const completed = observeMaintenance();
       await patchSessionEntryCore(active, () => ({ label: "updated" }), {
         maintenanceConfig: resolveMaintenanceConfigFromInput({
@@ -93,17 +80,7 @@ it.each([false, true])(
       });
       const { DatabaseSync, StatementSync } = requireNodeSqlite();
       const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
-      // oxlint-disable-next-line typescript/unbound-method -- Forward the native operation with its exact database receiver.
-      const originalExec = DatabaseSync.prototype.exec;
-      const executions: Array<{ database: DatabaseSync; location: string | null; sql: string }> =
-        [];
-      const exec = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (
-        this: DatabaseSync,
-        sql,
-      ) {
-        executions.push({ database: this, location: this.location(), sql });
-        return Reflect.apply(originalExec, this, [sql]);
-      });
+      const exec = vi.spyOn(DatabaseSync.prototype, "exec");
       const statements = (["get", "all", "run", "iterate"] as const).map((method) =>
         vi.spyOn(StatementSync.prototype, method),
       );
@@ -129,12 +106,7 @@ it.each([false, true])(
         preparedSql.filter((query) => /(?:from|update|into) "session_nodes"/iu.test(query)),
       ).toEqual([]);
       if (!remove) {
-        // Worker admission retains a separate lifecycle lock. Planning must still
-        // perform no parent SQL against session data or any other database.
-        const coordinatorExecutions = executions.filter(
-          ({ location }) => resolveNodeSqliteLocation(location ?? "") === coordinatorPath,
-        );
-        expect({ ...counts, exec: counts.exec - coordinatorExecutions.length }).toEqual({
+        expect(counts).toEqual({
           prepare: 0,
           exec: 0,
           get: 0,
@@ -142,11 +114,6 @@ it.each([false, true])(
           run: 0,
           iterate: 0,
         });
-        expect(coordinatorExecutions.map(({ sql }) => sql)).toEqual([
-          "PRAGMA busy_timeout = 0; PRAGMA journal_mode = MEMORY; BEGIN EXCLUSIVE;",
-          "ROLLBACK",
-        ]);
-        expect(new Set(coordinatorExecutions.map(({ database }) => database)).size).toBe(1);
         expect(preservation).not.toHaveBeenCalled();
       }
       expect(loadSessionEntry(active)?.label).toBe("updated");

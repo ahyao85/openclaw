@@ -18,7 +18,7 @@ import {
 } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { withEnvAsync } from "../test-utils/env.js";
-import { holdStateDatabaseCoordinator } from "../test-utils/state-database-contention.js";
+import { holdStateDatabaseWriteTransaction } from "../test-utils/state-database-contention.js";
 import { attachInitialGatewayLifetimeSidecars } from "./server-lifetime-sidecars.js";
 import {
   emitSessionsChanged,
@@ -124,11 +124,7 @@ describe("gateway lifetime sidecars", () => {
       openOpenClawStateDatabase()
         .db.prepare("UPDATE secret_store_entries SET created_at_ms = ? WHERE name = ?")
         .run(Date.now() - 11 * 60_000, handoff);
-      const holder = holdStateDatabaseCoordinator(
-        context.admission.databasePath,
-        context.coordinatorRuntime,
-        5_000,
-      );
+      const holder = holdStateDatabaseWriteTransaction(context.admission.databasePath, 5_000);
       const hostYielded = createDeferred<number>();
       const checkpoint = new MessageChannel();
       checkpoint.port1.once("message", () => hostYielded.resolve(Atomics.load(holder.released, 0)));

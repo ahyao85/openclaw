@@ -5,11 +5,6 @@ import {
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import { recordSessionParticipant } from "../config/sessions/session-accessor.sqlite-participants.native.js";
-import {
-  captureStateDatabaseCoordinatorRuntime,
-  type StateDatabaseCoordinatorRuntime,
-  withStateDatabaseCoordinatorRuntimeDirectory,
-} from "../infra/state-database-coordinator.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import {
   openOpenClawAgentDatabase,
@@ -28,33 +23,27 @@ import {
 import { resolveGitCoauthorAttribution } from "./git-coauthor-attribution.js";
 
 let sharedState: OpenClawTestState;
-let coordinatorRuntime: StateDatabaseCoordinatorRuntime;
 
 beforeAll(async () => {
   sharedState = await createOpenClawTestState({ scenario: "minimal" });
-  coordinatorRuntime = { ...captureStateDatabaseCoordinatorRuntime(), keepAlive: false };
 });
 
 afterAll(async () => {
-  await withStateDatabaseCoordinatorRuntimeDirectory(coordinatorRuntime, async () => {
-    closeOpenClawAgentDatabasesForTest();
-    closeOpenClawStateDatabaseForTest();
-    await sharedState.cleanup();
-  });
+  closeOpenClawAgentDatabasesForTest();
+  closeOpenClawStateDatabaseForTest();
+  await sharedState.cleanup();
 });
 
 async function withOpenClawTestState<T>(
   _options: { scenario: "minimal" },
   fn: (state: OpenClawTestState) => Promise<T>,
 ): Promise<T> {
-  return await withStateDatabaseCoordinatorRuntimeDirectory(coordinatorRuntime, async () => {
-    const work = new AsyncWorkScope();
-    try {
-      return await work.track(() => fn(sharedState));
-    } finally {
-      await work.drain();
-    }
-  });
+  const work = new AsyncWorkScope();
+  try {
+    return await work.track(() => fn(sharedState));
+  } finally {
+    await work.drain();
+  }
 }
 
 describe("Git co-author attribution", () => {

@@ -8,11 +8,6 @@ import * as kyselySync from "../infra/kysely-sync.js";
 import * as nodeSqlite from "../infra/node-sqlite.js";
 import * as busyTimeout from "../infra/sqlite-busy-timeout.js";
 import * as sqliteWal from "../infra/sqlite-wal.js";
-import {
-  acquireStateDatabaseHandleExclusion,
-  resolveStateDatabaseCoordinatorPath,
-  withStateDatabaseCoordinatorRuntimeDirectory,
-} from "../infra/state-database-coordinator.js";
 import { setConsoleSubsystemFilter } from "../logging/console.js";
 import { setLoggerOverride } from "../logging/logger.js";
 import { loggingState } from "../logging/state.js";
@@ -38,7 +33,6 @@ describe("unpublished state database acquisition", () => {
         }
       }
       databases.clear();
-      // Expire idle coordinator handles before discarding the fake clock.
       vi.runOnlyPendingTimers();
       vi.clearAllTimers();
       vi.useRealTimers();
@@ -105,21 +99,13 @@ describe("unpublished state database acquisition", () => {
     expect(maintenanceTimerCount()).toBe(0);
   }
 
-  it("keeps the admitted coordinator directory for delayed maintenance", () => {
+  it("checkpoints the admitted database without opening auxiliary databases", () => {
     const { params, open } = acquisitionFixture();
-    const runtimeDirectory = tempDirs.make("openclaw-maintenance-scope-");
-    const database = withStateDatabaseCoordinatorRuntimeDirectory(runtimeDirectory, () =>
-      openUnpublishedStateDatabase(params),
-    );
-    const coordinatorPath = resolveStateDatabaseCoordinatorPath({
-      databasePath: params.pathname,
-      runtimeDirectory,
-      uid: typeof process.getuid === "function" ? process.getuid() : undefined,
-    });
+    const database = openUnpublishedStateDatabase(params);
     try {
       open.mockClear();
       vi.advanceTimersByTime(30 * 60 * 1000);
-      expect(open.mock.calls.map(([location]) => location)).toContain(coordinatorPath);
+      expect(open).not.toHaveBeenCalled();
     } finally {
       database.walMaintenance.close();
       closeTrackedStateDatabase(database.db);
@@ -328,9 +314,6 @@ describe("unpublished state database acquisition", () => {
         openClawStateDatabaseCache.getOpenClawStateDatabaseIfOpenAtPath(params.pathname),
       ).toBeUndefined();
       if (nativeFails) {
-        expect(() =>
-          acquireStateDatabaseHandleExclusion({ databasePath: params.pathname, busyTimeoutMs: 0 }),
-        ).toThrow(/state-handles/);
         const healthy = openUnpublishedStateDatabase({
           ...params,
           pathname: path.join(path.dirname(params.pathname), "healthy.sqlite"),
@@ -352,11 +335,6 @@ describe("unpublished state database acquisition", () => {
       // Failed close remains discoverable only to disposal, never ordinary acquisition.
       openClawStateDatabaseCache.closeOpenClawStateDatabaseByPath(params.pathname);
       expect(db.isOpen).toBe(false);
-      const exclusion = acquireStateDatabaseHandleExclusion({
-        databasePath: params.pathname,
-        busyTimeoutMs: 0,
-      });
-      exclusion.release();
     },
   );
 
@@ -438,20 +416,12 @@ describe("unpublished state database acquisition", () => {
       expect(() =>
         openClawStateDatabaseCache.assertOpenClawStateDatabaseOpenAllowed(params.pathname),
       ).toThrow(terminalFailure);
-      expect(() =>
-        acquireStateDatabaseHandleExclusion({ databasePath: params.pathname, busyTimeoutMs: 0 }),
-      ).toThrow(/state-handles/);
       expect(maintenanceTimerCount()).toBe(0);
       vi.restoreAllMocks();
       expect(openClawStateDatabaseCache.closeOpenClawStateDatabaseByPath(params.pathname)).toBe(
         true,
       );
       expect(db.isOpen).toBe(false);
-      const exclusion = acquireStateDatabaseHandleExclusion({
-        databasePath: params.pathname,
-        busyTimeoutMs: 0,
-      });
-      exclusion.release();
       expect(
         openClawStateDatabaseCache.getOpenClawStateDatabaseRecordedFailure(params.pathname),
       ).toBe(terminalFailure);

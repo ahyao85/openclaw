@@ -340,7 +340,6 @@ export async function readSessionHistoryPageInWorker(
       stateDatabase: {
         path: stateContext.admission.databasePath,
         environment: stateContext.environment,
-        coordinatorRuntime: stateContext.coordinatorRuntime,
       },
       sourceDatabases: sourceReads.sources,
       ...(entryValidationKey ? { entryValidationKey } : {}),

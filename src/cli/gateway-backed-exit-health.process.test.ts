@@ -16,7 +16,7 @@ import {
 import type { GatewayEventLoopHealth } from "../gateway/server/event-loop-health.js";
 import { seedOriginDeviceToken } from "../infra/device-auth-store.test-support.js";
 import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
-import { acquireStateDatabaseCoordinator } from "../infra/state-database-coordinator.js";
+import { acquireGatewayStateOwner } from "../infra/gateway-state-owner.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { getFreePort } from "../test-utils/ports.js";
@@ -83,7 +83,7 @@ describe("gateway-backed CLI process exit", () => {
         JSON.stringify({ probe: true, timeoutMs: CHANNEL_PROBE_TIMEOUT_MS }),
       ],
     },
-  ])("reads $label while another process owns state lifecycle", async ({ method, args }) => {
+  ])("reads $label while another process owns state maintenance", async ({ method, args }) => {
     const startedAt = performance.now();
     const phases: Array<{ phase: string; elapsedMs: number }> = [];
     const recordPhase = (phase: string) => {
@@ -91,7 +91,7 @@ describe("gateway-backed CLI process exit", () => {
     };
     const root = tempDirs.make("openclaw-status-state-custody-");
     const gateway = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-    let coordinator: ReturnType<typeof acquireStateDatabaseCoordinator> | undefined;
+    let stateOwner: ReturnType<typeof acquireGatewayStateOwner> | undefined;
     try {
       await once(gateway, "listening");
       const address = gateway.address();
@@ -163,9 +163,8 @@ describe("gateway-backed CLI process exit", () => {
             });
             recordPhase("auth-checked");
             // Auth loading has finished; hold native custody before the hello can trigger storage.
-            coordinator ??= acquireStateDatabaseCoordinator({
+            stateOwner ??= acquireGatewayStateOwner({
               databasePath: resolveOpenClawStateSqlitePath(env),
-              keepAlive: false,
             });
             recordPhase("custody-acquired");
             sendMinimalGatewayResponse(
@@ -183,7 +182,8 @@ describe("gateway-backed CLI process exit", () => {
             recordPhase("hello-sent");
             return;
           }
-          expect(coordinator?.closed).toBe(false);
+          expect(stateOwner).toBeDefined();
+          stateOwner!.assertCurrent();
           expect(frame.method).toBe(method);
           if (method === "channels.status") {
             const timeoutMs = frame.params?.timeoutMs;
@@ -212,7 +212,7 @@ describe("gateway-backed CLI process exit", () => {
         result,
         calls,
         phases,
-        coordinatorHeld: coordinator?.closed === false,
+        stateOwnerPath: stateOwner?.path,
         stateBefore: before,
         stateAfter: after,
       });
@@ -233,11 +233,12 @@ describe("gateway-backed CLI process exit", () => {
         `message:${method}`,
         "child-exited",
       ]);
-      expect(coordinator?.closed, evidence).toBe(false);
+      expect(stateOwner, evidence).toBeDefined();
+      stateOwner!.assertCurrent();
       expect(after).toEqual(before);
     } finally {
       try {
-        coordinator?.release();
+        stateOwner?.release();
       } finally {
         await closeMinimalGatewayServer(gateway);
       }

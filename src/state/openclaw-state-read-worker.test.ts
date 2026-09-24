@@ -6,7 +6,6 @@ import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { createWorkspaceStateIdentity } from "../agents/workspace-state-identity.js";
 import type { ExecutionIdentityInspectionQuery } from "../audit/execution-identity-inspection.types.js";
-import { acquireStateDatabaseHandleExclusion } from "../infra/state-database-coordinator.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   closeOpenClawStateDatabaseByPathAsync,
@@ -108,8 +107,6 @@ it("drains accepted settlement before retiring the shared pool during whole-cach
     );
     poolStopped.resolve();
     await closing;
-    const exclusion = acquireStateDatabaseHandleExclusion({ databasePath: pathname });
-    exclusion.release();
   } finally {
     mutationSettled.resolve();
     poolStopped.resolve();
@@ -162,9 +159,6 @@ it.each([false, true])(
     });
     expect(publish).not.toHaveBeenCalled();
     expect(release).not.toHaveBeenCalled();
-    expect(() =>
-      acquireStateDatabaseHandleExclusion({ databasePath: pathname, busyTimeoutMs: 0 }),
-    ).toThrow();
     if (retryFails) {
       await expect(closeOpenClawStateDatabaseByPathAsync(pathname)).rejects.toBe(retryFailure);
       expect(publish).not.toHaveBeenCalled();
@@ -203,8 +197,6 @@ it.each([false, true])(
     expect(mutation).toHaveBeenCalledOnce();
     expect(task.close).toHaveBeenCalledTimes(retryFails ? 3 : 2);
     expect(retry.close).toHaveBeenCalledOnce();
-    const exclusion = acquireStateDatabaseHandleExclusion({ databasePath: pathname });
-    exclusion.release();
   },
 );
 

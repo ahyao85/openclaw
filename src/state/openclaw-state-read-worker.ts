@@ -1,7 +1,7 @@
 import { ensureSqliteLibrarySelected } from "../infra/bun-sqlite-library.js";
 import { resolveRuntimeProcessEntrypointUrl } from "../infra/runtime-process-url.js";
-import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
 import { SQLITE_IDLE_HANDLE_TTL_MS } from "../infra/sqlite-handle-lifecycle.js";
+import { createSqliteLifecycleAggregateError } from "../infra/sqlite-lifecycle-errors.js";
 import {
   DEFAULT_WORKER_PENDING_BYTES,
   DEFAULT_WORKER_PENDING_TASKS,
@@ -444,7 +444,6 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
 function requestBytes(request: OpenClawStateReadRequest): number {
   return [
     ...Object.entries(request.context.environment).flatMap(([key, value]) => [key, value]),
-    request.context.coordinatorRuntime.directory,
     request.context.existingSchemaPath,
     request.databasePath,
     request.location,
@@ -509,7 +508,6 @@ export function createOpenClawStateReadTransport(command: OpenClawStateReadComma
     const request: OpenClawStateReadRequest = {
       context: {
         environment: { ...context.environment },
-        coordinatorRuntime: { ...context.coordinatorRuntime },
         existingSchemaPath: context.existingSchemaPath,
       },
       databasePath: context.admission.databasePath,

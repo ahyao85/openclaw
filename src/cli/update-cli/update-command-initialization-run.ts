@@ -278,18 +278,20 @@ export async function initializeAndRunUpdate(
                 preflight: true,
                 serviceRoot: target.managedServiceRoot,
               });
-              const assertCurrent = () => {
-                fence.assertCurrent();
-                assertUpdatePackageActivationAdmission(target.root, packageAdmission);
-              };
               const { stagePackageInstallUpdate } = await import("./update-command-package.js");
-              assertCurrent();
+              fence.assertCurrent();
+              assertUpdatePackageActivationAdmission(target.root, packageAdmission);
               const legacyFence = acquireLegacyUpdateInitializationFence({
                 env,
                 targetVersion,
                 targetSchemas: schemas,
               });
               let initializationStage: InitializedUpdate["stagedPackage"];
+              const assertCurrent = () => {
+                fence.assertCurrent();
+                assertUpdatePackageActivationAdmission(target.root, packageAdmission);
+                legacyFence?.assertCurrent();
+              };
               await withUpdateInitializationCleanup(
                 async () => {
                   await withUpdateInitializationCleanup(

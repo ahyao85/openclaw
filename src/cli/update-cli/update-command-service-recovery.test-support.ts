@@ -8,8 +8,8 @@ import { stampConfigWriteMetadata } from "../../config/io.meta.js";
 import type { CallGatewayOptions } from "../../gateway/call.js";
 import { gatewayHealthResponse } from "../../gateway/health-response.test-support.js";
 import { acquireGatewayOwnerLease } from "../../infra/gateway-owner-lease.js";
+import { acquireGatewayStateOwner } from "../../infra/gateway-state-owner.js";
 import { consumeGatewayRestartIntentPayloadSync } from "../../infra/restart-intent.js";
-import { acquireGatewayLifecycleCoordinator } from "../../infra/state-database-coordinator.js";
 import * as openClawTmp from "../../infra/tmp-openclaw-dir.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
@@ -32,7 +32,7 @@ const hostPlatform = process.platform;
 
 function createServingOwnerFixture() {
   let lease: ReturnType<typeof acquireGatewayOwnerLease> | undefined;
-  let coordinator: ReturnType<typeof acquireGatewayLifecycleCoordinator> | undefined;
+  let coordinator: ReturnType<typeof acquireGatewayStateOwner> | undefined;
   let env: NodeJS.ProcessEnv;
   const release = async () => {
     await lease?.release();
@@ -48,7 +48,7 @@ function createServingOwnerFixture() {
       // Use the real host's self identity while native service transport is simulated.
       mockProcessPlatform(hostPlatform);
       try {
-        coordinator = acquireGatewayLifecycleCoordinator({
+        coordinator = acquireGatewayStateOwner({
           databasePath: resolveOpenClawStateSqlitePath(env),
         });
         lease = acquireGatewayOwnerLease({

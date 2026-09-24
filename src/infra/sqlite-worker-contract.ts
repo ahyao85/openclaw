@@ -49,11 +49,6 @@ export type SqliteWorkerRequest = {
   id: number;
   actor: number;
   stateContext?: SqliteWorkerStateContext;
-  gatewaySchemaFence?: MessagePort;
-  maintenanceSchemaFence?: MessagePort;
-  stateLifecycle?: MessagePort;
-  workerStateLifecycle?: { deadlineNs: bigint };
-  lifecyclePreparation?: MessagePort;
   operationAdmission?: MessagePort;
   stateDatabasePath?: string;
 } & (
@@ -76,7 +71,6 @@ export type SqliteWorkerRequest = {
 
 export type SqliteWorkerReply = {
   id: number;
-  cleanupFailure?: OpenClawStateWorkerErrorPayload;
 } & (
   | {
       ok: true;

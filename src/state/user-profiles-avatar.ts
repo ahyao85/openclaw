@@ -71,7 +71,6 @@ export async function adoptTailscaleProfileAvatar(
         return requireAvatarProfile(receipt.profile, profileId);
       },
       {
-        requireStateLifecycle: true,
         createAdmission(retained) {
           return {
             nativeLocations: [context.admission.databasePath],

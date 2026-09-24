@@ -10,13 +10,6 @@ import { cleanupSessionStateForTest } from "../../test-utils/session-state-clean
 
 type EnvValue = string | undefined | ((home: string) => string | undefined);
 
-type SharedHomeRootState = {
-  rootPromise: Promise<string>;
-  nextCaseId: number;
-};
-
-const SHARED_HOME_ROOTS = new Map<string, SharedHomeRootState>();
-
 function setTempHome(base: string) {
   setTestEnvValue("HOME", base);
   setTestEnvValue("USERPROFILE", base);
@@ -35,24 +28,6 @@ function setTempHome(base: string) {
   setTestEnvValue("HOMEPATH", match[2] || "\\");
 }
 
-async function allocateTempHomeBase(prefix: string): Promise<string> {
-  let state = SHARED_HOME_ROOTS.get(prefix);
-  if (!state) {
-    state = {
-      rootPromise: fs.mkdtemp(path.join(os.tmpdir(), prefix)).catch((error: unknown) => {
-        // Only the creator evicts a failed acquisition; current waiters keep its
-        // rejection and cannot evict a later caller's replacement root.
-        SHARED_HOME_ROOTS.delete(prefix);
-        throw error;
-      }),
-      nextCaseId: 0,
-    };
-    SHARED_HOME_ROOTS.set(prefix, state);
-  }
-  const root = await state.rootPromise;
-  return path.join(root, `case-${state.nextCaseId++}`);
-}
-
 export async function withTempHomeCore<T>(
   fn: (home: string) => Promise<T>,
   opts: {
@@ -68,7 +43,7 @@ export async function withTempHomeCore<T>(
       throw new Error(`withTempHome: use built-in home env (got ${key})`);
     }
   }
-  const base = await allocateTempHomeBase(opts.prefix ?? "openclaw-test-home-");
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), opts.prefix ?? "openclaw-test-home-"));
   const snapshot = captureEnv([
     "HOME",
     "USERPROFILE",
@@ -83,7 +58,6 @@ export async function withTempHomeCore<T>(
   let initialized = false;
   let unjoinedWork = false;
   try {
-    await fs.mkdir(base, { recursive: true });
     setTempHome(base);
     await fs.mkdir(path.join(base, ".openclaw", "agents", "main", "sessions"), { recursive: true });
     if (opts.env) {

@@ -87,7 +87,7 @@ it.each(["durable", "incognito"] as const)(
         }
       });
       try {
-        const preparationSql = observeHostDataSql(state.env);
+        const preparationSql = observeHostDataSql();
         try {
           prepared = await prepareSessionMutationFacts({ cfg, sessionKey, agentId: "main" });
           for (const call of preparationSql.calls) {
@@ -98,7 +98,7 @@ it.each(["durable", "incognito"] as const)(
         }
         const read = prepared;
         const assertWithoutSql = (allowed: boolean) => {
-          const sql = observeHostDataSql(state.env);
+          const sql = observeHostDataSql();
           try {
             expect(authorize(read) === null).toBe(allowed);
             for (const call of sql.calls) {

@@ -6,11 +6,11 @@ import {
   acquireGatewayOwnerLease,
   type GatewayOwnerSupervisor,
 } from "../../infra/gateway-owner-lease.js";
-import { consumeGatewayRestartIntentPayloadSync } from "../../infra/restart-intent.js";
 import {
-  acquireGatewayLifecycleCoordinator,
-  tryAcquireGatewayLifecycleCleanupCoordinator,
-} from "../../infra/state-database-coordinator.js";
+  acquireGatewayStateOwner,
+  tryAcquireGatewayStateOwner,
+} from "../../infra/gateway-state-owner.js";
+import { consumeGatewayRestartIntentPayloadSync } from "../../infra/restart-intent.js";
 import * as processOwners from "../../infra/state-lease-process-owner.js";
 import * as existingWrites from "../../state/openclaw-state-db-existing-write.js";
 import {
@@ -129,7 +129,7 @@ it.each([
     if (!serviceState) {
       vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
     }
-    const coordinator = acquireGatewayLifecycleCoordinator({
+    const coordinator = acquireGatewayStateOwner({
       databasePath: resolveOpenClawStateSqlitePath(env),
     });
     const lease = acquireGatewayOwnerLease({
@@ -176,7 +176,7 @@ it("targets the replacement published before restart-intent write admission", as
   vi.spyOn(process, "platform", "get").mockReturnValue("linux");
   // Synthetic process identities isolate the race; lease storage and intent consumption are real.
   vi.spyOn(processOwners, "readStateLeaseProcessOwnerStatus").mockReturnValue("live");
-  const coordinator = acquireGatewayLifecycleCoordinator({
+  const coordinator = acquireGatewayStateOwner({
     databasePath: resolveOpenClawStateSqlitePath(process.env),
   });
   try {
@@ -213,7 +213,7 @@ it.each([
     vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     vi.spyOn(processOwners, "readStateLeaseProcessOwnerStatus").mockReturnValue(state);
     const { db } = openOpenClawStateDatabase();
-    const coordinator = acquireGatewayLifecycleCoordinator({
+    const coordinator = acquireGatewayStateOwner({
       databasePath: resolveOpenClawStateSqlitePath(process.env),
     });
     try {
@@ -306,9 +306,7 @@ it("restarts a verified inactive service without intent and releases startup exc
   const { db } = openOpenClawStateDatabase();
   service.readRuntime.mockResolvedValue({ status: "stopped" });
   service.restart.mockImplementationOnce(async () => {
-    const exclusion = tryAcquireGatewayLifecycleCleanupCoordinator({
-      databasePath: resolveOpenClawStateSqlitePath(process.env),
-    });
+    const exclusion = tryAcquireGatewayStateOwner(resolveOpenClawStateSqlitePath(process.env));
     expect(exclusion).not.toBeNull();
     exclusion?.release();
     return { outcome: "completed" };
@@ -325,7 +323,7 @@ it("restarts a verified inactive service without intent and releases startup exc
 it("refuses stopped native status while unpublished Gateway startup holds authority", async () => {
   vi.spyOn(process, "platform", "get").mockReturnValue("linux");
   const { db } = openOpenClawStateDatabase();
-  const coordinator = acquireGatewayLifecycleCoordinator({
+  const coordinator = acquireGatewayStateOwner({
     databasePath: resolveOpenClawStateSqlitePath(process.env),
   });
   service.readRuntime.mockResolvedValue({ status: "stopped" });
@@ -344,7 +342,7 @@ it("refuses stopped native status while unpublished Gateway startup holds author
 it("targets the verified serving child even when native status reports stopped", async () => {
   vi.spyOn(process, "platform", "get").mockReturnValue("linux");
   vi.spyOn(processOwners, "readStateLeaseProcessOwnerStatus").mockReturnValue("live");
-  const coordinator = acquireGatewayLifecycleCoordinator({
+  const coordinator = acquireGatewayStateOwner({
     databasePath: resolveOpenClawStateSqlitePath(process.env),
   });
   service.readRuntime.mockResolvedValue({ status: "stopped" });

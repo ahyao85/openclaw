@@ -471,7 +471,7 @@ async function cleanupGatewayTestHome(options: { restoreEnv: boolean }) {
   resetTaskRegistryForTests({ persist: false });
   resetTaskFlowRegistryForTests({ persist: false });
   if (tempHome) {
-    await closeGatewayTestHomeDatabases(tempHome, options);
+    await closeGatewayTestHomeDatabases(tempHome);
   }
   if (options.restoreEnv) {
     gatewayEnvSnapshot?.restore();

@@ -1,6 +1,9 @@
+import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../infra/kysely-sync-cache-state.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
+import { setSqliteBusyTimeout } from "../infra/sqlite-busy-timeout.js";
+import { quarantineOrphanedSqliteSidecars } from "../infra/sqlite-files.js";
 import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
 import { readSqliteSchemaCookie } from "../infra/sqlite-schema-contract.js";
 import {
@@ -9,6 +12,7 @@ import {
 } from "../infra/sqlite-transaction.js";
 import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
 import { configureSqlitePreSchemaPragmas } from "../infra/sqlite-wal.js";
+import { withStateDatabaseSchemaMaintenance } from "../infra/state-database-maintenance.js";
 import {
   OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
   type OpenClawStateDatabaseOptions,
@@ -23,10 +27,7 @@ import { withExistingOpenClawStateDatabaseReadOnly } from "./openclaw-state-db-r
 import { ensureColumn } from "./openclaw-state-db-schema-helpers.js";
 import { assertOpenClawStateSchemaRepairAllowed } from "./openclaw-state-db-schema-policy.js";
 import { assertSupportedStateSchemaVersion } from "./openclaw-state-db-schema-version.js";
-import {
-  assertOpenClawStateWriteAllowed,
-  runWithOpenClawStateWriteAccess,
-} from "./openclaw-state-ownership.js";
+import { assertOpenClawStateWriteAllowed } from "./openclaw-state-ownership.js";
 
 // Native Swift stores may create only these canonical objects before Node owns schema bootstrap.
 const NATIVE_STARTUP_BOOTSTRAP_OBJECTS = new Set([
@@ -139,51 +140,57 @@ export function withOpenClawStateStartupCheckpointConnection<T>(
   const env = options.env ?? process.env;
   const pathname = resolveDatabasePath(options);
   assertOpenClawStateSchemaRepairAllowed(pathname);
-  return runWithOpenClawStateWriteAccess(
-    { databasePath: pathname, env },
-    "startup migration checkpoint database operation",
-    () => {
-      const initialization = prepareStateDatabaseInitialization(
-        pathname,
-        env,
-        options.initializationAgentPaths,
-      );
+  return withStateDatabaseSchemaMaintenance({ databasePath: pathname }, () => {
+    const initialization = prepareStateDatabaseInitialization(
+      pathname,
+      env,
+      options.initializationAgentPaths,
+    );
+    quarantineOrphanedSqliteSidecars(pathname);
+    if (!existsSync(pathname)) {
       ensureOpenClawStatePermissions(pathname, env);
-      const db = openNodeSqliteDatabase(pathname);
-      try {
-        configureSqlitePreSchemaPragmas(db, {
-          busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
-        });
-        const operate = () => {
+    }
+    const db = openNodeSqliteDatabase(pathname);
+    let ownershipAdmitted = false;
+    try {
+      setSqliteBusyTimeout(db, OPENCLAW_SQLITE_BUSY_TIMEOUT_MS);
+      assertOpenClawStateWriteAllowed({ database: db, databasePath: pathname, env });
+      ownershipAdmitted = true;
+      ensureOpenClawStatePermissions(pathname, env);
+      configureSqlitePreSchemaPragmas(db, {
+        busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+      });
+      const operate = () => {
+        assertSqliteIntegrity(db, pathname);
+        const schemaCookie = options.atomic ? readSqliteSchemaCookie(db) : undefined;
+        if (isUninitializedNativeStartupDatabase(db)) {
+          initializeCanonicalSchema(db, pathname, env, initialization);
+        }
+        ensureStartupMigrationCheckpointSchema(db, pathname, env);
+        // Bootstrap/additive repair is a separate mutation boundary. Only unchanged
+        // schema can share the initial proof with a subsequent lease claim.
+        if (options.atomic && readSqliteSchemaCookie(db) !== schemaCookie) {
           assertSqliteIntegrity(db, pathname);
-          const schemaCookie = options.atomic ? readSqliteSchemaCookie(db) : undefined;
-          if (isUninitializedNativeStartupDatabase(db)) {
-            initializeCanonicalSchema(db, pathname, env, initialization);
-          }
-          ensureStartupMigrationCheckpointSchema(db, pathname, env);
-          // Bootstrap/additive repair is a separate mutation boundary. Only unchanged
-          // schema can share the initial proof with a subsequent lease claim.
-          if (options.atomic && readSqliteSchemaCookie(db) !== schemaCookie) {
-            assertSqliteIntegrity(db, pathname);
-          }
-          return callback(db);
-        };
-        // Inspection and conditional claim must see the same integrity-proven generation.
-        // A deferred snapshot lets WAL writers proceed during verification. A changed
-        // snapshot cannot upgrade to a writer, so no proof crosses an intervening commit.
-        return options.atomic
-          ? runSqliteDeferredTransactionSync(db, operate, {
-              busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
-              databaseLabel: pathname,
-              operationLabel: "state.startup-checkpoint.inspect-and-claim",
-            })
-          : operate();
-      } finally {
-        db.close();
+        }
+        return callback(db);
+      };
+      // Inspection and conditional claim must see the same integrity-proven generation.
+      // A deferred snapshot lets WAL writers proceed during verification. A changed
+      // snapshot cannot upgrade to a writer, so no proof crosses an intervening commit.
+      return options.atomic
+        ? runSqliteDeferredTransactionSync(db, operate, {
+            busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+            databaseLabel: pathname,
+            operationLabel: "state.startup-checkpoint.inspect-and-claim",
+          })
+        : operate();
+    } finally {
+      db.close();
+      if (ownershipAdmitted) {
         ensureOpenClawStatePermissions(pathname, env);
       }
-    },
-  );
+    }
+  });
 }
 
 /** Admit only recognized native bootstrap; versioned state stays on the read-only path. */
@@ -207,9 +214,10 @@ export function initializeNativeOpenClawStateConnection(
   }
   const env = options.env ?? process.env;
   const pathname = resolveDatabasePath(options);
-  runWithOpenClawStateWriteAccess({ databasePath: pathname, env }, "native state bootstrap", () => {
+  withStateDatabaseSchemaMaintenance({ databasePath: pathname }, () => {
     const db = openNodeSqliteDatabase(pathname);
     try {
+      assertOpenClawStateWriteAllowed({ database: db, databasePath: pathname, env });
       if (!isUninitializedNativeStartupDatabase(db)) {
         return;
       }

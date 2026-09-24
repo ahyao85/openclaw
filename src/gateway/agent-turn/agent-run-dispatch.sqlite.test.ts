@@ -35,7 +35,7 @@ import {
   resetTaskRegistryForTests,
 } from "../../tasks/task-runtime.test-helpers.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { holdStateDatabaseCoordinator } from "../../test-utils/state-database-contention.js";
+import { holdStateDatabaseWriteTransaction } from "../../test-utils/state-database-contention.js";
 import { dispatchAgentRunFromGateway } from "./agent-run-dispatch.js";
 import { createTrackedDispatch } from "./agent-run-dispatch.test-support.js";
 import { registerSessionFollowupTask } from "./agent-run-task-tracking.js";
@@ -189,11 +189,7 @@ it.each([
         expect(receipt.task.taskId).toBe(originalReceipt?.task.taskId);
         const initialCreatedAt = receipt.task.createdAt;
         const workerContext = captureOpenClawStateWorkerContext();
-        const held = holdStateDatabaseCoordinator(
-          workerContext.admission.databasePath,
-          workerContext.coordinatorRuntime,
-          5_000,
-        );
+        const held = holdStateDatabaseWriteTransaction(workerContext.admission.databasePath, 5_000);
         const entered = createDeferred();
         const releaseProvider = createDeferred();
         const timerObserved = createDeferred<number>();

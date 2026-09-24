@@ -55,7 +55,7 @@ function interruptionScript(
       ["/commands/doctor-agent-lease-refusal.js", 'export const assertDoctorAgentLeaseAdmission = async () => {}; export const preflightExternalDoctorAgentLease = async () => {};'],
       ["/commands/doctor-maintenance-stale-service.js", 'export const inspectStaleDoctorGateway = async () => undefined;'],
       ["/infra/gateway-lock-legacy.js", 'export const assertLegacyGatewayStoppedForMaintenance = async () => {};'],
-      ["/infra/state-database-coordinator.js", 'export const acquireGatewayMaintenanceCoordinator = () => ({ release() {}, createSchemaFenceDelegate() {} }); export const acquireStateDatabaseCoordinator = () => ({ release() {} });'],
+      ["/infra/gateway-lock.js", 'export const acquireGatewayLock = async () => { let active = true; return { assertCurrent() { if (!active) throw new Error("Fixture Gateway ownership released"); }, async release() { active = false; } }; };'],
       ["/state/openclaw-state-db-async-lifecycle.js", 'export const createOpenClawDatabaseMaintenanceScope = () => ({ run: run => run(), close: async () => globalThis.doctorFixture.record("stores-closed") });'],
       ["/cli/update-cli/update-command-service-maintenance.js", 'export const maybeStopManagedServiceBeforeMutableUpdate = params => globalThis.doctorFixture.stop(params); export const maybeResumeWindowsTaskAutoStartAfterPackageUpdate = async () => {}; export const revalidateManagedGatewayServiceAfterUpdate = async () => globalThis.doctorFixture.verdict;'],
       ["/commands/doctor-gateway-services.js", 'export const maybeRepairGatewayServiceConfig = cfg => globalThis.doctorFixture.repair(cfg);'],
