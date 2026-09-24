@@ -101,6 +101,7 @@ import type {
   CreateGatewaySessionResult,
   GatewaySessionCommitResult,
 } from "./session-create-service.types.js";
+import { readSessionCreateTarget } from "./session-create-target.js";
 import {
   type PreparedGatewaySessionLifecycle,
   projectPreparedSessionWorkspace,
@@ -477,15 +478,17 @@ export async function createGatewaySession(
     key: targetSessionKey,
     agentId,
   });
+  const initialTargetEntry = explicitTargetKey
+    ? resolveSessionEntryAccessTarget({
+        cfg: params.cfg,
+        sessionKey: creationTarget.canonicalKey,
+        agentId: creationTarget.agentId,
+      }).entry
+    : undefined;
   if (explicitTargetKey && !params.initialEntry) {
     // A trusted initializer holds the lifecycle fence through afterCreate. Waiting
     // on that fence would deadlock callers that must reject its visible pending row.
-    const pendingEntry = resolveSessionEntryAccessTarget({
-      cfg: params.cfg,
-      sessionKey: creationTarget.canonicalKey,
-      agentId: creationTarget.agentId,
-    }).entry;
-    if (pendingEntry?.initializationPending === true) {
+    if (initialTargetEntry?.initializationPending === true) {
       return {
         ok: false,
         error: errorShape(
@@ -712,31 +715,16 @@ export async function createGatewaySession(
       parent: currentParentSessionEntry,
     });
     const target = creationTarget;
-    const currentTargetEntry = loadGatewaySessionEntryReadOnly(target.canonicalKey, {
-      agentId: target.agentId,
-    }).entry;
-    // Lifecycle custody keeps this owner stable through naming and filesystem preparation.
-    const existingOwnershipError = resolvePluginSessionOwnershipError({
-      action: "adopt",
-      entry: currentTargetEntry,
-      key: target.canonicalKey,
-      pluginOwnerId: params.authorizedPluginId,
-    });
-    if (existingOwnershipError) {
-      return { ok: false, error: existingOwnershipError };
+    const targetRead = readSessionCreateTarget(
+      params,
+      target,
+      initialTargetEntry?.sessionId,
+      targetLifecycleIdentities,
+    );
+    if (!targetRead.ok) {
+      return targetRead;
     }
-    if (!currentTargetEntry) {
-      const creationError = authorizeGatewaySessionCreation({
-        cfg: params.cfg,
-        agentId: target.agentId,
-        ...(params.operatorRoleActor
-          ? { actor: params.operatorRoleActor }
-          : { profileId: params.requestingOperatorProfileId }),
-      });
-      if (creationError) {
-        return { ok: false, error: creationError };
-      }
-    }
+    const currentTargetEntry = targetRead.value;
     // Delegated isolation survives changes to the creator's current role.
     const creationSandbox =
       creation?.sandbox ?? (creation ? resolveCreatorSandbox(params.cfg, creation) : undefined);
@@ -1439,10 +1427,16 @@ export async function createGatewaySession(
     };
   };
 
+  const targetLifecycleIdentities = [
+    creationTarget.canonicalKey,
+    ...creationTarget.storeKeys,
+    ...(requestedKey ? [requestedKey] : []),
+    ...(initialTargetEntry?.sessionId ? [initialTargetEntry.sessionId] : []),
+  ];
   const lifecycleTargets = [
     {
       scope: creationTarget.storePath,
-      identities: [creationTarget.canonicalKey],
+      identities: targetLifecycleIdentities,
     },
   ];
   if (
