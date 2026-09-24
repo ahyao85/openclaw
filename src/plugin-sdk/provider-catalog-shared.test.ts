@@ -138,6 +138,37 @@ describe("provider-catalog-shared live catalog cache", () => {
     expect(load).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    { kind: "Error", reason: new Error("last consumer left") },
+    { kind: "non-Error", reason: { source: "catalog closed" } },
+  ])("does not cache a same-turn completion after $kind cancellation", async ({ reason }) => {
+    const controller = new AbortController();
+    const completion = createDeferred<string>();
+    const started = createDeferred<AbortSignal | undefined>();
+    const keyParts = ["same-turn-cancellation"];
+    const first = getCachedLiveCatalogValue({
+      keyParts,
+      signal: controller.signal,
+      load: (signal) => {
+        started.resolve(signal);
+        return completion.promise;
+      },
+    });
+    const acquisitionSignal = await started.promise;
+    controller.abort(reason);
+    const abortedSynchronously = acquisitionSignal?.aborted;
+    completion.resolve("abandoned result");
+    await Promise.allSettled([first]);
+    const load = vi.fn(async () => "replacement");
+    const replacement = await getCachedLiveCatalogValue({ keyParts, load });
+
+    expect(abortedSynchronously).toBe(true);
+    expect(acquisitionSignal?.reason).toBe(reason);
+    await expect(first).rejects.toBe(reason);
+    expect(replacement).toBe("replacement");
+    expect(load).toHaveBeenCalledOnce();
+  });
+
   it("allows unrelated catalogs while abandoned loads remain unsettled", async () => {
     const completion = createDeferred<string>();
     const controllers = Array.from({ length: 99 }, () => new AbortController());
@@ -225,13 +256,15 @@ describe("provider-catalog-shared live catalog cache", () => {
     const reason = new Error("last consumer left");
     try {
       controller.abort(reason);
-      await expect(first).rejects.toBe(reason);
-      await expect(
-        getCachedLiveCatalogValue({ keyParts, load: async () => "replacement" }),
-      ).resolves.toBe("replacement");
-      expect(load).toHaveBeenCalledOnce();
+      const replacementLoad = vi.fn(async () => "replacement");
+      const replacement = getCachedLiveCatalogValue({ keyParts, load: replacementLoad });
+      const startedBeforeSettlement = replacementLoad.mock.calls.length;
       completion.resolve("abandoned result");
-      await completion.promise;
+      await Promise.allSettled([first, replacement]);
+      await expect(first).rejects.toBe(reason);
+      expect(startedBeforeSettlement).toBe(1);
+      await expect(replacement).resolves.toBe("replacement");
+      expect(load).toHaveBeenCalledOnce();
       await expect(getCachedLiveCatalogValue({ keyParts, load })).resolves.toBe("replacement");
       expect(load).toHaveBeenCalledOnce();
     } finally {

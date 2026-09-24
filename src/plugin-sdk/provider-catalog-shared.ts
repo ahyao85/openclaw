@@ -71,12 +71,28 @@ async function consumeLiveCatalog<T>(entry: LiveCatalogCacheEntry<T>, signal?: A
   signal?.throwIfAborted();
   entry.controller.signal.throwIfAborted();
   entry.consumers += 1;
+  let released = false;
+  const release = () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    entry.consumers -= 1;
+    // A shared load belongs to all its callers, never the first caller's deadline.
+    if (!entry.settled && entry.consumers === 0) {
+      entry.controller.abort(signal?.reason);
+    }
+  };
   let listener: Disposable | undefined;
   try {
     const cancelled = signal ? createDeferredCore<never>() : undefined;
     if (signal && cancelled) {
       // Match throwIfAborted(): cancellation preserves arbitrary caller-owned reasons.
-      listener = addAbortListener(signal, () => cancelled.reject(signal.reason));
+      listener = addAbortListener(signal, () => {
+        // Release before a same-turn completion can retain an abandoned load.
+        release();
+        cancelled.reject(signal.reason);
+      });
     }
     const value = cancelled
       ? await Promise.race([entry.value, cancelled.promise])
@@ -87,11 +103,7 @@ async function consumeLiveCatalog<T>(entry: LiveCatalogCacheEntry<T>, signal?: A
     return value;
   } finally {
     listener?.[Symbol.dispose]();
-    entry.consumers -= 1;
-    // A shared load belongs to all its callers, never the first caller's deadline.
-    if (!entry.settled && entry.consumers === 0) {
-      entry.controller.abort(signal?.reason);
-    }
+    release();
   }
 }
 
