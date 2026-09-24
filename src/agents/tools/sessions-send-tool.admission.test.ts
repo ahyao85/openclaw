@@ -31,6 +31,7 @@ import { createOpenClawTools } from "../openclaw-tools.js";
 import "../test-helpers/fast-openclaw-tools-sessions.js";
 import * as inProcessGateway from "./in-process-gateway.js";
 import type { AgentToolGatewayRequestCaller } from "./in-process-gateway.js";
+import * as sessionsSendFollowup from "./sessions-send-followup.js";
 import { runSessionsSendA2AFlow } from "./sessions-send-tool.a2a.js";
 import { createSessionsSendTool } from "./sessions-send-tool.js";
 
@@ -224,6 +225,12 @@ describe("sessions_send dispatch admission", () => {
       const gateway = vi
         .spyOn(inProcessGateway, "callAgentToolGatewayRequest")
         .mockImplementation(callGateway);
+      // This routing fixture supplies a run-scoped Gateway, not a native task
+      // receipt. Keep its real A2A/route assertions at that explicit boundary;
+      // retained core authority and custody have separate owner/integration proof.
+      const prepareFollowup = vi
+        .spyOn(sessionsSendFollowup, "prepareSessionsSendFollowup")
+        .mockResolvedValue(undefined);
       try {
         const tool = createOpenClawTools({
           agentSessionKey: sourceKey,
@@ -270,6 +277,7 @@ describe("sessions_send dispatch admission", () => {
           sourceReplyDeliveryMode: "message_tool_only",
         });
       } finally {
+        prepareFollowup.mockRestore();
         gateway.mockRestore();
       }
     },
