@@ -4,7 +4,6 @@ import { useChatAbortRegistryFixture } from "./chat.abort-registry.test-support.
 import { expect, it, vi } from "vitest";
 import * as subagentKill from "../../agents/subagents/registry/subagent-control-kill.js";
 import { registerSubagentRun } from "../../agents/subagents/registry/subagent-registry.js";
-import { settleSubagentRegistryPersistenceWork } from "../../agents/subagents/registry/subagent-registry.persistence.test-support.js";
 import { enqueueSwarmRun } from "../../agents/subagents/swarm/swarm-scheduler.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import {
@@ -30,7 +29,7 @@ import {
 } from "./chat.abort.test-helpers.js";
 import { sessionAbortHandlers } from "./sessions-abort.js";
 
-useChatAbortRegistryFixture();
+const fixture = useChatAbortRegistryFixture();
 const abortSession = sessionAbortHandlers["sessions.abort"];
 if (!abortSession) {
   throw new Error("sessions.abort handler is not registered");
@@ -53,7 +52,7 @@ it.each([false, true])(
       maxConcurrent: 1,
       onStartFailure: () => true,
     });
-    registerSubagentRun({
+    await registerSubagentRun({
       runId: "queued-collector",
       childSessionKey: scope.sessionKey,
       requesterSessionKey: "agent:main:main",
@@ -65,7 +64,7 @@ it.each([false, true])(
       queued: true,
       expectsCompletionMessage: false,
     });
-    await settleSubagentRegistryPersistenceWork();
+    await fixture.settle();
     const killFailure = new Error("collector cancellation failed");
     const workerFailure = new Error("worker cancellation persistence failed", {
       cause: new SqliteWorkerError("worker result lost", "outcome-unknown"),
@@ -180,7 +179,7 @@ it.each([
       maxConcurrent: 1,
       onStartFailure: () => true,
     });
-    registerSubagentRun({
+    await registerSubagentRun({
       runId: "queued-save-warning",
       childSessionKey: scope.sessionKey,
       requesterSessionKey: "agent:main:main",
@@ -192,7 +191,7 @@ it.each([
       queued: true,
       expectsCompletionMessage: false,
     });
-    await settleSubagentRegistryPersistenceWork();
+    await fixture.settle();
   }
   const respond = vi.fn();
   const context = createChatAbortContext({

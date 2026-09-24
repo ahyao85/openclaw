@@ -76,16 +76,18 @@ describe("on-demand prepared worker admission", () => {
   it("admits HEAD without a session, authorizes setup, and starts background preparation", async () => {
     const f = await fixture();
     await f.service.ready();
+    support.getDevelopmentProfile().readyWorkers = 0;
     const entered = createDeferredCore();
     const release = createDeferredCore();
-    f.provision.mockImplementation(async () => {
+    const provision = expectDefined(f.provision.getMockImplementation(), "provider implementation");
+    f.provision.mockImplementationOnce(async (...args) => {
       entered.resolve();
       await release.promise;
-      throw new Error("Synthetic provider unavailable");
+      return await provision(...args);
     });
-    support.getDevelopmentProfile().readyWorkers = 0;
     try {
       const result = await f.service.prepare(f.request);
+      // Provider entry follows the committed provisioning transition; hold it during reads.
       await entered.promise;
       const baseCommit = await requireGit(f.projectPath, ["rev-parse", "HEAD"]);
       const record = support.testState.store.get(result.environmentId)!;
@@ -290,12 +292,12 @@ describe("on-demand prepared worker admission", () => {
       context.getGatewayMethodRegistry = () =>
         createGatewayMethodRegistry(createCoreGatewayMethodDescriptors(environmentsHandlers));
       const client = createOperatorClient({
-        profileId: "preparation-operator",
+        profileName: "preparation-operator",
         scopes: ["operator.admin"],
       });
       const controller = new AbortController();
       const source = expectDefined(
-        captureGatewayOperatorRunAuthority({
+        await captureGatewayOperatorRunAuthority({
           client,
           context,
           sourceAuthority: {
