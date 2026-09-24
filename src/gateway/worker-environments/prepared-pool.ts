@@ -8,6 +8,10 @@ import {
   readWorkerProjectPreparation,
   type WorkerProviderPreparedIntent,
 } from "./preparation-identity.js";
+import {
+  createPreparedPoolPresence,
+  type PreparedPoolPresenceOptions,
+} from "./prepared-pool-presence.js";
 import { readWorkerProjectSnapshot } from "./project-preparation.js";
 import { deriveEnvironmentIntent } from "./service-contract.js";
 import type { WorkerEnvironmentRecord, WorkerEnvironmentStore } from "./store.js";
@@ -48,6 +52,8 @@ type PoolOptions = {
   now: () => number;
   signal: AbortSignal;
   warn: (message: string) => void;
+  resolveHumanPresenceDemand?: PreparedPoolPresenceOptions["resolveHumanPresenceDemand"];
+  presenceDemandStore?: PreparedPoolPresenceOptions["presenceDemandStore"];
 };
 
 /** Environment rows own inventory; placement activation and explicit builds establish demand. */
@@ -72,6 +78,7 @@ export function createPreparedWorkerPool(options: PoolOptions) {
     const project = readWorkerProjectSnapshot(record.profileSnapshot.project);
     return project ? JSON.stringify([record.providerId, record.profileId, project.key]) : undefined;
   };
+  const presence = createPreparedPoolPresence({ ...options, schedule: () => schedule() });
   // Failed claims inherit only the original preparation window; success records
   // a separate fact that survives teardown and placement retirement.
   const demandAt = (record: WorkerEnvironmentRecord) =>
@@ -96,6 +103,8 @@ export function createPreparedWorkerPool(options: PoolOptions) {
     return settings;
   };
   const runPass = async () => {
+    current();
+    const activePresenceDemand = await presence.maintain();
     current();
     const inventory = store.list();
     const sources = new Map<string, { record: WorkerEnvironmentRecord; demandAtMs: number }>();
@@ -134,6 +143,7 @@ export function createPreparedWorkerPool(options: PoolOptions) {
         preparationKey: string;
         demandAtMs: number;
         expiresAtMs: number;
+        activationEligible: boolean;
         retention?: { assertCurrent: () => void };
         intent?: WorkerProviderPreparedIntent;
         slots?: number;
@@ -149,20 +159,36 @@ export function createPreparedWorkerPool(options: PoolOptions) {
         continue;
       }
       try {
+        const presenceOwned =
+          activePresenceDemand &&
+          activePresenceDemand.profileId === record.profileId &&
+          activePresenceDemand.preparationKey === record.preparation?.key &&
+          activePresenceDemand.project.key ===
+            readWorkerProjectSnapshot(record.profileSnapshot.project)?.key;
+        const presenceExpiresAtMs = activePresenceDemand?.retireAtMs ?? Number.MAX_SAFE_INTEGER;
         const timeout = options
           .resolveProvider(record.providerId)
           ?.resolvePreparedIdleTimeoutMs?.(snapshotSettings(record));
+        const activationExpiresAtMs =
+          Number.isSafeInteger(timeout) && timeout && timeout > 0
+            ? demandAtMs + timeout
+            : undefined;
         if (
-          Number.isSafeInteger(timeout) &&
-          timeout &&
-          timeout > 0 &&
-          demandAtMs + timeout > now()
+          (presenceOwned && presenceExpiresAtMs > now()) ||
+          (activationExpiresAtMs !== undefined && activationExpiresAtMs > now())
         ) {
           eligible.set(key, {
             source: record,
             preparationKey: readWorkerProjectPreparation(record.profileSnapshot.project)!.key,
-            demandAtMs,
-            expiresAtMs: demandAtMs + timeout,
+            demandAtMs: presenceOwned
+              ? Math.max(activePresenceDemand.lastPresentAtMs, demandAtMs)
+              : demandAtMs,
+            expiresAtMs: Math.max(
+              presenceOwned ? presenceExpiresAtMs : 0,
+              activationExpiresAtMs ?? 0,
+            ),
+            activationEligible:
+              activationExpiresAtMs !== undefined && activationExpiresAtMs > now(),
           });
         }
       } catch {
@@ -274,7 +300,7 @@ export function createPreparedWorkerPool(options: PoolOptions) {
         const generation = key ? eligible.get(key) : undefined;
         const limits = policy(record);
         const count = key ? (kept.get(key) ?? 0) : 0;
-        const expired = record.preparation.expiresAtMs <= now();
+        const expired = (generation?.expiresAtMs ?? record.preparation.expiresAtMs) <= now();
         const valid =
           !expired &&
           generation?.preparationKey === record.preparation.key &&
@@ -331,7 +357,14 @@ export function createPreparedWorkerPool(options: PoolOptions) {
         ...limits,
         maxTotal: Math.max(0, limits.maxTotal - plannedTotal),
       });
-      if (slots === 0 || generation.expiresAtMs <= now()) {
+      if (
+        slots === 0 ||
+        generation.expiresAtMs <= now() ||
+        (!presence.isPresent() &&
+          activePresenceDemand &&
+          generation.preparationKey === activePresenceDemand.preparationKey &&
+          !generation.activationEligible)
+      ) {
         continue;
       }
       try {
@@ -461,7 +494,10 @@ export function createPreparedWorkerPool(options: PoolOptions) {
             record.preparation !== null &&
             record.preparation.key === intent.preparationKey &&
             record.preparation.consumedAtMs === null &&
-            record.preparation.expiresAtMs > now() &&
+            ((presence.current()?.project.key ===
+              readWorkerProjectSnapshot(record.profileSnapshot.project)?.key &&
+              (presence.current()!.retireAtMs ?? Number.MAX_SAFE_INTEGER) > now()) ||
+              record.preparation.expiresAtMs > now()) &&
             record.destroyRequestedAtMs === null &&
             record.sharedHost === false &&
             record.nodeDeviceId !== null &&
@@ -491,6 +527,14 @@ export function createPreparedWorkerPool(options: PoolOptions) {
     if (demandAtMs === undefined || !readWorkerProjectPreparation(record.profileSnapshot.project)) {
       return true;
     }
+    if (
+      presence.current()?.profileId === record.profileId &&
+      presence.current()!.preparationKey === record.preparation?.key &&
+      presence.current()!.project.key ===
+        readWorkerProjectSnapshot(record.profileSnapshot.project)?.key
+    ) {
+      return presence.current()!.retireAtMs !== null && presence.current()!.retireAtMs! <= nowMs;
+    }
     // Unavailable policy cannot prove expiry. Retain metadata only; physical
     // cleanup is independent and must not wait for a provider to return.
     try {
@@ -515,5 +559,13 @@ export function createPreparedWorkerPool(options: PoolOptions) {
       preparations.get(environmentId)?.abort();
     }
   };
-  return { schedule, noteDemand, candidates, maintain, canPruneDemand, cancelPreparation };
+  return {
+    schedule,
+    noteDemand,
+    candidates,
+    maintain,
+    canPruneDemand,
+    cancelPreparation,
+    setHumanPresence: presence.set,
+  };
 }

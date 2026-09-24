@@ -85,6 +85,13 @@ const serviceError = (code: WorkerEnvironmentServiceErrorCode, message: string) 
 
 type WorkerEnvironmentServiceOptions = WorkerProviderLifecycleInputOptions &
   WorkerEnvironmentSessionAttachmentOptions & {
+    resolveHumanPresenceDemand?: () =>
+      | {
+          profileId: string;
+          repository: { agentId: string; url: string; ref?: string };
+        }
+      | undefined;
+    presenceDemandStore?: Parameters<typeof createPreparedWorkerPool>[0]["presenceDemandStore"];
     prepareComputer?: (
       claim: import("./placement-store.js").WorkerSessionTurnClaim,
     ) => Promise<import("./computer-transport.js").PreparedWorkerComputer | undefined>;
@@ -330,6 +337,8 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     now,
     signal: maintenanceAbort.signal,
     warn,
+    resolveHumanPresenceDemand: options.resolveHumanPresenceDemand,
+    presenceDemandStore: options.presenceDemandStore,
   });
   const schedulePreparedRefill = (environmentId?: string) =>
     void trackOperation(preparedPool.maintain(environmentId));
@@ -657,6 +666,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     getPreparedCandidates: (intent: WorkerProviderPreparedIntent) =>
       preparedPool.candidates(intent).map(environmentAccess.project),
     schedulePreparedRefill,
+    setHumanPresence: preparedPool.setHumanPresence,
     inventoryVersion: store.inventoryVersion,
     machineShapeVersion: providerLifecycle.machineShapeVersion,
     subscribeMachineShapeChanged: providerLifecycle.subscribeMachineShapeChanged,

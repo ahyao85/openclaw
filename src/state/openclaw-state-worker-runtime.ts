@@ -40,6 +40,7 @@ import {
   listManagedImageOriginalMediaIdsInDatabase,
 } from "../gateway/managed-image-record-store.kernel.js";
 import { registerSessionGroupInDatabase } from "../gateway/session-group-registration.kernel.js";
+import { executePreparedPoolPresenceCommand } from "../gateway/worker-environments/prepared-pool-presence-runtime.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import * as deliveryQueue from "../infra/delivery-queue.worker.js";
 import * as deviceAuth from "../infra/device-auth-store.kernel.js";
@@ -338,6 +339,16 @@ export function executeSharedStateCommand(
     return executeOnboardingRecommendationCommand(command, {
       database: open(),
       path: context.databasePath,
+      env: getSqliteWorkerStateContext().environment,
+    });
+  }
+  if (
+    command.type === "preparedPoolPresence.read" ||
+    command.type === "preparedPoolPresence.write"
+  ) {
+    return executePreparedPoolPresenceCommand({
+      command,
+      database: open(),
       env: getSqliteWorkerStateContext().environment,
     });
   }

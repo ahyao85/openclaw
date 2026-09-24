@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => {
     createExecutor: vi.fn(() => execute),
     execute,
     executeSessionTool: undefined as WorkerSessionToolExecutor | undefined,
-    service: { get: vi.fn() },
+    service: { get: vi.fn(), setHumanPresence: vi.fn(async () => {}) },
   };
 });
 

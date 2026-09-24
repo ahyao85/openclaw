@@ -28,7 +28,6 @@ import {
   materializeProjectClone,
   removeClonedProjectCheckout,
 } from "../../projects/project-clone.js";
-import { parseProjectGitUrl } from "../../projects/project-git-url.js";
 import {
   listProjectRegistry,
   listWorkspaceProjects,
@@ -42,6 +41,7 @@ import { isTrustedSecretSurfaceUnavailableError } from "../../secrets/runtime-de
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
 import { readCurrentUserProfileAliases } from "../../state/user-profile-list.js";
 import { runTasksWithConcurrency } from "../../utils/run-with-concurrency.js";
+import { configuredDefaultRepository } from "../configured-default-repository.js";
 import { readGatewayAccessRevision } from "../gateway-access-revision.js";
 import {
   CONTROL_UI_GITHUB_CREDENTIAL_UNAVAILABLE_MESSAGE,
@@ -60,28 +60,6 @@ type ProjectWorktreeService = Pick<
   ManagedWorktreeService,
   "listRegistryRecords" | "resolveRepositoryIdentity"
 >;
-
-function configuredDefaultRepository(env: NodeJS.ProcessEnv = process.env) {
-  const identity = normalizeOptionalString(env.OPENCLAW_PROJECTS_DEFAULT_REPOSITORY_IDENTITY);
-  const parsed = parseProjectGitUrl(env.OPENCLAW_PROJECTS_DEFAULT_REPOSITORY_URL ?? "");
-  const ref = normalizeOptionalString(env.OPENCLAW_PROJECTS_DEFAULT_REPOSITORY_REF);
-  const profileId = normalizeOptionalString(env.OPENCLAW_PROJECTS_DEFAULT_REPOSITORY_PROFILE_ID);
-  if (
-    !identity ||
-    identity.length > 200 ||
-    !parsed ||
-    (ref?.length ?? 0) > 255 ||
-    (profileId?.length ?? 0) > 128
-  ) {
-    return undefined;
-  }
-  return {
-    identity,
-    url: parsed.url,
-    ...(ref ? { ref } : {}),
-    ...(profileId ? { profileId } : {}),
-  };
-}
 
 type ProjectCandidate = {
   checkoutPath: string;
