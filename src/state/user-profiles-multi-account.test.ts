@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { GIT_COAUTHOR_PREFERENCE_KEY } from "../../packages/gateway-protocol/src/index.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { withOpenClawStateDatabaseReadSnapshot } from "./openclaw-state-db-readonly.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
@@ -240,6 +241,12 @@ describe("multi-account people", () => {
     expect(
       (await resolveUserProfileGitHubAttribution([work.id], options)).get(work.id)?.accountId,
     ).toBe(primary.accountId);
+    await withOpenClawStateDatabaseReadSnapshot(async () => {
+      setUserPreferences(person.id, { [GIT_COAUTHOR_PREFERENCE_KEY]: false }, options);
+      expect(
+        (await resolveUserProfileGitHubAttribution([work.id], options)).get(work.id),
+      ).toBeNull();
+    }, options);
     expect(
       openOpenClawStateDatabase(options).db.prepare("PRAGMA user_version").get()?.user_version,
     ).toBe(version);

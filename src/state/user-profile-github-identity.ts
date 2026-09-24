@@ -29,7 +29,11 @@ import {
   userProfilesDb,
 } from "./user-profiles-internal.js";
 import { ensureUserProfilesSchema, UserProfileOwnerError } from "./user-profiles-schema.js";
-import type { CachedGitHubIdentity } from "./user-profiles.types.js";
+import type {
+  CachedGitHubIdentity,
+  StoredGitHubIdentity,
+  UserProfileGitHubAttribution,
+} from "./user-profiles.types.js";
 
 const GITHUB_PROVIDER = "github";
 const GITHUB_LOGIN_SUBJECT_PREFIX = "login:";
@@ -60,11 +64,6 @@ function readGitHubColumns(db: DatabaseSync) {
   }
   return columns;
 }
-
-type StoredGitHubIdentity = {
-  accountId: number;
-  login: string;
-};
 
 function parseStoredGitHubIdentity(row: {
   subject: string | null | undefined;
@@ -213,14 +212,15 @@ export function selectUserProfileGitHubIdentities(
 export async function resolveUserProfileGitHubAttribution(
   profileIds: readonly string[],
   options: OpenClawStateDatabaseOptions = {},
-): Promise<Map<string, StoredGitHubIdentity | null>> {
+): Promise<UserProfileGitHubAttribution> {
   if (profileIds.length === 0) {
     return new Map();
   }
-  const reply = await executeExistingOpenClawStateRead(options, {
-    type: "userProfiles.githubAttribution.resolve",
-    profileIds,
-  });
+  const reply = await executeExistingOpenClawStateRead(
+    options,
+    { type: "userProfiles.githubAttribution.resolve", profileIds },
+    { current: true },
+  );
   if (!reply) {
     return new Map();
   }
@@ -233,7 +233,7 @@ export async function resolveUserProfileGitHubAttribution(
 function resolveUserProfileGitHubAttributionInDatabase(
   db: DatabaseSync,
   profileIds: readonly string[],
-): Map<string, StoredGitHubIdentity | null> {
+): UserProfileGitHubAttribution {
   if (profileIds.length === 0 || !tableExists(db, "user_profiles")) {
     return new Map();
   }
@@ -275,7 +275,7 @@ export function readUserProfileGitHubCommand(
   | { type: "userProfiles.githubIdentity.cached"; identity: CachedGitHubIdentity | undefined }
   | {
       type: "userProfiles.githubAttribution.resolve";
-      identities: ReturnType<typeof resolveUserProfileGitHubAttributionInDatabase>;
+      identities: UserProfileGitHubAttribution;
     } {
   return runSqliteDeferredTransactionSync(db, () =>
     command.type === "userProfiles.githubIdentity.cached"

@@ -79,13 +79,13 @@ import type { ConfigMachineState } from "./openclaw-state-db.generated.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 import type { OpenClawStateWorkerErrorPayload } from "./openclaw-state-worker-error.js";
 import type { SessionRepositoryWorkspaceRecord } from "./session-repository-workspaces.types.js";
-import type { resolveUserProfileGitHubAttribution } from "./user-profile-github-identity.js";
 import type {
   UserChannelIdentity,
   UserChannelIdentityLink,
   UserChannelIdentityAuthorityFacts,
   UserChannelIdentityResult,
   CachedGitHubIdentity,
+  UserProfileGitHubAttribution,
   UserProfileDisplay,
   ProfileDisplayRow,
   UserProfileEmailBinding,
@@ -386,7 +386,7 @@ export type OpenClawStateReadReply = (
       ok: true;
       type: "userProfiles.githubAttribution.resolve";
       sourceAdmitted: true;
-      identities: Awaited<ReturnType<typeof resolveUserProfileGitHubAttribution>>;
+      identities: UserProfileGitHubAttribution;
     }
   | {
       ok: true;
