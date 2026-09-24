@@ -1,3 +1,7 @@
+import {
+  parseWorkerGitHubLaunchBinding,
+  type WorkerGitHubLaunchBinding,
+} from "openclaw/plugin-sdk/github-worker-runtime";
 /** Declares the explicitly approved, lazily loaded node-backed Codex exec-server. */
 import type {
   OpenClawPluginNodeHostCommand,
@@ -68,7 +72,7 @@ export function createCodexNodeExecServerCommand(): OpenClawPluginNodeHostComman
       }
       if (
         !isRecord(request) ||
-        Object.keys(request).length !== 2 ||
+        ![2, 3].includes(Object.keys(request).length) ||
         (request.authorization !== "human-approved" && request.authorization !== "session-full")
       ) {
         throw new Error(
@@ -76,6 +80,12 @@ export function createCodexNodeExecServerCommand(): OpenClawPluginNodeHostComman
         );
       }
       const placement = parseCodexNodePlacementWorkspace(request.placement);
+      const github: WorkerGitHubLaunchBinding | undefined = Object.hasOwn(request, "github")
+        ? parseWorkerGitHubLaunchBinding(request.github)
+        : undefined;
+      if (Object.hasOwn(request, "github") && !github) {
+        throw new Error("Codex node exec-server received an invalid GitHub process binding.");
+      }
       if (
         !context?.acquireManagedWorkspace ||
         context.sessionKey !== placement.sessionKey ||
@@ -101,6 +111,7 @@ export function createCodexNodeExecServerCommand(): OpenClawPluginNodeHostComman
         io,
         activeProcesses,
         assertExecAuthorized,
+        github,
       });
     },
   };
@@ -122,8 +133,23 @@ export function createCodexNodeExecServerInvokePolicy(): OpenClawPluginNodeInvok
         };
       }
       let placement: ReturnType<typeof parseCodexNodePlacementWorkspace>;
+      const github =
+        isRecord(context.params) && Object.hasOwn(context.params, "github")
+          ? parseWorkerGitHubLaunchBinding(context.params.github)
+          : undefined;
+      if (isRecord(context.params) && Object.hasOwn(context.params, "github") && !github) {
+        return {
+          ok: false,
+          code: "CODEX_NODE_EXEC_GITHUB_BINDING_INVALID",
+          message: "Codex node execution received an invalid GitHub process binding.",
+        };
+      }
       try {
-        placement = parseCodexNodePlacementWorkspace(context.params);
+        placement = parseCodexNodePlacementWorkspace(
+          isRecord(context.params)
+            ? Object.fromEntries(Object.entries(context.params).filter(([key]) => key !== "github"))
+            : context.params,
+        );
       } catch {
         return {
           ok: false,
@@ -140,7 +166,11 @@ export function createCodexNodeExecServerInvokePolicy(): OpenClawPluginNodeInvok
       };
       const fullLaunch = await context.invokeNodeWithSessionFull?.({
         workspace,
-        createParams: () => ({ placement, authorization: "session-full" }),
+        createParams: () => ({
+          placement,
+          authorization: "session-full",
+          ...(github ? { github } : {}),
+        }),
       });
       if (fullLaunch) {
         return fullLaunch;
@@ -178,7 +208,7 @@ export function createCodexNodeExecServerInvokePolicy(): OpenClawPluginNodeInvok
       }
       return await context.invokeNode({
         workspace,
-        params: { placement, authorization: "human-approved" },
+        params: { placement, authorization: "human-approved", ...(github ? { github } : {}) },
       });
     },
   };

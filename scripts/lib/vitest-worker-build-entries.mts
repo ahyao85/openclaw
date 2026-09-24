@@ -146,4 +146,5 @@ export const vitestWorkerBuildEntries = {
   "test-support/anthropic-preparation": "test/scripts/anthropic-preparation-probe.ts",
   // Exercise native writes through the existing plugin facade in the private graph.
   "plugin-sdk/file-access-runtime": "src/plugin-sdk/file-access-runtime.ts",
+  "plugin-sdk/github-worker-runtime": "src/plugin-sdk/github-worker-runtime.ts",
 };
