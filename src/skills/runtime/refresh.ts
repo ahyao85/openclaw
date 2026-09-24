@@ -313,7 +313,7 @@ function createSkillsPathWatcher(
       handleRaw(...args);
     }
   };
-  const onError = (err: unknown, rescan = false, ancestor?: string) => {
+  const onError = (err: unknown, rescan = false, ancestor?: string, observedRoot = ancestor) => {
     if (!isCurrent()) {
       return;
     }
@@ -336,7 +336,7 @@ function createSkillsPathWatcher(
       return;
     }
     if (pooledNative) {
-      recordPooledObservationLoss(ancestor ?? target.path);
+      recordPooledObservationLoss(observedRoot ?? target.path);
     }
     log.warn(`skills watcher error (${target.path}): ${String(err)}`);
     // Startup settlement and observation availability are separate facts: a
@@ -431,9 +431,9 @@ function createSkillsPathWatcher(
           schedule(target.path);
         },
         raw: onRaw,
-        error: (error) => {
+        error: (error, observationRoot) => {
           pendingAncestors.add(root);
-          onError(error, false, root);
+          onError(error, false, root, observationRoot);
         },
       }).release,
     );

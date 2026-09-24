@@ -48,7 +48,8 @@ describe("skills ancestor recovery ownership", () => {
     createdWatchers.length = 0;
   });
   const family = async (existing: boolean) => {
-    const ancestor = await fixture.createFixtureDirectory("family");
+    // Keep workspaces outside the parent entry also observed on Darwin.
+    const ancestor = await fixture.createFixtureDirectory("family/observed");
     const left = path.join(ancestor, "left", "skills");
     const right = path.join(ancestor, "right", "skills");
     const createRequest = async (root: string, index: number) => ({
@@ -973,6 +974,10 @@ describe("skills ancestor recovery ownership", () => {
   it.each(["unsubscribe", "shutdown", "capacity"] as const)(
     "cancels its held owner replacement on %s",
     async (action) => {
+      // Native watch-capacity shutdown deliberately excludes pathname polling.
+      if (action === "capacity") {
+        vi.stubEnv("CHOKIDAR_USEPOLLING", "false");
+      }
       const { left, right, requests, parent } = await family(true);
       refresh.ensureSkillsWatcher({ workspaceDir: fixture.workspaceDir });
       await readyAll();
@@ -984,10 +989,7 @@ describe("skills ancestor recovery ownership", () => {
         await originalClose();
         await release.promise;
       });
-      const admissions = () =>
-        watchMock.mock.calls.filter(
-          ([root, options]) => root === left.replaceAll("\\", "/") && options.depth > 0,
-        ).length;
+      const admissions = () => watcherAdmissions(left, false).length;
       let closing: Promise<void> | undefined;
       try {
         const before = admissions();

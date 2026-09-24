@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import path from "node:path";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { ok, type Result } from "@openclaw/normalization-core/result";
 import chokidar, { type FSWatcher } from "chokidar";
@@ -16,11 +17,12 @@ type AncestorSubscription = {
   reconcile: () => void;
   changed: (event: string, path: string) => void;
   raw: (event: string, path: unknown, details: unknown) => void;
-  error: (error: Error) => void;
+  error: (error: Error, observationRoot: string) => void;
 };
 type AncestorWatcher = {
   watcher: FSWatcher | ReturnType<typeof createNativeSkillsAncestorWatcher>;
   close: () => Promise<Result<void, unknown>>;
+  observationRoot: string;
   ready: boolean;
   error?: Error;
   retiring?: Promise<Result<void, unknown>>;
@@ -35,7 +37,7 @@ function createAncestorWatcher(
   watchRoot: string,
   usePolling: boolean,
   subscriptions: Set<AncestorSubscription>,
-): Pick<AncestorWatcher, "watcher" | "close"> {
+): Pick<AncestorWatcher, "watcher" | "close" | "observationRoot"> {
   const ignored: AncestorSubscription["ignored"] = (candidate, stats) => {
     let allIgnored = true;
     // Each logical filter records directory-symlink identity for unlink
@@ -68,7 +70,7 @@ function createAncestorWatcher(
           }
         }
       });
-      return { watcher, close: () => watcher.close() };
+      return { watcher, close: () => watcher.close(), observationRoot: watchRoot };
     }
     const watcher = chokidar.watch(watchRoot, {
       ignoreInitial: true,
@@ -79,7 +81,16 @@ function createAncestorWatcher(
       depth: 0,
       ignored,
     });
-    return { watcher, close: () => teardownSkillsPathWatcher({ watcher }) };
+    let observationRoot = watchRoot;
+    if (process.platform === "darwin" && !usePolling) {
+      // macOS may keep a moved inode. Observe its parent entry in this
+      // same watcher and retain that explicit observation scope separately
+      // from the logical watchRoot used for replacement.
+      const parent = path.dirname(watchRoot);
+      watcher.add(parent);
+      observationRoot = parent;
+    }
+    return { watcher, close: () => teardownSkillsPathWatcher({ watcher }), observationRoot };
   });
 }
 
@@ -132,7 +143,7 @@ function observeAncestorWatcher(current: AncestorWatcher): void {
     current.error = watchError;
     for (const target of Array.from(subscriptions)) {
       if (isCurrent() && subscriptions.has(target)) {
-        target.error(watchError);
+        target.error(watchError, current.observationRoot);
       }
     }
   });
@@ -164,7 +175,7 @@ function replaceAncestorWatcher(
       current.error = toErrorObject(result.error, "Skills ancestor watcher retirement failed");
       for (const target of Array.from(current.subscriptions)) {
         if (current.subscriptions.has(target)) {
-          target.error(current.error);
+          target.error(current.error, current.observationRoot);
         }
       }
       return;
@@ -228,7 +239,7 @@ export function acquireSkillsAncestorWatcher(
         if (current.ready && !watcher.closed && !current.retiring) {
           subscription.ready();
         } else if (current.error) {
-          subscription.error(current.error);
+          subscription.error(current.error, current.observationRoot);
         }
       }
     });
