@@ -40,6 +40,7 @@ const logNames = [
   "workshop-recovered-upgrade.json",
   "workshop-candidate-doctor.json",
   "legacy-operator-cron-history-proof.json",
+  "dreaming-cron-proof.json",
   "legacy-operator-baseline-turn.out",
   "legacy-operator-baseline-turn.err",
   "legacy-operator-candidate-turn.out",
@@ -882,7 +883,10 @@ function publishedSessionMigration(snapshot, sanitize) {
 }
 
 function armUpgradeProcessCapture() {
-  const command = process.argv[2];
+  const delegatedDoctor =
+    process.argv[2] === "--doctor" &&
+    path.basename(process.argv[1] ?? "") === "update-migrated-finalize.worker.js";
+  const command = delegatedDoctor ? "doctor" : process.argv[2];
   const artifactRoot = process.env.OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT;
   if (!isMainThread || !artifactRoot || !["update", "doctor"].includes(command)) {
     return;
@@ -1641,6 +1645,7 @@ function publishedSuccessSummary(artifactRoot, sanitize) {
         ...(snapshot.scenario === "workshop-doctor-recovery"
           ? ["workshop-doctor-recovery.json", "baseline-doctor.log", "doctor.log"]
           : []),
+        ...(snapshot.scenario === "dreaming-cron-doctor" ? ["dreaming-cron-proof.json"] : []),
         ...(snapshot.scenario === "legacy-operator-state" &&
         snapshot.updateRestartMode === "manual" &&
         ["2026.9.3", "2026.9.4"].includes(snapshot.baseline.version)
