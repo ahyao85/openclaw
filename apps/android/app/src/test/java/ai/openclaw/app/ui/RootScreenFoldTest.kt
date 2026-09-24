@@ -563,7 +563,7 @@ class RootScreenFoldTest {
   fun bookKeepsUnsavedProfileSelectionFocusAndTypingAcrossRtlAndFlat() {
     withRoot(completed = true) { model ->
       val savedName = model.displayName.value
-      composeRule.onNodeWithContentDescription("Open profile").performClick()
+      composeRule.onNodeWithContentDescription("Open Profile").performClick()
       val editor = composeRule.onNode(hasSetTextAction())
       editor.performClick().performTextReplacement("Unsaved device")
       editor.assertIsFocused()
@@ -770,7 +770,7 @@ class RootScreenFoldTest {
       val inactiveSheet = composeRule.onNodeWithTag("sidebar-drawer").assertIsNotDisplayed()
       assertTrue("The inactive sheet must retain real measured anchors", windowBounds(inactiveSheet).width() > 0)
       composeRule.onNodeWithContentDescription("Close navigation menu").assertDoesNotExist()
-      composeRule.onNodeWithContentDescription("Open profile").performTouchInput { click() }
+      composeRule.onNodeWithContentDescription("Open Profile").performTouchInput { click() }
       composeRule.onNodeWithText("Save Profile").assertIsDisplayed()
       composeRule.runOnIdle { backDispatcher.onBackPressed() }
       composeRule.onNodeWithContentDescription("Search settings").assertIsDisplayed()

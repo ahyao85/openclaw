@@ -389,11 +389,13 @@ class ScreenTypographyLayoutTest {
   @Test
   fun settingsToProfileRetainsTheSamePageHeadingRole() {
     model.requestHomeDestination(HomeDestination.Settings)
+    prefs.setDisplayName("Typography phone")
     show { ShellScreen(model) }
     capture("settings-dark")
     assertTextStyle("Settings", type.display)
-    assertTextStyle("OpenClaw mobile", type.caption)
-    composeRule.onNodeWithContentDescription("Open profile").performClick()
+    assertTextStyle("Profile", type.body)
+    assertTextStyle("Typography phone", type.caption)
+    composeRule.onNodeWithContentDescription("Open Profile").performClick()
     capture("profile-dark")
     assertTextStyle("Profile", type.display)
     composeRule.onNodeWithText("Save Profile").assertIsDisplayed()
