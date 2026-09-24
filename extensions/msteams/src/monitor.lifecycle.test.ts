@@ -10,12 +10,12 @@ import {
   createStores,
   getMSTeamsMonitorTestState,
   getMSTeamsRouteBaseUrl,
-  monitorMSTeamsProvider,
   requireRegisteredMSTeamsConfig,
   requireRegisteredMSTeamsMediaMaxBytes,
   updateMSTeamsConfig,
   waitForMSTeamsTestState,
 } from "./monitor-lifecycle.test-support.js";
+import { monitorMSTeamsProvider } from "./monitor.js";
 import type { MSTeamsPollStore } from "./polls.js";
 
 const {
