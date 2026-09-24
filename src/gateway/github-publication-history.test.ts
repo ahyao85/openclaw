@@ -1,7 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { GIT_COAUTHOR_PREFERENCE_KEY } from "../../packages/gateway-protocol/src/schema/user-profile-constants.js";
+import { recordSessionParticipant } from "../config/sessions/session-accessor.sqlite-participants.native.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { setUserPreferences } from "../state/user-preferences.js";
+import { ensureProfileForEmail, syncGitHubIdentity } from "../state/user-profiles.js";
 import {
   BRANCH,
   SESSION_KEY,
@@ -10,6 +14,7 @@ import {
   createTestGitHubPublicationCoordinator,
   githubPublicationTestMocks,
   installGitHubPublicationTestHarness,
+  persistPublicationTestSession,
   root,
 } from "./github-publication.test-support.js";
 import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
@@ -215,6 +220,66 @@ describe("GitHub publication branch history", () => {
     expect(f.calls.some((args) => args.includes("commit-tree") || args.includes("push"))).toBe(
       false,
     );
+  });
+
+  it("honors a real profile opt-out during trailer parsing in the final repair commit and push", async () => {
+    const session = await persistPublicationTestSession();
+    const f = await historyFixture();
+    const profiles = [
+      { login: "alice", accountId: 7 },
+      { login: "bob", accountId: 8 },
+    ].map(({ login, accountId }) => {
+      const email = `${login}@example.test`;
+      const profile = ensureProfileForEmail(email);
+      syncGitHubIdentity({
+        identity: { accountId, login },
+        authenticationAlias: { kind: "email", email },
+      });
+      recordSessionParticipant(
+        { agentId: "main", sessionKey: SESSION_KEY, storePath: session.storePath },
+        {
+          identity: { type: "profile", id: profile.id },
+          promptedAt: accountId,
+          sessionAgentId: "main",
+        },
+      );
+      return profile;
+    });
+    const { resolveGitCoauthorAttribution } = await vi.importActual<
+      typeof import("../agents/git-coauthor-attribution.js")
+    >("../agents/git-coauthor-attribution.js");
+    mocks.attribution.mockImplementation(resolveGitCoauthorAttribution);
+    const alice = "Co-authored-by: alice <7+alice@users.noreply.github.com>";
+    const bob = "Co-authored-by: bob <8+bob@users.noreply.github.com>";
+    const first = await f.publish("real-consent-initial");
+    expect(first).toMatchObject({ status: "published", url });
+    expect(
+      await f.git("show", "-s", "--format=%(trailers:only,unfold)", await f.remoteHead()),
+    ).toBe(`${alice}\n${bob}\nOpenClaw-Publication: ${first.requestId}`);
+    const previous = await f.publishMessage(
+      `Implementation credit\n\n${alice}\n${bob}\n\nOpenClaw-Publication: earlier-writer`,
+    );
+    const transport = mocks.runCommand.getMockImplementation()!;
+    let revoked = false;
+    mocks.runCommand.mockImplementation(async (args: string[], options) => {
+      const result = await transport(args, options);
+      if (args.some((arg) => arg.startsWith("--format=%(trailers:"))) {
+        expect(
+          setUserPreferences(profiles[0]!.id, { [GIT_COAUTHOR_PREFERENCE_KEY]: false }),
+        ).toMatchObject({ ok: true });
+        revoked = true;
+      }
+      return result;
+    });
+    const repaired = await f.publish("real-consent-repair");
+    expect(revoked).toBe(true);
+    expect(repaired).toMatchObject({ status: "published", url });
+    const published = await f.remoteHead();
+    expect(await f.git("rev-parse", `${published}^`)).toBe(previous);
+    expect(await f.git("show", "-s", "--format=%(trailers:only,unfold)", published)).toBe(
+      `${bob}\nOpenClaw-Publication: ${repaired.requestId}`,
+    );
+    expect(await f.git("show", "-s", "--format=%B", published)).not.toContain("@alice");
   });
 
   it("adds missing contributor credit instead of silently reusing an older attributed head", async () => {
