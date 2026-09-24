@@ -300,17 +300,25 @@ export async function readSessionHistoryPageInWorker(
       agentId: databaseOptions.agentId,
       path: resolveOpenClawAgentSqlitePath(databaseOptions),
     };
-    const sourceReads = prepareGatewaySessionStoreReadSources({
-      cfg,
-      currentSource,
-      env,
-      registryPath: stateContext.admission.databasePath,
-    });
+    // Raw transcript reads never project cross-agent lineage. Avoid discovering
+    // every auxiliary store before those requests can coalesce or enter the worker.
+    const sourceReads =
+      capturedRequest.kind === "recent" ||
+      capturedRequest.kind === "message-by-id" ||
+      capturedRequest.kind === "message-lookup" ||
+      capturedRequest.kind === "message-count"
+        ? undefined
+        : prepareGatewaySessionStoreReadSources({
+            cfg,
+            currentSource,
+            env,
+            registryPath: stateContext.admission.databasePath,
+          });
     const assertStateCurrent = () => {
       signal?.throwIfAborted();
       stateContext.maintenanceScope?.assertAdmission();
       stateContext.admission.assertCurrent();
-      sourceReads.assertCurrent();
+      sourceReads?.assertCurrent();
     };
     assertStateCurrent();
     const target: Omit<PreparedSessionHistoryReadTarget, "database"> = {
@@ -326,7 +334,7 @@ export async function readSessionHistoryPageInWorker(
         environment: stateContext.environment,
         coordinatorRuntime: stateContext.coordinatorRuntime,
       },
-      sourceDatabases: sourceReads.sources,
+      ...(sourceReads ? { sourceDatabases: sourceReads.sources } : {}),
       ...(entryValidationKey ? { entryValidationKey } : {}),
     };
     const input: SessionTranscriptHistoryWorkerInput = {
