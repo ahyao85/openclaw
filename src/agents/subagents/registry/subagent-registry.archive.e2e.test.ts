@@ -12,6 +12,7 @@ import { callGateway } from "../../../gateway/call.js";
 import { onAgentEvent } from "../../../infra/agent-events.js";
 import { getAgentRunContext } from "../../../infra/agent-run-registry.js";
 import { SUBAGENT_KILL_TASK_ERROR } from "../../../tasks/detached-task-runtime-contract.js";
+import { finalizeTaskRunByRunIdAsync } from "../../../tasks/detached-task-runtime.async.js";
 import { getDetachedTaskLifecycleRuntime } from "../../../tasks/detached-task-runtime.js";
 import {
   resetDetachedTaskLifecycleRuntimeForTests,
@@ -22,6 +23,7 @@ import {
   captureSubagentCompletionReply,
   runSubagentAnnounceFlow,
 } from "../announce/subagent-announce.js";
+import { finalizeArchiveFixtureTask } from "./subagent-registry.archive.test-support.js";
 
 const taskRuntimeMocks = vi.hoisted(() => ({
   finalizeTaskRunByRunId: vi.fn<(_params: unknown) => unknown[]>(() => [{}]),
@@ -60,6 +62,8 @@ vi.mock("../../../tasks/detached-task-runtime.js", async (importOriginal) => {
     finalizeTaskRunByRunId: taskRuntimeMocks.finalizeTaskRunByRunId,
   };
 });
+
+vi.mock("../../../tasks/detached-task-runtime.async.js", { spy: true });
 
 vi.mock("../../../tasks/task-status-access.js", () => ({
   findTaskByRunIdForStatus: taskStatusMocks.findTaskByRunIdForStatus,
@@ -174,7 +178,10 @@ describe("subagent registry archive behavior", () => {
     vi.mocked(captureSubagentCompletionReply).mockReset();
     vi.mocked(runSubagentAnnounceFlow).mockReset();
     vi.mocked(getAgentRunContext).mockReset().mockReturnValue(undefined);
-    taskRuntimeMocks.finalizeTaskRunByRunId.mockClear();
+    taskRuntimeMocks.finalizeTaskRunByRunId.mockReset();
+    vi.mocked(finalizeTaskRunByRunIdAsync)
+      .mockReset()
+      .mockImplementation(finalizeArchiveFixtureTask);
     taskStatusMocks.findTaskByRunIdForStatus.mockReset();
     taskStatusMocks.listTasksForSessionKeyForStatus.mockReset();
     taskStatusMocks.listTasksForSessionKeyForStatus.mockReturnValue([]);
@@ -486,22 +493,26 @@ describe("subagent registry archive behavior", () => {
     await mod.testing.sweepOnceForTests();
     await vi.dynamicImportSettled();
 
-    expect(taskRuntimeMocks.finalizeTaskRunByRunId).toHaveBeenCalledWith({
-      runId: "run-killed-tombstone-expired",
-      runtime: "subagent",
-      sessionKey: "agent:main:subagent:killed-tombstone-expired",
-      status: "cancelled",
-      endedAt: now - 5 * 60_000,
-      lastEventAt: now - 5 * 60_000,
-      error: "manual kill",
-      suppressDelivery: true,
-    });
+    expect(finalizeTaskRunByRunIdAsync).toHaveBeenCalledWith(
+      {
+        taskId: "task-run-killed-tombstone-expired",
+        runId: "run-killed-tombstone-expired",
+        runtime: "subagent",
+        sessionKey: "agent:main:subagent:killed-tombstone-expired",
+        status: "cancelled",
+        endedAt: now - 5 * 60_000,
+        lastEventAt: now - 5 * 60_000,
+        error: "manual kill",
+        suppressDelivery: true,
+      },
+      expect.any(Function),
+    );
     await waitForNoRequesterRuns();
   });
 
   it("retains expired tombstones when provisional task finalization is rejected", async () => {
     const now = Date.now();
-    taskRuntimeMocks.finalizeTaskRunByRunId.mockReturnValueOnce([]);
+    vi.mocked(finalizeTaskRunByRunIdAsync).mockResolvedValueOnce([]);
     addCanonicalSubagentRunForTests({
       runId: "run-killed-tombstone-retry",
       childSessionKey: "agent:main:subagent:killed-tombstone-retry",
@@ -556,7 +567,7 @@ describe("subagent registry archive behavior", () => {
     await mod.testing.sweepOnceForTests();
     await vi.dynamicImportSettled();
 
-    expect(taskRuntimeMocks.finalizeTaskRunByRunId).not.toHaveBeenCalled();
+    expect(finalizeTaskRunByRunIdAsync).not.toHaveBeenCalled();
     await waitForNoRequesterRuns();
   });
 
@@ -592,7 +603,7 @@ describe("subagent registry archive behavior", () => {
     await mod.testing.sweepOnceForTests();
     await vi.dynamicImportSettled();
 
-    expect(taskRuntimeMocks.finalizeTaskRunByRunId).not.toHaveBeenCalled();
+    expect(finalizeTaskRunByRunIdAsync).not.toHaveBeenCalled();
     await waitForNoRequesterRuns();
   });
 
@@ -628,7 +639,7 @@ describe("subagent registry archive behavior", () => {
     await mod.testing.sweepOnceForTests();
 
     expect(mod.listSubagentRunsForRequester("agent:main:main")).toHaveLength(1);
-    expect(taskRuntimeMocks.finalizeTaskRunByRunId).not.toHaveBeenCalled();
+    expect(finalizeTaskRunByRunIdAsync).not.toHaveBeenCalled();
   });
 
   it("retires expired tombstones after an opaque legacy runtime finalizer misses", async () => {
@@ -637,7 +648,7 @@ describe("subagent registry archive behavior", () => {
     setDetachedTaskLifecycleRuntime(legacyRuntime);
     taskStatusMocks.findTaskByRunIdForStatus.mockReturnValue(undefined);
     taskStatusMocks.listTasksForSessionKeyForStatus.mockReturnValue([]);
-    taskRuntimeMocks.finalizeTaskRunByRunId.mockReturnValueOnce([]);
+    vi.mocked(finalizeTaskRunByRunIdAsync).mockResolvedValueOnce([]);
     const now = Date.now();
     addCanonicalSubagentRunForTests({
       runId: "run-killed-opaque-runtime",
@@ -660,7 +671,7 @@ describe("subagent registry archive behavior", () => {
     await mod.testing.sweepOnceForTests();
     await vi.dynamicImportSettled();
 
-    expect(taskRuntimeMocks.finalizeTaskRunByRunId).toHaveBeenCalled();
+    expect(finalizeTaskRunByRunIdAsync).toHaveBeenCalled();
     await waitForNoRequesterRuns();
   });
 
@@ -699,11 +710,13 @@ describe("subagent registry archive behavior", () => {
     await mod.testing.sweepOnceForTests();
     await vi.dynamicImportSettled();
 
-    expect(taskRuntimeMocks.finalizeTaskRunByRunId).toHaveBeenCalledWith(
+    expect(finalizeTaskRunByRunIdAsync).toHaveBeenCalledWith(
       expect.objectContaining({
+        taskId: "task-before-replacement",
         runId: "run-before-replacement",
         sessionKey: "agent:main:subagent:replacement",
       }),
+      expect.any(Function),
     );
     await waitForNoRequesterRuns();
   });
@@ -740,6 +753,7 @@ describe("subagent registry archive behavior", () => {
       }),
     ).toBe(1);
 
+    // Direct termination still uses the shipped synchronous runtime contract.
     expect(taskRuntimeMocks.finalizeTaskRunByRunId).toHaveBeenCalledWith(
       expect.objectContaining({
         runId: "run-before-replacement-direct-kill",
@@ -786,7 +800,7 @@ describe("subagent registry archive behavior", () => {
     await mod.testing.sweepOnceForTests();
     await vi.dynamicImportSettled();
 
-    expect(taskRuntimeMocks.finalizeTaskRunByRunId).not.toHaveBeenCalled();
+    expect(finalizeTaskRunByRunIdAsync).not.toHaveBeenCalled();
     await waitForNoRequesterRuns();
   });
 
@@ -813,7 +827,7 @@ describe("subagent registry archive behavior", () => {
     await mod.testing.sweepOnceForTests();
     await vi.dynamicImportSettled();
 
-    expect(taskRuntimeMocks.finalizeTaskRunByRunId).toHaveBeenCalled();
+    expect(finalizeTaskRunByRunIdAsync).toHaveBeenCalled();
     await waitForNoRequesterRuns();
     expect(
       vi
@@ -847,7 +861,7 @@ describe("subagent registry archive behavior", () => {
 
     await mod.testing.sweepOnceForTests();
 
-    expect(taskRuntimeMocks.finalizeTaskRunByRunId).toHaveBeenCalled();
+    expect(finalizeTaskRunByRunIdAsync).toHaveBeenCalled();
     expect(mod.listSubagentRunsForRequester("agent:main:main")).toEqual([
       expect.objectContaining({
         runId: "run-killed-retained-session",
