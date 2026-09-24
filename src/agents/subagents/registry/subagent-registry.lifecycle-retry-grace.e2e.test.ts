@@ -2,6 +2,7 @@
 // lifecycle events race gateway waits or transient announce failures.
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.js";
 import { getRuntimeConfig } from "../../../config/config.js";
 import { replaceSessionEntry } from "../../../config/sessions/session-accessor.js";
 import { callGateway } from "../../../gateway/call.js";
@@ -34,6 +35,7 @@ let lifecycleHandler: Parameters<typeof onAgentEvent>[0] | undefined;
 let agentCallPlan: Array<"ok" | "throw"> = [];
 let agentCallGates = new Map<string, Promise<void>>();
 let releaseAgentCallGate: (() => void) | undefined;
+let agentCallObserved = createDeferred();
 let chatHistoryBySessionKey = new Map<string, Array<Record<string, unknown>>>();
 let transcriptEventsBySessionKey = new Map<string, unknown[]>();
 let sessionStore: Record<string, SessionStoreEntry> = {};
@@ -52,6 +54,8 @@ const callGatewayMock = vi.fn(async (request: GatewayRequest) => {
     };
   }
   if (method === "agent") {
+    agentCallObserved.resolve();
+    agentCallObserved = createDeferred();
     const sourceSessionKey = request.params?.inputProvenance?.sourceSessionKey;
     const gate = sourceSessionKey ? agentCallGates.get(sourceSessionKey) : undefined;
     if (gate) {
@@ -138,6 +142,7 @@ describe("subagent registry lifecycle error grace", () => {
     });
     agentCallPlan = [];
     agentCallGates = new Map();
+    agentCallObserved = createDeferred();
     chatHistoryBySessionKey = new Map();
     transcriptEventsBySessionKey = new Map();
     sessionStore = new Proxy<Record<string, SessionStoreEntry>>(
@@ -170,6 +175,7 @@ describe("subagent registry lifecycle error grace", () => {
       sessionStore[MAIN_REQUESTER_SESSION_KEY]!,
     );
     vi.useFakeTimers();
+    lifecycleWaits.start();
     subagentAnnounceTesting.setDepsForTest({
       callGateway: callGatewayMock as typeof import("../../../gateway/call.js").callGateway,
       getRuntimeConfig: loadConfigMock,
@@ -207,46 +213,37 @@ describe("subagent registry lifecycle error grace", () => {
     // Failed assertions must also release the delivery owned by this test.
     releaseAgentCallGate?.();
     releaseAgentCallGate = undefined;
-    await vi.advanceTimersByTimeAsync(0);
-    lifecycleHandler = undefined;
-    subagentAnnounceDeliveryTesting.setDepsForTest();
-    subagentAnnounceOutputTesting.setDepsForTest();
-    subagentAnnounceTesting.setDepsForTest();
-    mod.resetSubagentRegistryForTests({ persist: false });
-    vi.useRealTimers();
-    if (previousFastTestEnv === undefined) {
-      delete process.env.OPENCLAW_TEST_FAST;
-    } else {
-      process.env.OPENCLAW_TEST_FAST = previousFastTestEnv;
+    try {
+      await lifecycleWaits.finish();
+    } finally {
+      lifecycleHandler = undefined;
+      subagentAnnounceDeliveryTesting.setDepsForTest();
+      subagentAnnounceOutputTesting.setDepsForTest();
+      subagentAnnounceTesting.setDepsForTest();
+      mod.resetSubagentRegistryForTests({ persist: false });
+      vi.useRealTimers();
+      if (previousFastTestEnv === undefined) {
+        delete process.env.OPENCLAW_TEST_FAST;
+      } else {
+        process.env.OPENCLAW_TEST_FAST = previousFastTestEnv;
+      }
+      await testState.cleanup();
     }
-    await testState.cleanup();
   });
 
+  const lifecycleWaits = createLifecycleWaits(MAIN_REQUESTER_SESSION_KEY);
   const {
     flushAsync,
     waitForCleanupHandledFalse,
     waitForDeliveredCleanup,
     waitForFrozenResult,
     waitForFrozenResultText,
-  } = createLifecycleWaits(MAIN_REQUESTER_SESSION_KEY);
+  } = lifecycleWaits;
 
   const waitForAgentCallCount = async (expectedCount: number) => {
-    for (let attempt = 0; attempt < 80; attempt += 1) {
-      if (getAgentCalls().length >= expectedCount) {
-        return;
-      }
-      await vi.advanceTimersByTimeAsync(100);
-      await flushAsync();
+    while (getAgentCalls().length < expectedCount) {
+      await agentCallObserved.promise;
     }
-    const pending = mod.listSubagentRunsForRequester(MAIN_REQUESTER_SESSION_KEY).map((run) => ({
-      runId: run.runId,
-      execution: run.execution,
-      delivery: run.delivery,
-      requesterSettleWake: run.requesterSettleWake,
-    }));
-    throw new Error(
-      `expected ${expectedCount} agent call(s), got ${getAgentCalls().length}: ${JSON.stringify(pending)}`,
-    );
   };
 
   function registerCompletionRun(
