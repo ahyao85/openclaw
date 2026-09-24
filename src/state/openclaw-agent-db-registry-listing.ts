@@ -176,6 +176,13 @@ type AgentDatabaseRegistryListOptions = OpenClawStateDatabaseOptions & {
   includeIncompatibleSchemaVersions?: boolean;
 };
 
+export class AgentDatabaseRegistryChangedError extends Error {
+  constructor() {
+    super("Agent database registry changed during discovery; retry the read.");
+    this.name = "AgentDatabaseRegistryChangedError";
+  }
+}
+
 export function readRegisteredAgentDatabases(
   options: AgentDatabaseRegistryListOptions,
   artifactPreserving: false,
@@ -269,7 +276,7 @@ export function prepareOpenClawAgentDatabaseRegistrySnapshotRead(
           context.admission.assertCurrent();
           if (invalidated || registry.memo !== memo) {
             invalidated = true;
-            throw new Error("Agent database registry changed during discovery; retry the read.");
+            throw new AgentDatabaseRegistryChangedError();
           }
         };
         // Install the witness before the first await, including a read that later rejects.

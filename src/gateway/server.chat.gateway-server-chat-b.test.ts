@@ -1955,7 +1955,7 @@ describe("gateway server chat", () => {
       async (state) => {
         const previousAgentConfig = testState.agentConfig;
         const previousAgentsConfig = testState.agentsConfig;
-        openDirectChatSession();
+        const { storePath } = openDirectChatSession();
         try {
           const config = {
             agents: {
@@ -1975,6 +1975,7 @@ describe("gateway server chat", () => {
             talk: { agentId: "main" },
           };
           await state.writeConfig(config);
+          setRuntimeConfigSnapshot({ ...config, session: { store: storePath } });
           const pluginMetadataSnapshot = createGatewayPluginMetadataSnapshot(config);
           assertPluginMetadataSnapshotConsistency(pluginMetadataSnapshot);
           await withPluginMetadataSnapshotScope(
@@ -2025,8 +2026,7 @@ describe("gateway server chat", () => {
                 },
               });
               const { loadGatewaySessionEntryReadOnly } = await import("./session-utils.js");
-              const persistedConfig = { ...initialConfig, session: getRuntimeConfig().session };
-              setRuntimeConfigSnapshot(persistedConfig);
+              setRuntimeConfigSnapshot(initialConfig);
               const loaded = loadGatewaySessionEntryReadOnly("agent:work:main");
               expect(loaded.cfg.agents?.defaults?.model).toEqual(config.agents.defaults.model);
               expect(loaded.cfg.agents?.entries).toEqual(config.agents.entries);
@@ -2103,14 +2103,14 @@ describe("gateway server chat", () => {
               const preparedAuthStoreByAgentId = new Map([
                 [
                   "main",
-                  loadAuthProfileStoreForRuntime(resolveAgentDir(persistedConfig, "main"), {
+                  loadAuthProfileStoreForRuntime(resolveAgentDir(initialConfig, "main"), {
                     readOnly: true,
                   }),
                 ],
                 [
                   "work",
-                  loadAuthProfileStoreForRuntime(resolveAgentDir(persistedConfig, "work"), {
-                    inheritedAuthDir: resolveAgentDir(persistedConfig, "main"),
+                  loadAuthProfileStoreForRuntime(resolveAgentDir(initialConfig, "work"), {
+                    inheritedAuthDir: resolveAgentDir(initialConfig, "main"),
                     readOnly: true,
                   }),
                 ],
@@ -2157,7 +2157,7 @@ describe("gateway server chat", () => {
                   return existing;
                 }
                 const projector = createGatewayAgentModelCatalogProjector({
-                  cfg: persistedConfig,
+                  cfg: initialConfig,
                   agentId,
                   snapshot: catalogSnapshot,
                   metadataSnapshot: pluginMetadataSnapshot,
@@ -2175,7 +2175,7 @@ describe("gateway server chat", () => {
                     params: { view: "configured" },
                     preloadedCatalog: {
                       agentId,
-                      config: persistedConfig,
+                      config: initialConfig,
                       snapshot: catalogSnapshot,
                     },
                     preloadedOnly: true,
@@ -2196,10 +2196,10 @@ describe("gateway server chat", () => {
                     agentDir: "/tmp/chat-work-agent",
                     catalogComplete: false,
                     workspaceDir: "/tmp/chat-work-workspace",
-                    config: persistedConfig,
+                    config: initialConfig,
                     ...catalogSnapshot,
                   }),
-                getRuntimeConfig: () => persistedConfig,
+                getRuntimeConfig: () => initialConfig,
                 readPreparedGatewayModelCatalog: async () => catalogSnapshot,
                 readChatStartupProjection: vi.fn(async ({ agentId, sessionEntry }) => {
                   const [neutralProjection, sessionProjection] = await Promise.all([
@@ -2219,7 +2219,7 @@ describe("gateway server chat", () => {
                 }),
               });
               const expiredPreferenceEvaluation = await createGatewayAgentModelCatalogProjector({
-                cfg: persistedConfig,
+                cfg: initialConfig,
                 agentId: "work",
                 snapshot: catalogSnapshot,
                 metadataSnapshot: pluginMetadataSnapshot,

@@ -2338,7 +2338,18 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       .flatMap((shard) => shard.includePatterns ?? [])
       .toSorted((a, b) => a.localeCompare(b));
 
-    expect(bundled.length - gatewayStripes.length).toBeLessThan(base.length - 1);
+    expect(
+      bundled.some((shard) => {
+        if (!shard.shardName.startsWith("bundle-")) {
+          return false;
+        }
+        const patterns = new Set(shard.includePatterns);
+        return (
+          base.filter((owner) => owner.includePatterns?.some((pattern) => patterns.has(pattern)))
+            .length > 1
+        );
+      }),
+    ).toBe(true);
     expect(new Set(bundled.map((shard) => shard.checkName)).size).toBe(bundled.length);
     expect(bundledPatterns).toEqual(basePatterns);
     expect(
