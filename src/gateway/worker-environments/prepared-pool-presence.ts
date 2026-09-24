@@ -21,6 +21,7 @@ export type PreparedPoolPresenceOptions = {
     options: {
       projectRepository?: RepositoryWorkerProjectSnapshot;
       repository?: { agentId: string; url: string; ref?: string };
+      executionMode?: "worker-turn" | "remote-exec";
       signal?: AbortSignal;
     },
   ) => Promise<WorkerProviderPreparedIntent>;
@@ -28,6 +29,7 @@ export type PreparedPoolPresenceOptions = {
   resolveHumanPresenceDemand?: () =>
     | {
         profileId: string;
+        executionMode: "worker-turn" | "remote-exec";
         repository: { agentId: string; url: string; ref?: string };
       }
     | undefined;
@@ -127,6 +129,7 @@ export function createPreparedPoolPresence(options: PreparedPoolPresenceOptions)
       ...(retained && previous
         ? { projectRepository: previous.project }
         : { repository: source.repository }),
+      executionMode: source.executionMode,
       signal,
     });
     current();

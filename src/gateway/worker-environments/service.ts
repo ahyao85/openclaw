@@ -88,6 +88,7 @@ type WorkerEnvironmentServiceOptions = WorkerProviderLifecycleInputOptions &
     resolveHumanPresenceDemand?: () =>
       | {
           profileId: string;
+          executionMode: "worker-turn" | "remote-exec";
           repository: { agentId: string; url: string; ref?: string };
         }
       | undefined;

@@ -35,6 +35,7 @@ import { nodeWorkerGatewayNamespace as resolveNodeWorkerGatewayNamespace } from 
 import type { NodeWorkerWorkspaceBindingResolver } from "./worker-environments/node-worker-tunnel.js";
 import type { NodeWorkerBundleRetention } from "./worker-environments/node-workspace-retain-coordinator.js";
 import type { NodeWorkspaceTransferHttpCallback } from "./worker-environments/node-workspace-transfer-http-contract.js";
+import { resolveDefaultWorkerPlacementExecutionMode } from "./worker-environments/placement-session-runtime.js";
 import type { WorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 import {
   readPreparedPoolPresenceDemand,
@@ -419,14 +420,21 @@ export async function createGatewayWorkerEnvironmentRuntime(params: {
     store: params.startup.store,
     getConfig: getRuntimeConfig,
     resolveHumanPresenceDemand: () => {
+      const config = getRuntimeConfig();
       const repository = configuredDefaultRepository();
       if (!repository?.profileId) {
         return undefined;
       }
+      const agentId = resolveDefaultAgentId(config);
+      const executionMode = resolveDefaultWorkerPlacementExecutionMode({ cfg: config, agentId });
+      if (!executionMode) {
+        return undefined;
+      }
       return {
         profileId: repository.profileId,
+        executionMode,
         repository: {
-          agentId: resolveDefaultAgentId(getRuntimeConfig()),
+          agentId,
           url: repository.url,
           ...(repository.ref ? { ref: repository.ref } : {}),
         },

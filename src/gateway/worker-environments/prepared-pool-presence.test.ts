@@ -15,8 +15,8 @@ describe("authenticated human prepared-pool demand", () => {
     baseCommit: "d".repeat(40),
     source: {
       kind: "repository",
-      url: "https://github.com/openclaw/teamclaw-enterprise.git",
-      repositoryId: "R_teamclaw_enterprise",
+      url: "https://github.com/bic/lobster.git",
+      repositoryId: "R_bic_lobster",
       owner: {
         agent: { agentId: "main", provenance: null },
         identity: { source: "anonymous" },
@@ -24,7 +24,10 @@ describe("authenticated human prepared-pool demand", () => {
     },
   };
 
-  function presencePool(initial?: PreparedPoolPresenceDemand) {
+  function presencePool(
+    initial?: PreparedPoolPresenceDemand,
+    executionMode: "worker-turn" | "remote-exec" = "remote-exec",
+  ) {
     let persisted = initial;
     const write = vi.fn<NonNullable<PoolOptions["presenceDemandStore"]>["write"]>(
       async (value, assertCurrent) => {
@@ -35,20 +38,28 @@ describe("authenticated human prepared-pool demand", () => {
     );
     fixture.config.cloudWorkers!.preparedPool = { maxTotal: 3 };
     fixture.developmentProfile.readyWorkers = 3;
-    const prepareIntent = vi.fn<PoolOptions["prepareIntent"]>(async (_profileId, options) => ({
-      providerId: fixture.provider.id,
-      profileSnapshot: fixture.profile(
+    const prepareIntent = vi.fn<PoolOptions["prepareIntent"]>(async (_profileId, options) => {
+      const profileSnapshot = fixture.profile(
         PROJECT_KEY,
         PREPARATION_KEY,
         undefined,
         options.projectRepository ?? repository,
-      ),
-      preparationKey: PREPARATION_KEY,
-    }));
+      );
+      delete profileSnapshot.executionMode;
+      if (options.executionMode) {
+        profileSnapshot.executionMode = options.executionMode;
+      }
+      return {
+        providerId: fixture.provider.id,
+        profileSnapshot,
+        preparationKey: PREPARATION_KEY,
+      };
+    });
     const owner = fixture.pool({
       prepareIntent,
       resolveHumanPresenceDemand: () => ({
         profileId: "development",
+        executionMode,
         repository: { agentId: "main", url: repository.source.url, ref: "main" },
       }),
       presenceDemandStore: { read: async () => persisted, write },

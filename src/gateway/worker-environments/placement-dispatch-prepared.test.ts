@@ -29,16 +29,18 @@ import {
 import { NodeRegistry } from "../node-registry.js";
 import type { GatewayWsClient } from "../server/ws-types.js";
 import { bindDeviceWorkerAvailability } from "./device-provider.js";
-import { REQUEST } from "./placement-dispatch-test-fixtures.js";
+import { MANIFEST_REF, REQUEST } from "./placement-dispatch-test-fixtures.js";
 import { createHarness } from "./placement-dispatch-test-harness.js";
 import type { WorkerPlacementExecutionMode } from "./placement-record.js";
 import { createWorkerSessionPlacementStore } from "./placement-store.js";
 import type { WorkerProviderPreparedIntent } from "./preparation-identity.js";
+import { createPreparedWorkerPool } from "./prepared-pool.js";
 import * as support from "./service.test-support.js";
 import {
   readSessionRepositoryArtifacts,
   stageSessionRepositoryCheckpoint,
 } from "./session-repository-checkpoints.js";
+import type { WorkerEnvironmentRecord } from "./store.js";
 import { prepareWorkerGitHubBinding } from "./worker-github-binding.js";
 import { serializeWorkerWorkspaceManifest } from "./workspace-manifest.js";
 import { readActualWorkspaceManifest } from "./workspace-reconcile-core.js";
@@ -70,6 +72,11 @@ function preparedHarness(
       NodeWorkerPreparedWorkspaceResult,
       "workspaceDir" | "sourceManifestRef" | "preparedManifestRef"
     >;
+    seeded?: {
+      intent: WorkerProviderPreparedIntent;
+      ready: WorkerEnvironmentRecord[];
+      candidates: () => WorkerEnvironmentRecord[];
+    };
   } = {},
 ) {
   const protocolFeatures = options.protocolFeatures ?? FEATURES;
@@ -96,8 +103,10 @@ function preparedHarness(
         mode === "worker-turn",
       ),
   });
-  const environmentId = reserve ? "prepared-spare" : harness.ready.environmentId;
-  const intent: WorkerProviderPreparedIntent = {
+  const environmentId =
+    options.seeded?.ready[0]?.environmentId ??
+    (reserve ? "prepared-spare" : harness.ready.environmentId);
+  const defaultIntent: WorkerProviderPreparedIntent = {
     providerId: "fake",
     preparationKey: PREPARATION_KEY,
     profileSnapshot: {
@@ -136,39 +145,43 @@ function preparedHarness(
       },
     },
   };
+  const intent = options.seeded?.intent ?? defaultIntent;
   const store = support.testState.store;
-  store.createIntent({
-    environmentId,
-    profileId: REQUEST.profileId,
-    providerId: intent.providerId,
-    profileSnapshot: intent.profileSnapshot,
-    provisionOperationId: `provision:${environmentId}`,
-    ...(reserve
-      ? {
-          preparation: {
-            purpose: "reserve",
-            key: PREPARATION_KEY,
-            demandAtMs: 900,
-            expiresAtMs: 10_000,
-          },
-        }
-      : {}),
-  });
-  store.transition({ environmentId, from: "requested", to: "provisioning" });
-  const ready = store.transition({
-    environmentId,
-    from: "provisioning",
-    to: "ready",
-    patch: {
-      leaseId: `lease:${environmentId}`,
-      nodeDeviceId: "prepared-node",
-      sharedHost: false,
-      ...support.readyPatch(environmentId, {
-        ...support.BOOTSTRAP_RECEIPT,
-        protocolFeatures,
-      }),
-    },
-  });
+  let ready = options.seeded?.ready[0];
+  if (!ready) {
+    store.createIntent({
+      environmentId,
+      profileId: REQUEST.profileId,
+      providerId: intent.providerId,
+      profileSnapshot: intent.profileSnapshot,
+      provisionOperationId: `provision:${environmentId}`,
+      ...(reserve
+        ? {
+            preparation: {
+              purpose: "reserve",
+              key: PREPARATION_KEY,
+              demandAtMs: 900,
+              expiresAtMs: 10_000,
+            },
+          }
+        : {}),
+    });
+    store.transition({ environmentId, from: "requested", to: "provisioning" });
+    ready = store.transition({
+      environmentId,
+      from: "provisioning",
+      to: "ready",
+      patch: {
+        leaseId: `lease:${environmentId}`,
+        nodeDeviceId: "prepared-node",
+        sharedHost: false,
+        ...support.readyPatch(environmentId, {
+          ...support.BOOTSTRAP_RECEIPT,
+          protocolFeatures,
+        }),
+      },
+    });
+  }
   vi.mocked(support.testState.prepareInstallation).mockResolvedValue({
     ...support.BUNDLE_ARTIFACT,
     protocolFeatures,
@@ -183,7 +196,16 @@ function preparedHarness(
     (id) => workerService.get(id) ?? ordinaryGet(id),
   );
   vi.mocked(harness.environments.prepareProjectIntent).mockResolvedValue(intent);
-  vi.mocked(harness.environments.getPreparedCandidates).mockReturnValue(reserve ? [projected] : []);
+  vi.mocked(harness.environments.getPreparedCandidates).mockImplementation(() =>
+    options.seeded
+      ? options.seeded
+          .candidates()
+          .map((candidate) => workerService.get(candidate.environmentId))
+          .filter((candidate) => candidate !== undefined)
+      : reserve
+        ? [projected]
+        : [],
+  );
   const ordinaryAttach = vi.mocked(harness.environments.attachSession).getMockImplementation()!;
   vi.mocked(harness.environments.attachSession).mockImplementation(async (request) => {
     const credential =
@@ -313,6 +335,201 @@ function preparedHarness(
 
 describe("prepared worker dispatch", () => {
   support.setupWorkerEnvironmentServiceSuite();
+
+  it("claims a presence-prepared Codex repository reserve before cold create and refills to three", async () => {
+    const repositoryStore = getSessionRepositoryWorkspaceStore();
+    const repository = repositoryStore.create({
+      agentId: REQUEST.agentId,
+      sessionKey: REQUEST.sessionKey,
+      url: "https://github.com/bic/lobster.git",
+      requestedRef: "main",
+      runSetupScript: false,
+      assertCurrent: () => {},
+    });
+    const repositoryProject = {
+      key: "d".repeat(64),
+      baseCommit: "e".repeat(40),
+      source: {
+        kind: "repository" as const,
+        url: repository.url,
+        repositoryId: "R_bic_lobster",
+        owner: {
+          agent: { agentId: REQUEST.agentId, provenance: null },
+          identity: { source: "anonymous" as const },
+        },
+      },
+    };
+    const intent: WorkerProviderPreparedIntent = {
+      providerId: "fake",
+      preparationKey: PREPARATION_KEY,
+      profileSnapshot: {
+        settings: { region: "test" },
+        executionMode: "remote-exec",
+        project: {
+          ...repositoryProject,
+          preparation: {
+            key: PREPARATION_KEY,
+            cacheKey: "a".repeat(64),
+            contractVersion: 1,
+            target: { machineClass: "standard", platform: "linux", arch: "x64" },
+            artifacts: {
+              nodeBootstrapSha256: "f".repeat(64),
+              enabledPluginIds: [],
+              workerBundleHash: support.BUNDLE_HASH,
+              workerArchiveSha256: "b".repeat(64),
+              openclawVersion: support.BOOTSTRAP_RECEIPT.openclawVersion,
+              protocolFeatures: FEATURES,
+            },
+          },
+        },
+      },
+    };
+    support.getDevelopmentProfile().readyWorkers = 3;
+    support.testState.config.cloudWorkers!.preparedPool = { maxTotal: 3 };
+    const abort = new AbortController();
+    onTestFinished(() => abort.abort());
+    let demand: Parameters<
+      NonNullable<Parameters<typeof createPreparedWorkerPool>[0]["presenceDemandStore"]>["write"]
+    >[0] = null;
+    const pool = createPreparedWorkerPool({
+      store: support.testState.store,
+      getConfig: () => support.testState.config,
+      resolveProvider: () => support.createProvider(),
+      prepareIntent: vi.fn(async (_profileId, options) => {
+        expect(options.executionMode).toBe("remote-exec");
+        return intent;
+      }),
+      assertIntentCurrent: () => {},
+      prepareRetention: async () => ({ assertCurrent: () => {} }),
+      reconcile: async () => {},
+      now: () => support.testState.nowMs,
+      signal: abort.signal,
+      warn: vi.fn(),
+      resolveHumanPresenceDemand: () => ({
+        profileId: REQUEST.profileId,
+        executionMode: "remote-exec",
+        repository: { agentId: REQUEST.agentId, url: repository.url, ref: "main" },
+      }),
+      presenceDemandStore: {
+        read: async () => demand ?? undefined,
+        write: async (value, assertCurrent) => {
+          assertCurrent();
+          demand = value;
+          return value ?? undefined;
+        },
+      },
+    });
+    await pool.setHumanPresence(true);
+    const ready = support.testState.store
+      .list()
+      .filter((record) => record.preparation?.consumedAtMs === null)
+      .map((record, index) => {
+        support.testState.store.transition({
+          environmentId: record.environmentId,
+          from: "requested",
+          to: "provisioning",
+        });
+        return support.testState.store.transition({
+          environmentId: record.environmentId,
+          from: "provisioning",
+          to: "ready",
+          patch: {
+            leaseId: `lease:${record.environmentId}`,
+            nodeDeviceId: index === 0 ? "prepared-node" : `unused-node-${index}`,
+            sharedHost: false,
+            ...support.readyPatch(record.environmentId, {
+              ...support.BOOTSTRAP_RECEIPT,
+              protocolFeatures: FEATURES,
+            }),
+          },
+        });
+      });
+    expect(ready).toHaveLength(3);
+    expect(ready.every((record) => record.profileSnapshot.executionMode === "remote-exec")).toBe(
+      true,
+    );
+
+    const boundWorkspace = {
+      workspaceDir: "/worker/prepared/project",
+      sourceManifestRef: MANIFEST_REF,
+      preparedManifestRef: MANIFEST_REF,
+    };
+    const prepared = preparedHarness({
+      executionMode: "remote-exec",
+      repository,
+      boundWorkspace,
+      seeded: { intent, ready, candidates: () => pool.candidates(intent) },
+    });
+    const wrongMode = {
+      sessionId: "wrong-mode",
+      sessionKey: "agent:main:dashboard:wrong-mode",
+      agentId: REQUEST.agentId,
+      executionMode: "worker-turn" as const,
+    };
+    const wrongPlacement = prepared.placements.startDispatch(wrongMode);
+    expect(
+      prepared.placements.bindPreparedEnvironment({
+        ...wrongMode,
+        expectedGeneration: wrongPlacement.generation,
+        environmentId: ready[0]!.environmentId,
+        ownerEpoch: ready[0]!.ownerEpoch,
+        providerId: intent.providerId,
+        profileId: REQUEST.profileId,
+        preparationKey: PREPARATION_KEY,
+        nodeDeviceId: ready[0]!.nodeDeviceId!,
+        leaseId: ready[0]!.leaseId!,
+        bundleHash: ready[0]!.bootstrapReceipt!.bundleHash,
+        assertCurrent: () => {},
+      }),
+    ).toBeUndefined();
+    const startTunnel = vi.mocked(prepared.harness.environments.startTunnel);
+    const ordinaryTunnel = startTunnel.getMockImplementation()!;
+    startTunnel.mockImplementation(async (params) => {
+      const tunnel = await ordinaryTunnel(params);
+      return {
+        ...tunnel,
+        syncWorkspace: vi.fn(async () => ({
+          mode: "repository" as const,
+          remoteWorkspaceDir: boundWorkspace.workspaceDir,
+          baseCommit: repositoryProject.baseCommit,
+          baseManifestRef: MANIFEST_REF,
+          manifestRef: MANIFEST_REF,
+        })),
+        reconcileWorkspace: vi.fn(async () => ({
+          manifestRef: MANIFEST_REF,
+          changed: false,
+          verifyStable: async () => {},
+          verifyLocalStable: async () => {},
+          publishStagedResult: async () => {},
+        })),
+      };
+    });
+
+    const active = await prepared.harness.service.dispatch(prepared.request);
+
+    expect(active).toMatchObject({
+      state: "active",
+      executionMode: "remote-exec",
+      environmentId: ready[0]!.environmentId,
+    });
+    expect(prepared.harness.environments.createWithRequest).not.toHaveBeenCalled();
+    expect(
+      support.testState.store.list().filter((record) => record.preparation?.consumedAtMs !== null),
+    ).toHaveLength(1);
+    expect(
+      support.testState.store.list().filter((record) => record.preparation?.consumedAtMs === null),
+    ).toHaveLength(2);
+
+    await pool.schedule();
+    expect(
+      support.testState.store
+        .list()
+        .filter(
+          (record) =>
+            record.preparation?.consumedAtMs === null && record.destroyRequestedAtMs === null,
+        ),
+    ).toHaveLength(3);
+  });
 
   it.each(["worker-turn", "remote-exec"] as const)(
     "consumes the existing environment and binds its workspace for %s",
