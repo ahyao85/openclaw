@@ -319,10 +319,15 @@ function refitMap(
   contributingRuns = 0,
   observedParents?: Set<string>,
   minimumSamples = 2,
+  retainReleaseCosts = false,
 ) {
   const next = Object.fromEntries(
     Object.entries(previous).filter(
-      ([key]) => contributingRuns < MIN_PRUNE_RUNS || samples.has(key) || observedParents?.has(key),
+      ([key]) =>
+        (retainReleaseCosts && key.startsWith("release-full-")) ||
+        contributingRuns < MIN_PRUNE_RUNS ||
+        samples.has(key) ||
+        observedParents?.has(key),
     ),
   );
   for (const [key, values] of samples) {
@@ -473,6 +478,8 @@ export function refitTestTimings(
         previous?.compactGroupSeconds.github,
         pruningRunCount("github"),
         observedParents.github,
+        2,
+        true,
       ),
     },
     repoE2eFileSeconds: refitMap(

@@ -9,8 +9,12 @@ export function isSupportedCrossOsSuite(value) {
   return SUPPORTED_SUITES.has(value);
 }
 
-/** @param {string} rawFilter */
-export function hasRequiredLinuxCrossOsSuites(rawFilter) {
+/**
+ * All-group runs must select every install/upgrade suite on every supported OS
+ * so the release roster records each Gateway lane; outcome policy is separate.
+ * @param {string} rawFilter
+ */
+export function hasRequiredCrossOsSuites(rawFilter) {
   const filter = parseCrossOsSuiteFilter(rawFilter);
   return RELEASE_SUITES.every((suite) => filter.matches("ubuntu", suite));
 }
