@@ -1560,7 +1560,7 @@ private fun SettingsShellScreen(
           SettingsListRow(
             title = nativeText("Sign Out"),
             value = nativeText("Return to setup"),
-            icon = Icons.AutoMirrored.Filled.ExitToApp,
+            icon = SettingsIcon.Vector(Icons.AutoMirrored.Filled.ExitToApp),
             opensRoute = false,
             onClick = viewModel::returnToGatewaySetup,
           )
@@ -1773,7 +1773,7 @@ private fun SettingsGroup(
 private fun SettingsListRow(
   title: NativeText,
   value: NativeText,
-  icon: ImageVector,
+  icon: SettingsIcon,
   status: Boolean? = null,
   opensRoute: Boolean = true,
   onClick: () -> Unit,
@@ -1783,7 +1783,7 @@ private fun SettingsListRow(
     title = localizedTitle,
     subtitle = value.resolveNativeTextResource().takeIf { it.isNotBlank() },
     leading = {
-      Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(20.dp), tint = ClawTheme.colors.text)
+      SettingsIconContent(icon = icon, modifier = Modifier.size(20.dp))
     },
     trailing = {
       Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxxs)) {

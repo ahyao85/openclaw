@@ -237,8 +237,11 @@ internal data class CommandItem(
   val action: CommandAction,
   val title: NativeText,
   val subtitle: NativeText,
-  val icon: ImageVector,
+  val icon: SettingsIcon,
 ) {
+  constructor(action: CommandAction, title: NativeText, subtitle: NativeText, icon: ImageVector) :
+    this(action, title, subtitle, SettingsIcon.Vector(icon))
+
   fun matches(query: String): Boolean =
     query.isEmpty() ||
       title.resolveNativeText().contains(query, ignoreCase = true) ||
@@ -340,7 +343,7 @@ private fun CommandSessionListRow(
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-      CommandRowIcon(icon = Icons.Outlined.ChatBubbleOutline)
+      CommandRowIcon(icon = SettingsIcon.Vector(Icons.Outlined.ChatBubbleOutline))
       Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
         Text(text = row.title, style = ClawTheme.type.body, color = ClawTheme.colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(text = row.subtitle, style = ClawTheme.type.caption, color = ClawTheme.colors.textSubtle, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -352,7 +355,7 @@ private fun CommandSessionListRow(
 }
 
 @Composable
-private fun CommandRowIcon(icon: ImageVector) {
+private fun CommandRowIcon(icon: SettingsIcon) {
   Surface(
     modifier = Modifier.size(30.dp),
     shape = CircleShape,
@@ -360,7 +363,7 @@ private fun CommandRowIcon(icon: ImageVector) {
     border = BorderStroke(1.dp, ClawTheme.colors.borderStrong),
   ) {
     Box(contentAlignment = Alignment.Center) {
-      Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(15.dp), tint = ClawTheme.colors.text)
+      SettingsIconContent(icon = icon, modifier = Modifier.size(15.dp))
     }
   }
 }
