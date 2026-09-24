@@ -1,13 +1,10 @@
 import {
   capturePluginLifecycleAuthority,
   getPluginRecordRegistry,
+  getPluginRegistryGatewaySuccessor,
   isPluginRegistryRetired,
 } from "../plugins/registry-lifecycle.js";
-import {
-  getActivePluginRegistry,
-  getPluginRegistryForContext,
-  requireActivePluginRegistry,
-} from "../plugins/runtime.js";
+import { getPluginRegistryForContext, requireActivePluginRegistry } from "../plugins/runtime.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import {
   DetachedTaskRuntimeOwnerRetiredError,
@@ -30,17 +27,20 @@ export function captureDetachedTaskRuntimeOwner(options?: { settlement?: boolean
   assertCurrent: () => void;
 } {
   const scoped = requireActivePluginRegistry();
-  const live = getActivePluginRegistry();
+  // Only the Gateway that published the retired scope supplies its successor;
+  // another Gateway's process-active registry never inherits this work.
+  const successor = () => getPluginRegistryGatewaySuccessor(scoped);
+  const live = options?.settlement === true ? successor() : undefined;
   const adopted =
-    options?.settlement === true &&
     live &&
+    live !== scoped &&
     isPluginRegistryRetired(scoped) &&
     !scoped.detachedTaskRuntimes[0] &&
     !live.detachedTaskRuntimes[0]
       ? live
       : undefined;
   const registry = adopted ?? scoped;
-  const currentRegistry = adopted ? getActivePluginRegistry : getPluginRegistryForContext;
+  const currentRegistry = adopted ? successor : getPluginRegistryForContext;
   const registration = registry.detachedTaskRuntimes[0];
   const runtime = registration?.runtime;
   const pluginId = registration?.pluginId;

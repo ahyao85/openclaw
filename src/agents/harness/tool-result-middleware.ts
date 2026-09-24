@@ -11,7 +11,7 @@ import type {
   OpenClawAgentToolResult,
 } from "../../plugins/agent-tool-result-middleware-types.js";
 import { getPluginValueInstance } from "../../plugins/plugin-instance-scope.js";
-import { getPluginRegistryState } from "../../plugins/runtime-state.js";
+import { getPluginRegistryGatewaySuccessor } from "../../plugins/registry-lifecycle.js";
 import { createLazyPromiseLoader } from "../../shared/lazy-promise.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import { readEmbeddedMessageDeliveryFact } from "../embedded-agent-message-delivery.js";
@@ -405,16 +405,20 @@ function reconcileDeliveredMessagingFailure(
 
 /**
  * A run resolves middleware once. When a handler's own plugin was retired and is
- * gone from the live registry, its post-processing no longer applies. The runner
+ * gone from its Gateway's current registry, its post-processing no longer applies. The runner
  * checks this before choosing a path and again before each call, so a skipped
  * plugin never runs and cannot have touched the result.
  */
 function isRemovedPluginMiddleware(handler: AgentToolResultMiddleware): boolean {
   const instance = getPluginValueInstance(handler);
+  if (!instance?.owner || (!instance.disposing && instance.acceptingCalls)) {
+    return false;
+  }
+  // Decide against the plugin's own Gateway, never another Gateway's registry.
+  const successor = getPluginRegistryGatewaySuccessor(instance.owner.registry);
   return (
-    instance !== undefined &&
-    (instance.disposing || !instance.acceptingCalls) &&
-    !getPluginRegistryState()?.activeRegistry?.plugins.some(
+    successor !== undefined &&
+    !successor.plugins.some(
       (record) => record.id === instance.pluginId && record.enabled && record.status === "loaded",
     )
   );

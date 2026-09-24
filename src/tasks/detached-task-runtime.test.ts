@@ -9,7 +9,11 @@ import {
   markPluginRegistryRetired,
   revokePluginRecord,
 } from "../plugins/registry-lifecycle.js";
-import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
+import {
+  createPluginRegistryOwner,
+  resetPluginRuntimeStateForTest,
+  setActivePluginRegistry,
+} from "../plugins/runtime.js";
 import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import {
   DetachedTaskRuntimeOwnerRetiredError,
@@ -226,23 +230,53 @@ describe("detached-task-runtime", () => {
   });
 
   it.each([
-    { successor: "core-owned", settles: true },
-    { successor: "plugin-owned", settles: false },
+    { name: "its Gateway's core-owned successor", settles: true },
+    {
+      name: "a successor that registers a plugin task runtime",
+      successorRuntime: true,
+      settles: false,
+    },
+    {
+      name: "its successor while another Gateway with a plugin runtime is active",
+      otherGateway: "plugin-runtime" as const,
+      settles: true,
+    },
+    {
+      name: "a closed Gateway while another core-owned Gateway is active",
+      otherGateway: "core" as const,
+      closeGateway: true,
+      settles: false,
+    },
   ])(
-    "settles, but never admits, work from a replaced plugin generation ($successor)",
-    async ({ settles }) => {
+    "settles, but never admits, work from a replaced plugin generation on $name",
+    async ({ successorRuntime, otherGateway, closeGateway, settles }) => {
       const task = createFakeTaskRecord();
       const transition = vi
         .spyOn(taskTransitions, "transitionTaskRecordsByRunAsync")
         .mockResolvedValue([task]);
       const spawning = createEmptyPluginRegistry();
       setActivePluginRegistry(spawning);
+      const gatewayA = createPluginRegistryOwner(spawning);
       try {
-        // A plugin reload publishes a successor and retires the admitting generation.
-        setActivePluginRegistry(createEmptyPluginRegistry());
+        // Gateway A's plugin reload publishes a successor and retires the admitting generation.
+        const successor = createEmptyPluginRegistry();
+        setActivePluginRegistry(successor);
+        gatewayA.publish(successor);
         markPluginRegistryRetired(spawning);
-        if (!settles) {
+        if (successorRuntime) {
           setDetachedTaskLifecycleRuntime({ ...getDetachedTaskLifecycleRuntime() });
+        }
+        if (otherGateway) {
+          // Gateway B becomes the process-active projection after A's publication.
+          const other = createEmptyPluginRegistry();
+          setActivePluginRegistry(other);
+          createPluginRegistryOwner(other);
+          if (otherGateway === "plugin-runtime") {
+            setDetachedTaskLifecycleRuntime({ ...getDetachedTaskLifecycleRuntime() });
+          }
+        }
+        if (closeGateway) {
+          await gatewayA.close();
         }
         // The retired scope cannot admit new work, even while core owns tasks.
         expect(() =>
@@ -257,7 +291,7 @@ describe("detached-task-runtime", () => {
         ).toThrow(DetachedTaskRuntimeOwnerRetiredError);
         expect(mockCreateRunningTaskRunCoreWithReceiptAsync).not.toHaveBeenCalled();
         expect(mockCreateRunningTaskRunCore).not.toHaveBeenCalled();
-        // Work it already admitted still settles.
+        // Work it already admitted settles only on its own Gateway's core successor.
         const settlement = withPluginRuntimeRegistryScope(spawning, () =>
           finalizeTaskRunByRunIdAsync({ runId: task.runId!, status: "succeeded", endedAt: 200 }),
         );

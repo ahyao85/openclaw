@@ -3,6 +3,7 @@ import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { createEmptyPluginRegistry } from "../../../plugins/registry-empty.js";
 import {
+  createPluginRegistryOwner,
   resetPluginRuntimeStateForTest,
   setActivePluginRegistry,
 } from "../../../plugins/runtime.js";
@@ -276,6 +277,7 @@ export function registerReplacedGenerationTaskSettlementTest({
       const runId = `run-spawn-generation-${String(replaced)}`;
       const spawning = createEmptyPluginRegistry();
       setActivePluginRegistry(spawning);
+      const gateway = createPluginRegistryOwner(spawning);
       const childEnded = createDeferred<{ status: "ok"; startedAt: number; endedAt: number }>();
       mockGatewayMethods(mocks.callGateway, { "agent.wait": () => childEnded.promise });
       const settled = createDeferred();
@@ -297,8 +299,10 @@ export function registerReplacedGenerationTaskSettlementTest({
         );
         expect(findTaskByRunIdForStatus(runId)).toMatchObject({ status: "running" });
         if (replaced) {
-          // A plugin enable/disable publishes a successor while the child still runs.
-          setActivePluginRegistry(createEmptyPluginRegistry());
+          // A plugin enable/disable publishes the Gateway's successor while the child still runs.
+          const successor = createEmptyPluginRegistry();
+          setActivePluginRegistry(successor);
+          gateway.publish(successor);
         }
         childEnded.resolve({ status: "ok", startedAt: Date.now() - 1_000, endedAt: Date.now() });
 

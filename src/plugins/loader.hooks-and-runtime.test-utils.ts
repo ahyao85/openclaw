@@ -32,7 +32,7 @@ import { loadPluginManifestRegistryCore } from "./manifest-registry.js";
 import { createPluginCache, retirePluginCache, withPluginCache } from "./plugin-cache.js";
 import { getPluginInstance } from "./plugin-instance-scope.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
-import { setActivePluginRegistry } from "./runtime.js";
+import { createPluginRegistryOwner, setActivePluginRegistry } from "./runtime.js";
 
 afterEach(globalAfterEach0);
 afterAll(globalAfterAll1);
@@ -1349,6 +1349,7 @@ ${channelPluginSource({
   it.each([
     { successor: "removed", preserved: true },
     { successor: "replaced", preserved: false },
+    { successor: "removed while another Gateway loads the same id", preserved: true },
   ])(
     "keeps a run's tool result only when its middleware plugin was $successor",
     async ({ successor, preserved }) => {
@@ -1373,6 +1374,7 @@ ${channelPluginSource({
         throw new Error("expected a loaded middleware plugin instance");
       }
       setActivePluginRegistry(registry);
+      const gatewayA = createPluginRegistryOwner(registry);
       // A run resolves its middleware once and keeps that list.
       const runner = createAgentToolResultMiddlewareRunner({ runtime: "openclaw" }, [
         entry.handler,
@@ -1392,6 +1394,14 @@ ${channelPluginSource({
         next.plugins.push({ ...record });
       }
       setActivePluginRegistry(next);
+      gatewayA.publish(next);
+      if (successor.includes("another Gateway")) {
+        // Gateway B becomes process-active with its own plugin of the same id.
+        const other = createEmptyPluginRegistry();
+        other.plugins.push({ ...record });
+        setActivePluginRegistry(other);
+        createPluginRegistryOwner(other);
+      }
       await instance.dispose();
       // Callable and cyclic details survive only on the untouched no-middleware path.
       const details: Record<string, unknown> = { format: () => "exit 0" };
