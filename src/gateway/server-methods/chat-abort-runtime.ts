@@ -652,21 +652,23 @@ function prepareChatSessionAbort(
             })
           : undefined,
       ]);
-      const failures: unknown[] = [];
+      // A captured session failure can also surface through partial persistence.
+      const failures = new Set<unknown>();
       for (const settled of [worker, partial]) {
         if (settled.status === "rejected") {
-          failures.push(settled.reason);
+          failures.add(settled.reason);
         }
       }
       if (params.session && !params.session.ok) {
-        failures.push(params.session.error);
+        failures.add(params.session.error);
       }
       const warning = partial.status === "fulfilled" ? partial.value : undefined;
-      if (failures.length > 0) {
+      if (failures.size > 0) {
+        const errors = [...failures];
         throw abortedPartialPersistenceError(
-          failures.length === 1
-            ? failures[0]
-            : new AggregateError(failures, "Chat cancellation persistence failed"),
+          errors.length === 1
+            ? errors[0]
+            : new AggregateError(errors, "Chat cancellation persistence failed"),
           warning,
         );
       }

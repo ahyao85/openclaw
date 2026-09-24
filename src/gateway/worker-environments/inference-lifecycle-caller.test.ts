@@ -48,6 +48,8 @@ describe("worker inference lifecycle caller", () => {
           destroySessionAttachment: unexpected,
           openNodePortal: unexpected,
           list: unexpected,
+          readPreparedPoolSummary: unexpected,
+          readReadyWorkerTarget: unexpected,
           get: () => undefined,
           inventoryVersion: unexpected,
           readMachineShape: unexpected,
