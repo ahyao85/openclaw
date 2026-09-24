@@ -21,12 +21,28 @@ import type { CronRuntimeWorkerOperations } from "./runtime-worker.types.js";
 import type { CronStoreSaveWorkerOperations } from "./save-worker.types.js";
 import { executeCronStoreSaveCommand } from "./save.worker.js";
 
+const loadAdmission = createLazyRuntimeModule(() => import("./run-admission.worker.js"));
+let admission: typeof import("./run-admission.worker.js") | undefined;
+
 const loadRecovery = createLazyRuntimeModule(() => import("./run-recovery.worker.js"));
 let recovery: typeof import("./run-recovery.worker.js") | undefined;
 const loadMaintenance = createLazyRuntimeModule(() => import("./runtime-maintenance.worker.js"));
 let maintenance: typeof import("./runtime-maintenance.worker.js") | undefined;
 
 export function prepareCronStateWorkerCommand(type: PropertyKey): Promise<void> | undefined {
+  if (
+    [
+      "cron.activateRun",
+      "cron.releaseReservations",
+      "cron.finishReceipt",
+      "cron.removeStaleFamily",
+    ].includes(String(type)) &&
+    !admission
+  ) {
+    return loadAdmission().then((loaded) => {
+      admission = loaded;
+    });
+  }
   if (
     (type === "cron.scheduleUnowned" || type === "cron.recordFailureAlertOutcome") &&
     !maintenance
@@ -61,6 +77,10 @@ export function isCronStateWorkerCommand(command: {
   input: unknown;
 }): command is SqliteWorkerCommand<CronStateWorkerOperations> {
   switch (command.type) {
+    case "cron.activateRun":
+    case "cron.releaseReservations":
+    case "cron.finishReceipt":
+    case "cron.removeStaleFamily":
     case "cron.loadMutable":
     case "cron.initializeRunReceipts":
     case "cron.repairRun":
@@ -80,6 +100,23 @@ export function executeCronStateCommand(
   database: OpenClawStateDatabase,
 ): CronStateWorkerOperations[keyof CronStateWorkerOperations]["output"] {
   switch (command.type) {
+    case "cron.activateRun":
+    case "cron.releaseReservations":
+    case "cron.finishReceipt":
+    case "cron.removeStaleFamily":
+      if (!admission) {
+        throw new Error("Cron admission worker is not prepared");
+      }
+      switch (command.type) {
+        case "cron.activateRun":
+          return admission.activateCronRunInWorker(database, command.input);
+        case "cron.releaseReservations":
+          return admission.releaseCronReservationsInWorker(database, command.input);
+        case "cron.finishReceipt":
+          return admission.finishCronReceiptInWorker(database, command.input);
+        case "cron.removeStaleFamily":
+          return admission.removeStaleCronFamilyInWorker(database, command.input);
+      }
     case "cron.loadMutable":
       return loadMutableCronStoreInWorker(database, command.input.storeKey);
     case "cron.repairRun":

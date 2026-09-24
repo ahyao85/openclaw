@@ -140,7 +140,7 @@ export async function settleEmbeddedAttemptStream(input: {
   let { promptError, promptErrorSource, sessionIdUsed } = state;
 
   if (
-    shouldWaitForCompletionRequiredAsyncTasks({
+    await shouldWaitForCompletionRequiredAsyncTasks({
       sessionKey: attempt.sessionKey,
       toolMetas: subscription.toolMetas,
       yieldDetected: state.yieldAborted,

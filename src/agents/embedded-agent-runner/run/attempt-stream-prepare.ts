@@ -315,14 +315,15 @@ function prepareStream(
       isAgentRunRestartAbortReason(input.runAbortController.signal.reason)
         ? AGENT_RUN_RESTART_ABORT_STOP_REASON
         : undefined,
-    onBeforeLifecycleTerminal: () => {
-      if (
-        deferredLifecycleOwner ||
-        requiresCompletionRequiredAsyncTaskWait({
-          sessionKey: attempt.sessionKey,
-          toolMetas: toolMetasForTerminal,
-        })
-      ) {
+    onBeforeLifecycleTerminal: async () => {
+      if (deferredLifecycleOwner) {
+        return;
+      }
+      const requiresTaskWait = await requiresCompletionRequiredAsyncTaskWait({
+        sessionKey: attempt.sessionKey,
+        toolMetas: toolMetasForTerminal,
+      });
+      if (deferredLifecycleOwner || requiresTaskWait) {
         return;
       }
       // Clear active-run state before terminal events and post-completion cleanup.
