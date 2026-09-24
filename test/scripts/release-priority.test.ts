@@ -221,6 +221,9 @@ describe("pnpm frv prioritize", () => {
         run(4, "CI", { ...after, conclusion: "failure" }),
         run(5, "Labeler", { ...after, conclusion: "skipped", event: "pull_request_target" }),
         run(9, "CI", { ...after, conclusion: "failure", head_branch: "later" }),
+        run(10, "CI", { ...after, status: "in_progress", head_branch: "later" }),
+        run(11, "Labeler", { ...after, conclusion: "success" }),
+        run(12, "Labeler", { ...after, conclusion: "skipped", head_branch: "other" }),
       ],
       jobs: {
         "3": [
@@ -238,18 +241,17 @@ describe("pnpm frv prioritize", () => {
         ],
       },
     });
-    // Run 3 supersedes recorded run 1 (same workflow and branch); 9 supersedes recorded 8.
+    // Executed run 4 and active run 10 supersede the deferred CI attempts.
+    // Successful run 11 likewise owns its lane; only the untouched lane needs restoration.
     await expect(restoreReleasePriority(outPath, restoreClient)).resolves.toMatchObject({
       action: "restored",
       cleared: true,
       failures: [],
-      rerun: [{ id: "3" }, { id: "9" }, { id: "5" }],
+      rerun: [{ id: "12" }],
     });
     expect(restoreClient.calls.filter((call) => !call.startsWith("list:"))).toEqual([
       `delete:${RELEASE_PRIORITY_VARIABLE}`,
-      "rerun:3",
-      "rerun:9",
-      "rerun:5",
+      "rerun:12",
     ]);
   });
 

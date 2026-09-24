@@ -138,3 +138,82 @@ export function readReleasePriorityRecord(path, options = {}) {
   }
   return record;
 }
+
+const ACTIONS_RUN_SEARCH_LIMIT = 1_000;
+const ACTIONS_RUN_PAGE_SIZE = 100;
+
+/** GitHub caps a filtered run search at 1,000 results, even with pagination. */
+async function listReleasePriorityRunWindow(since, readPage, until = Date.now()) {
+  const start = Date.parse(since);
+  if (!Number.isFinite(start) || !Number.isFinite(until) || start > until) {
+    throw new Error("Invalid release-priority timestamp window");
+  }
+  const runs = new Map();
+  async function collect(from, to) {
+    const created = `${new Date(from).toISOString()}..${new Date(to).toISOString()}`;
+    const page = async (number) => {
+      const result = await readPage(created, number, ACTIONS_RUN_PAGE_SIZE);
+      if (
+        !Number.isSafeInteger(result?.total_count) ||
+        result.total_count < 0 ||
+        !Array.isArray(result.workflow_runs) ||
+        result.workflow_runs.some((run) => !Number.isSafeInteger(run?.id) || run.id < 1)
+      ) {
+        throw new Error("Invalid GitHub Actions run inventory");
+      }
+      return result;
+    };
+    const first = await page(1);
+    if (first.total_count > ACTIONS_RUN_SEARCH_LIMIT) {
+      // Overlap the boundary second and deduplicate IDs: no timestamp precision
+      // assumption may discard a run at the split. A dense second fails closed.
+      const middle = Math.floor((from + (to - from) / 2) / 1_000) * 1_000;
+      if (middle <= from || middle >= to) {
+        throw new Error("GitHub run search exceeds its cap within one timestamp window");
+      }
+      await collect(middle, to);
+      await collect(from, middle);
+      return;
+    }
+    const windowRuns = new Map(first.workflow_runs.map((run) => [run.id, run]));
+    for (let number = 2; number <= Math.ceil(first.total_count / ACTIONS_RUN_PAGE_SIZE); number++) {
+      const next = await page(number);
+      if (next.total_count !== first.total_count) {
+        throw new Error("GitHub Actions run inventory changed during discovery");
+      }
+      for (const run of next.workflow_runs) {
+        windowRuns.set(run.id, run);
+      }
+    }
+    if (windowRuns.size !== first.total_count) {
+      throw new Error("Incomplete GitHub Actions run inventory");
+    }
+    for (const [id, run] of windowRuns) {
+      runs.set(id, run);
+    }
+  }
+  await collect(start, until);
+  return [...runs.values()];
+}
+
+/** Queue snapshots remain best-effort; restoration must cover its whole pause window. */
+export async function listReleasePriorityRuns(query, apiJson, apiText) {
+  const parameters = new URLSearchParams(query);
+  const created = parameters.get("created");
+  if (created?.startsWith(">=")) {
+    return listReleasePriorityRunWindow(created.slice(2), (window, page, pageSize) => {
+      const bounded = new URLSearchParams(parameters);
+      bounded.set("created", window);
+      bounded.set("per_page", String(pageSize));
+      bounded.set("page", String(page));
+      return apiJson(`actions/runs?${bounded}`);
+    });
+  }
+  const output = await apiText(`actions/runs?${query}&per_page=100`, ".workflow_runs[] | @json");
+  return output
+    ? output
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+    : [];
+}

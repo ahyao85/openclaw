@@ -36,6 +36,7 @@ import {
   describeRun,
   isDeferredCiJobSet,
   isQueuedRun,
+  listReleasePriorityRuns,
   mergeReleasePriorityRecord,
   readReleasePriorityRecord,
   selectDeferredRunCandidates,
@@ -910,18 +911,7 @@ export function createClient(repository, dependencies = {}) {
     rerunFailed: (runId) => rerun(runId, "rerun-failed-jobs"),
     cancelRun: (runId) => rerun(runId, "cancel"),
     rerunRun: (runId) => rerun(runId, "rerun"),
-    async listRuns(query) {
-      const output = await apiText(
-        `actions/runs?${query}&per_page=100`,
-        ".workflow_runs[] | @json",
-      );
-      return output
-        ? output
-            .split("\n")
-            .filter(Boolean)
-            .map((line) => JSON.parse(line))
-        : [];
-    },
+    listRuns: (query) => listReleasePriorityRuns(query, apiJson, apiText),
     async getVariable(name) {
       try {
         return String((await apiJson(`actions/variables/${name}`)).value ?? "");
@@ -1224,7 +1214,12 @@ export async function restoreReleasePriority(recordPath, client, options = {}) {
       deferred.push(describeRun(run));
     }
   }
-  const rerun = selectLatestRunsPerLane([...record.cancelled, ...deferred]);
+  const candidates = [...record.cancelled, ...deferred];
+  const eligible = new Set(candidates.map((run) => run.id));
+  // A newer active or already-executed run owns its lane even when it was not deferred.
+  const rerun = selectLatestRunsPerLane([...candidates, ...runs.map(describeRun)]).filter((run) =>
+    eligible.has(run.id),
+  );
   if (options.dryRun) {
     return { action: "would-restore", deferred, rerun };
   }
