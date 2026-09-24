@@ -216,6 +216,14 @@ async function drivePty(ctx, cell, bin, missing) {
   const outputMaxBytes = readPositiveIntEnv("OPENCLAW_E2E_PTY_OUTPUT_MAX_BYTES", 16 * 1024 * 1024);
   const transcript = path.join(ctx.artifacts, `update-report-${cell}.pty.log`);
   const footer = `OPENCLAW_REPORT_CLI_EXIT_${cell}=`;
+  const geometry = `OPENCLAW_REPORT_PTY_SIZE_${cell}=`;
+  // Piped script(1) can inherit zero kernel dimensions; COLUMNS/LINES do not resize its PTY.
+  const prelude = [
+    "stty cols 160 rows 50 || exit $?",
+    "report_size=$(stty size) || exit $?",
+    `printf '\\n${geometry}%s\\n' "$report_size"`,
+    '[ "$report_size" = "50 160" ] || exit 1',
+  ].join("; ");
   // script(1) on Linux does not propagate the child status without -e.
   const command = `${[process.execPath, path.join(ctx.packageRoot, "openclaw.mjs"), "update", "--tag", `file:${missing}`, "--no-restart"].map(quote).join(" ")}; report_exit=$?; printf '\n${footer}%s\n' "$report_exit"; exit "$report_exit"`;
   const child = spawn(
@@ -225,7 +233,7 @@ async function drivePty(ctx, cell, bin, missing) {
       'source "$1"; openclaw_e2e_run_script_with_pty "$2" "$3"',
       "update-report-pty",
       helper,
-      command,
+      `${prelude}; ${command}`,
       transcript,
     ],
     {
@@ -331,6 +339,12 @@ async function drivePty(ctx, cell, bin, missing) {
   assert.equal(outcome.signal, null, "PTY helper was interrupted");
   assert.equal(completed, steps.length, `PTY stopped before dialogue step ${completed + 1}`);
   const clean = stripVTControlCharacters(raw).replaceAll("\r", "");
+  const dimensions = [...clean.matchAll(new RegExp(`^${geometry}([^\\n]+)$`, "gmu"))];
+  assert.deepEqual(
+    dimensions.map((match) => match[1]),
+    ["50 160"],
+    "PTY kernel size was not verified",
+  );
   const exits = [...clean.matchAll(new RegExp(`^${footer}(\\d+)$`, "gmu"))];
   assert.equal(exits.length, 1, "Missing or repeated actual CLI exit footer");
   assert.equal(Number(exits[0][1]), 1, "Failed update must retain exit code 1 after reporting");
@@ -338,7 +352,13 @@ async function drivePty(ctx, cell, bin, missing) {
   if (cell === "retry") {
     assert(clean.includes(`Created GitHub issue: ${syntheticUrl}`));
   }
-  return { cliExitCode: 1, helperExitCode: outcome.code, promptActions: completed };
+  return {
+    cliExitCode: 1,
+    helperExitCode: outcome.code,
+    promptActions: completed,
+    ptyRows: 50,
+    ptyColumns: 160,
+  };
 }
 
 function inspectCalls(callsFile, cell) {
