@@ -257,57 +257,108 @@ describe("qa suite runtime launcher", () => {
     },
   );
 
-  it("withholds aggregate completion after the child artifact owner rejects publication", async () => {
-    const repoRoot = await makeTempRepo("qa-suite-child-publication-");
-    const outputDir = path.join(repoRoot, "out");
-    const failure = Object.assign(new Error("child report publication failed"), { code: "EIO" });
-    const actualSecurity = await vi.importActual<
-      typeof import("openclaw/plugin-sdk/security-runtime")
-    >("openclaw/plugin-sdk/security-runtime");
-    let publicationAttempts = 0;
-    replaceFileAtomicMock.mockImplementation(async (options) => {
-      if (options.filePath.includes(`${path.sep}flow${path.sep}`)) {
-        publicationAttempts += 1;
-        throw failure;
-      }
-      return await actualSecurity.replaceFileAtomic(options);
-    });
-    runQaFlowSuite.mockImplementationOnce(async (params) => {
-      await writeQaSuiteArtifacts({
-        outputDir: params.outputDir,
-        startedAt: new Date(),
-        finishedAt: new Date(),
-        scenarios: [{ name: "child passed", status: "pass", steps: [] }],
-        scenarioDefinitions: [makeQaSuiteTestScenario("dm-chat-baseline")],
-        transport: {
-          id: "qa-channel",
-          createReportNotes: () => [],
-        } as unknown as QaTransportAdapter,
-        providerMode: "mock-openai",
-        primaryModel: "mock-openai/test",
-        alternateModel: "mock-openai/alt",
-        fastMode: true,
-        concurrency: 1,
+  it.each(["write", "report", "summary", "evidence"] as const)(
+    "withholds aggregate completion after child artifact %s publication fails",
+    async (failureKind) => {
+      const repoRoot = await makeTempRepo("qa-suite-child-publication-");
+      const outputDir = path.join(repoRoot, "out");
+      const failure = Object.assign(new Error("child report publication failed"), { code: "EIO" });
+      const actualSecurity = await vi.importActual<
+        typeof import("openclaw/plugin-sdk/security-runtime")
+      >("openclaw/plugin-sdk/security-runtime");
+      let publicationAttempts = 0;
+      let verificationPath: string | undefined;
+      let verificationCause: unknown;
+      const access = fs.access;
+      const accessSpy = vi.spyOn(fs, "access").mockImplementation(async (filePath, mode) => {
+        if (filePath === verificationPath) {
+          // Remove the real published file only at its postwrite verification boundary.
+          expect((await fs.stat(filePath)).isFile()).toBe(true);
+          await fs.rm(filePath);
+        }
+        try {
+          return await access(filePath, mode);
+        } catch (error) {
+          if (filePath === verificationPath) {
+            verificationCause = error;
+          }
+          throw error;
+        }
       });
-      throw new Error("expected publication failure");
-    });
-    try {
-      await expect(
-        runQaSuite({
+      replaceFileAtomicMock.mockImplementation(async (options) => {
+        if (options.filePath.includes(`${path.sep}flow${path.sep}`)) {
+          publicationAttempts += 1;
+          if (failureKind === "write") {
+            throw failure;
+          }
+        }
+        return await actualSecurity.replaceFileAtomic(options);
+      });
+      runQaFlowSuite.mockImplementationOnce(async (params) => {
+        if (failureKind !== "write") {
+          const filename =
+            failureKind === "report"
+              ? "qa-suite-report.md"
+              : failureKind === "summary"
+                ? "qa-suite-summary.json"
+                : "qa-evidence.json";
+          verificationPath = path.join(params.outputDir, filename);
+        }
+        await writeQaSuiteArtifacts({
+          outputDir: params.outputDir,
+          startedAt: new Date(),
+          finishedAt: new Date(),
+          scenarios: [{ name: "child passed", status: "pass", steps: [] }],
+          scenarioDefinitions: [makeQaSuiteTestScenario("dm-chat-baseline")],
+          transport: {
+            id: "qa-channel",
+            createReportNotes: () => [],
+          } as unknown as QaTransportAdapter,
+          providerMode: "mock-openai",
+          primaryModel: "mock-openai/test",
+          alternateModel: "mock-openai/alt",
+          fastMode: true,
+          concurrency: 1,
+        });
+        throw new Error("expected publication failure");
+      });
+      try {
+        const result = runQaSuite({
           repoRoot,
           outputDir,
           scenarioIds: ["dm-chat-baseline", "control-ui-chat-flow-playwright"],
-        }),
-      ).rejects.toMatchObject({ code: "publication_failed", cause: failure });
-      expect(runQaFlowSuite).toHaveBeenCalledTimes(1);
-      expect(publicationAttempts).toBe(1);
-      await expect(fs.stat(path.join(outputDir, "qa-suite-summary.json"))).rejects.toMatchObject({
-        code: "ENOENT",
-      });
-    } finally {
-      replaceFileAtomicMock.mockImplementation(actualSecurity.replaceFileAtomic);
-    }
-  });
+        });
+        if (failureKind === "write") {
+          await expect(result).rejects.toMatchObject({
+            code: "publication_failed",
+            cause: failure,
+          });
+        } else {
+          const error: unknown = await result.catch((caughtError: unknown) => caughtError);
+          expect(error).toBeInstanceOf(QaSuiteArtifactError);
+          expect(error).toMatchObject({
+            code: "publication_failed",
+            cause: { code: `${failureKind}_missing`, cause: { code: "ENOENT" } },
+          });
+          if (
+            !(error instanceof QaSuiteArtifactError) ||
+            !(error.cause instanceof QaSuiteArtifactError)
+          ) {
+            throw new Error("expected the original artifact verification failure");
+          }
+          expect(error.cause.cause).toBe(verificationCause);
+        }
+        expect(runQaFlowSuite).toHaveBeenCalledTimes(1);
+        expect(publicationAttempts).toBe(failureKind === "write" ? 1 : 3);
+        await expect(fs.stat(path.join(outputDir, "qa-suite-summary.json"))).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      } finally {
+        accessSpy.mockRestore();
+        replaceFileAtomicMock.mockImplementation(actualSecurity.replaceFileAtomic);
+      }
+    },
+  );
 
   it("withholds aggregate completion after an immutable child occurrence write fails without retrying", async () => {
     const repoRoot = await makeTempRepo("qa-suite-occurrence-publication-");

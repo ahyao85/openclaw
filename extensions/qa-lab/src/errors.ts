@@ -33,7 +33,7 @@ export class QaSuiteArtifactError extends Error {
 }
 
 export function toQaSuiteArtifactPublicationError(error: unknown) {
-  return error instanceof QaSuiteArtifactError
+  return error instanceof QaSuiteArtifactError && error.code === "publication_failed"
     ? error
     : new QaSuiteArtifactError("publication_failed", formatErrorMessage(error), { cause: error });
 }
