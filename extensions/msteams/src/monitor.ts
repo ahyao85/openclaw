@@ -240,7 +240,7 @@ export async function monitorMSTeamsProvider(
           }
           // Private QA bypasses SDK JWT validation, so its route stays loopback-only.
           if (
-            (privateQaRuntime && !isLoopbackHost(req.socket.remoteAddress)) ||
+            (privateQaRuntime && !isLoopbackHost(req.socket.remoteAddress ?? "")) ||
             !req.headers.authorization?.startsWith("Bearer ")
           ) {
             res.writeHead(401, { "Content-Type": "application/json" });
