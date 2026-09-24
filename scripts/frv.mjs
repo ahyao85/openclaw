@@ -2217,6 +2217,17 @@ function print(value, json) {
   for (const run of value.record?.cancelled ?? value.rerun ?? []) {
     console.log(`${run.name} ${run.id} ${run.headBranch} ${run.url}`);
   }
+  for (const run of value.skipped ?? []) {
+    const operation = value.action === "restored" ? "rerun" : "cancellation";
+    console.log(
+      `skipped (${operation} not attempted): ${run.name} ${run.id} ${run.headBranch} ${run.url}`,
+    );
+  }
+  if (value.action === "restored" && value.skipped?.length) {
+    console.log(
+      "Inspect the skipped runs and their latest PR checks, then preview with pnpm frv prioritize --restore <record> --dry-run using the same record and same --repo. Restore without --dry-run only if those checks still need recovery.",
+    );
+  }
   for (const failure of value.failures ?? []) {
     console.log(`failure: ${failure}`);
   }

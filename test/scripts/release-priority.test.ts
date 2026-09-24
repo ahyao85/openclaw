@@ -1,6 +1,8 @@
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { createClient, prioritizeRelease, restoreReleasePriority } from "../../scripts/frv.mjs";
@@ -335,6 +337,213 @@ const deferredJobs = [
   { name: "preflight", conclusion: "skipped" },
   { name: "openclaw/ci-gate", conclusion: "failure" },
 ];
+
+// Exercise main(), the real client and the printer; only gh's external transport is synthetic.
+function priorityCli({
+  args = [],
+  skipped = [100],
+  allowed = true,
+  prioritize = false,
+}: { args?: string[]; skipped?: number[]; allowed?: boolean; prioritize?: boolean } = {}) {
+  const directory = tempDirs.make("frv-priority-cli-");
+  const recordPath = join(directory, "record.json");
+  const record = JSON.stringify({
+    kind: "openclaw.frv-release-priority",
+    parentRunId: "77",
+    recordedAt: "2020-01-01T00:00:00Z",
+    cancelled: [],
+  });
+  writeFileSync(recordPath, record);
+  const runs = [...skipped, ...(allowed ? [200] : [])].map((id) =>
+    run(id, "CI", {
+      created_at: "2020-01-01T01:00:00Z",
+      head_branch: `branch-${id}`,
+      status: prioritize ? "queued" : "completed",
+      conclusion: prioritize ? null : "failure",
+    }),
+  );
+  const gh = join(directory, "gh-fixture.cjs");
+  writeFileSync(
+    gh,
+    String.raw`const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync("calls.jsonl", JSON.stringify(args) + "\n");
+const runs = ${JSON.stringify(runs)};
+const skipped = ${JSON.stringify(skipped)};
+const prioritize = ${prioritize};
+const reject = () => { throw new Error("unplanned fixture request: " + JSON.stringify(args)); };
+if (args[0] === "variable") {
+  if (!prioritize || JSON.stringify(args) !== JSON.stringify(["variable", "set", ${JSON.stringify(RELEASE_PRIORITY_VARIABLE)}, "--repo", "fixture/fixture", "--body", "77"])) reject();
+} else if (args[0] === "api" && args[1] === "-X") {
+  if (JSON.stringify(args) !== JSON.stringify(["api", "-X", "POST", "repos/fixture/fixture/actions/runs/200/" + (prioritize ? "cancel" : "rerun")])) reject();
+} else {
+  if (args[0] !== "api" || !args.includes("Cache-Control: max-age=0")) reject();
+  const resource = args[1].replace("repos/fixture/fixture/", "");
+  const query = new URL(resource, "https://example.invalid").searchParams;
+  let value;
+  if (resource === "actions/variables/${RELEASE_PRIORITY_VARIABLE}") value = { value: "" };
+  else if (resource === "actions/runs/77") value = ${JSON.stringify(PARENT)};
+  else if (resource.startsWith("actions/runs?")) {
+    const branch = query.get("branch");
+    const found = runs.filter(run => !branch || run.head_branch === branch);
+    if (branch) for (const run of [...found]) {
+      if (skipped.includes(run.id)) found.push({ ...run, id: run.id + 1, status: "in_progress", conclusion: null });
+    }
+    if (query.has("status")) {
+      if (!prioritize || !args.includes(".workflow_runs[] | @json")) reject();
+      value = query.get("status") === "queued" ? runs : [];
+    } else value = { total_count: found.length, workflow_runs: found };
+  } else if (runs.some(run => resource === "actions/runs/" + run.id + "/attempts/1/jobs?per_page=100")) {
+    if (!args.includes("--paginate") || !args.includes(".jobs[] | @json")) reject();
+    value = ${JSON.stringify(deferredJobs)};
+  } else {
+    value = runs.find(run => resource === "actions/runs/" + run.id);
+    if (!value) reject();
+    if (prioritize && skipped.includes(value.id)) value = { ...value, status: "in_progress" };
+  }
+  console.log(Array.isArray(value) ? value.map(row => JSON.stringify(row)).join("\n") : JSON.stringify(value));
+}
+`,
+  );
+  const preload = join(directory, "transport.mjs");
+  writeFileSync(
+    preload,
+    `import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import net from "node:net";
+import { promisify } from "node:util";
+const reject = () => { throw new Error("unplanned fixture transport"); };
+globalThis.fetch = reject;
+net.Socket.prototype.connect = reject;
+const execute = childProcess.execFile;
+const route = (method) => (command, args, ...options) => {
+  if (command !== "gh") return reject();
+  return method(process.execPath, [${JSON.stringify(gh)}, ...args], ...options);
+};
+childProcess.execFile = route(execute);
+// Retain Node's native { stdout, stderr } promise, child handle and error fields.
+childProcess.execFile[promisify.custom] = route(execute[promisify.custom]);
+for (const name of ["exec", "execSync", "execFileSync", "spawn", "spawnSync", "fork"]) {
+  childProcess[name] = reject;
+}
+syncBuiltinESMExports();
+`,
+  );
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      pathToFileURL(preload).href,
+      join(process.cwd(), "scripts/frv.mjs"),
+      "prioritize",
+      "--repo",
+      "fixture/fixture",
+      ...(prioritize ? ["--run", "77", "--out", recordPath] : ["--restore", recordPath]),
+      ...args,
+    ],
+    {
+      cwd: directory,
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        HOME: directory,
+        USERPROFILE: directory,
+        PATH: directory,
+        SystemRoot: process.env.SystemRoot,
+      },
+    },
+  );
+  expect(result.status, result.stderr).toBe(0);
+  if (!prioritize) {
+    expect(readFileSync(recordPath, "utf8")).toBe(record);
+  }
+  const calls: string[][] = readFileSync(join(directory, "calls.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  const mutations = calls.filter((call) => call[0] === "variable" || call.includes("POST"));
+  return { stdout: result.stdout, calls, mutations };
+}
+
+describe("release-priority CLI output", () => {
+  it("reports a rejected rerun and recovery guidance alongside an attempted sibling", () => {
+    const result = priorityCli();
+    expect(result.mutations).toEqual([
+      ["api", "-X", "POST", "repos/fixture/fixture/actions/runs/200/rerun"],
+    ]);
+    expect(result.stdout).toContain("CI 200 branch-200 https://example.invalid/runs/200");
+    expect(result.stdout).toContain(
+      "skipped (rerun not attempted): CI 100 branch-100 https://example.invalid/runs/100",
+    );
+    expect(result.stdout).toContain("Inspect the skipped runs and their latest PR checks");
+    expect(result.stdout).toContain("pnpm frv prioritize --restore <record> --dry-run");
+    expect(result.stdout).toContain("same --repo");
+    expect(result.stdout).toContain("action: restored");
+  });
+
+  it("preserves the restore JSON shape without presentation text", () => {
+    const result = priorityCli({ args: ["--json"] });
+    const described = (id: number) => ({
+      event: "pull_request",
+      headBranch: `branch-${id}`,
+      id: String(id),
+      lane: `repository:100:branch:branch-${id}`,
+      name: "CI",
+      url: `https://example.invalid/runs/${id}`,
+    });
+    expect(JSON.parse(result.stdout)).toEqual({
+      action: "restored",
+      cleared: false,
+      failures: [],
+      rerun: [described(200)],
+      skipped: [described(100)],
+    });
+    expect(result.mutations).toEqual([
+      ["api", "-X", "POST", "repos/fixture/fixture/actions/runs/200/rerun"],
+    ]);
+  });
+
+  it("reports every skipped candidate even when no rerun was attempted", () => {
+    const result = priorityCli({ skipped: [100, 300], allowed: false });
+    expect(result.mutations).toEqual([]);
+    for (const id of [100, 300]) {
+      expect(result.stdout).toContain(
+        `skipped (rerun not attempted): CI ${id} branch-${id} https://example.invalid/runs/${id}`,
+      );
+    }
+    expect(result.stdout).toContain("--restore <record> --dry-run");
+  });
+
+  it("keeps ordinary output unchanged when no candidates are skipped", () => {
+    const result = priorityCli({ skipped: [] });
+    expect(result.stdout).toBe(
+      "CI 200 branch-200 https://example.invalid/runs/200\naction: restored\n",
+    );
+    expect(result.mutations).toHaveLength(1);
+  });
+
+  it("previews current candidates without attempting mutations or claiming final skips", () => {
+    const result = priorityCli({ args: ["--dry-run"] });
+    expect(result.mutations).toEqual([]);
+    expect(result.stdout).toBe(
+      "CI 100 branch-100 https://example.invalid/runs/100\nCI 200 branch-200 https://example.invalid/runs/200\naction: would-restore\n",
+    );
+  });
+
+  it("labels prioritize skips as cancellations, not reruns", () => {
+    const result = priorityCli({ prioritize: true });
+    expect(result.mutations).toEqual([
+      ["variable", "set", RELEASE_PRIORITY_VARIABLE, "--repo", "fixture/fixture", "--body", "77"],
+      ["api", "-X", "POST", "repos/fixture/fixture/actions/runs/200/cancel"],
+    ]);
+    expect(result.stdout).toContain(
+      "skipped (cancellation not attempted): CI 100 branch-100 https://example.invalid/runs/100",
+    );
+    expect(result.stdout).not.toContain("rerun not attempted");
+    expect(result.stdout).not.toContain("--restore");
+    expect(result.stdout).toContain("action: prioritized");
+  });
+});
 
 describe("restore dispatch revalidation through createClient", () => {
   async function restore(
