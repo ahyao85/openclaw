@@ -24,6 +24,7 @@ import {
 } from "./device-revocation.js";
 import { authorizeOperatorScopesForMethod } from "./method-scopes.js";
 import {
+  authorizeSessionAgentRun,
   onOperatorRolePolicyChanged,
   resolveGatewayOperatorRoleActor,
   resolveOperatorRolePolicyForAssignment,
@@ -31,7 +32,6 @@ import {
 } from "./operator-role-policy.js";
 import { sourceRolePolicy } from "./operator-role-source-policy.js";
 import type { GatewayClient, GatewayRequestContext } from "./server-methods/shared-types.js";
-import { authorizeSessionAgentRun } from "./session-sharing-policy.js";
 
 type OperatorSource = {
   owners: readonly [

@@ -13,6 +13,7 @@ import type {
   ExecApprovalRecord,
 } from "../exec-approval-manager.js";
 import { ADMIN_SCOPE, APPROVALS_SCOPE } from "../method-scopes.js";
+import { canResolveOperatorApproval } from "../operator-approval-authorization.js";
 import { operatorSessionCap } from "../operator-role-policy.js";
 import { createSessionListEntryFilter, resolveSessionSharingTarget } from "../session-sharing.js";
 import type { ApprovalRequestAuthority } from "./approval-request-authority.js";
@@ -63,7 +64,7 @@ export function isApprovalRecordVisibleToClient<TPayload>(params: {
   cfg?: OpenClawConfig;
 }): boolean {
   const runtime = params.client?.internal?.agentRuntimeIdentity;
-  if (runtime) {
+  if (runtime && !canResolveOperatorApproval(params.client)) {
     const run = params.record.agentRuntimeDelegatedAuthority?.operationalRunInstance;
     const source = isRecord(params.record.request) ? params.record.request : undefined;
     return (
