@@ -52,7 +52,9 @@ with zipfile.ZipFile(apk, 'w') as archive:
 describe("Android Access native workflow", () => {
   it("runs the packaged class on current Android targets and includes its result in CI", () => {
     expect(job.permissions).toEqual({ contents: "read" });
-    expect(evaluateWorkflowRunner(job["runs-on"])).toBe("ubuntu-24.04");
+    expect(evaluateWorkflowRunner(job["runs-on"], { eventName: "pull_request" })).toBe(
+      "ubuntu-24.04",
+    );
     expect(workflow.jobs.preflight.outputs.run_android_access_native).toBe(
       "${{ steps.manifest.outputs.run_android_access_native }}",
     );
