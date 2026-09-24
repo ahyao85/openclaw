@@ -356,6 +356,66 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     });
   });
 
+  it.each([false, true])(
+    "explains a disconnected tool failure (unfinished: %s)",
+    async (unfinished) => {
+      const attempt = settledFailedAttempt();
+      const error = "McpServerError: Client error '429 Too Many Requests'";
+      attempt.terminal = {
+        kind: "failed",
+        source: "prompt",
+        error: new Error("codex app-server client closed before turn completed"),
+      };
+      attempt.lastToolError = { toolName: "slack.read_thread", error };
+      attempt.codexAppServerFailure = {
+        kind: "client_closed_before_turn_completed",
+        transport: "websocket",
+        replaySafe: false,
+      };
+      attempt.settledTurnFinalizationContext = { source: "harness", data: [] };
+      if (unfinished) {
+        attempt.itemLifecycle = { startedCount: 3, completedCount: 2, activeCount: 1 };
+      }
+      const toolResult = attempt.messagesSnapshot.at(-1);
+      if (toolResult?.role !== "toolResult") {
+        throw new Error("Missing failed tool result fixture");
+      }
+      toolResult.content = [{ type: "text", text: error }];
+      const explanation =
+        "I couldn't read the Slack thread because Slack rate-limited the request. The connection then dropped, so I can't confirm the outcome of the remaining work.";
+      backendMocks.runSettledFinalization.mockResolvedValueOnce({
+        outcome: "answered",
+        result: {
+          assistant: buildEmbeddedRunnerAssistant({
+            content: [{ type: "text", text: explanation }],
+          }),
+        },
+      });
+      const input = finalizationInput(attempt);
+      input.terminalBase.runParams.verboseLevel = "off";
+
+      const result = await prepareTerminalWithSettledTurnFinalization(input);
+
+      expect(backendMocks.runSettledFinalization).toHaveBeenCalledOnce();
+      expect(backendMocks.runSettledFinalization).toHaveBeenCalledWith(
+        expect.objectContaining({
+          disableTools: true,
+          prompt: expect.stringContaining("actual error details in the tool results"),
+        }),
+        attempt,
+        expect.anything(),
+      );
+      expect(result.finalizationOutcome).toBe("answered");
+      expect(backendMocks.runSettledFinalization.mock.calls[0]?.[0].prompt).toContain(
+        "Missing tool results mean those actions have unknown outcomes",
+      );
+      expect(result.prepared.payloadsWithToolMedia).toEqual([
+        expect.objectContaining({ text: explanation, isError: true }),
+      ]);
+      expect(result.attempt.lastToolError).toEqual(attempt.lastToolError);
+    },
+  );
+
   it("explains the heartbeat failure when the only assistant text was pre-tool commentary", async () => {
     const attempt = settledFailedAttempt();
     const commentary = "I will update your heartbeat now.";

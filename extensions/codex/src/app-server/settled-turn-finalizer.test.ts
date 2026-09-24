@@ -190,6 +190,55 @@ describe("runCodexSettledTurnFinalization", () => {
     );
   });
 
+  it("passes the detailed tool error to the explanation model with verbosity off", async () => {
+    const attempt = createAttempt();
+    attempt.verboseLevel = "off";
+    const settledAttempt = createSettledAttempt();
+    const error = JSON.stringify({
+      error: "McpServerError: Client error '429 Too Many Requests'",
+      error_code: "RATE_LIMITED",
+      retry_after_seconds: 1,
+    });
+    const messages = [
+      { role: "user", content: "Read the Slack thread." },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "slack-read", name: "slack_read_thread", arguments: {} }],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "slack-read",
+        toolName: "slack_read_thread",
+        content: [{ type: "text", text: error }],
+        isError: true,
+      },
+    ] as EmbeddedRunAttemptResult["messagesSnapshot"];
+    settledAttempt.settledTurnFinalizationContext = new CodexSettledTurnContext(
+      projectSettledCodexMessages(messages),
+      { model: "synthetic-summary-model", authProfileId: "openai:captured" },
+    );
+    settledAttempt.terminal = {
+      kind: "failed",
+      source: "prompt",
+      error: new Error("codex app-server client closed before turn completed"),
+    };
+
+    await runCodexSettledTurnFinalization({ attempt, settledAttempt }, { pluginConfig: {} });
+
+    expect(mocks.runBounded).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capabilityPolicy: "no-external-capabilities",
+        historyItems: expect.arrayContaining([
+          {
+            type: "function_call_output",
+            call_id: "slack-read",
+            output: `[Tool result status: error]\n${error}`,
+          },
+        ]),
+      }),
+    );
+  });
+
   it.each([undefined, "openai"])(
     "uses captured model/profile and returned native attribution (captured provider: %s)",
     async (modelProvider) => {
