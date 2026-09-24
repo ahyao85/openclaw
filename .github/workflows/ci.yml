@@ -4231,6 +4231,7 @@ jobs:
       # qaRuntime supplies the shared JavaScript, assets, and freshness stamps;
       # build-artifacts owns SDK declaration and Control UI validation.
       - name: Build Node test runtime
+        id: node-test-runtime
         if: matrix.pretest_build_mode != null
         env:
           NODE_OPTIONS: --max-old-space-size=8192
@@ -4293,6 +4294,7 @@ jobs:
       - name: Run Node test shard
         env:
           NODE_OPTIONS: --max-old-space-size=8192
+          OPENCLAW_E2E_USE_PREBUILT_DIST: ${{ steps.node-test-runtime.outcome == 'success' && matrix.pretest_build_mode == 'private-qa' && '1' || '' }}
           OPENCLAW_CI_TEST_RUNTIME_POLICY: ${{ matrix.test_runtime_policy || 'node' }}
           FROZEN_TARGET: ${{ needs.preflight.outputs.frozen_target }}
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
