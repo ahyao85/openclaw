@@ -2,8 +2,10 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { runInNewContext } from "node:vm";
 import { isRecord } from "@openclaw/normalization-core";
+import JSZip from "jszip";
 import { afterEach, assert, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { buildFullReleaseCandidateRequest } from "../../scripts/full-release-candidate-contract.mjs";
@@ -31,14 +33,202 @@ import {
   MAX_RELEASE_ARTIFACT_BYTES,
   serializeReleaseArtifact,
 } from "../../scripts/full-release-validation-policy.mjs";
+import { createPluginSdkApiReleaseEvidence } from "../../scripts/plugin-sdk-api-release-evidence.mjs";
 import { tryReadReleaseDecisionArtifact } from "../../scripts/release-ci-summary.mjs";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
-import {
-  loadManifestWriter,
-  manifestWriterEnvironment,
-} from "./full-release-manifest-writer.test-support.js";
 
 const SHA = "a".repeat(40);
+
+async function publicationWriterFixture(
+  directory: string,
+  identity: { sourceSha: string; workflowSha: string; workflowFullRef: string },
+) {
+  const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
+  const repository = "openclaw/openclaw";
+  const workflow = ".github/workflows/full-release-artifacts.yml";
+  const producer = {
+    repository,
+    workflowRef: `${repository}/${workflow}@${identity.workflowFullRef}`,
+    workflowSha: identity.workflowSha,
+    runId: "81",
+    runAttempt: "1",
+    jobId: "901",
+    jobName: "Qualify prepared npm package",
+    producerWorkflowPath: ".github/workflows/openclaw-npm-preflight.yml",
+  };
+  const diff = { entrypointsAdded: [], entrypointsRemoved: [], exports: [] };
+  const tarball = Buffer.from("synthetic prepared package bytes");
+  const preparedProducer = {
+    ...producer,
+    jobId: "900",
+    jobName: "Prepare publishable npm package",
+  };
+  const packageManifest = {
+    schema: "openclaw.npm-package-bundle/v1",
+    producer: preparedProducer,
+    releaseTag: "v2026.9.9",
+    releaseSha: identity.sourceSha,
+    npmDistTag: "latest",
+    packageName: "openclaw",
+    packageVersion: "2026.9.9",
+    tarballName: "openclaw.tgz",
+    tarballSha256: hash(tarball),
+    corePackageTarballs: [],
+  };
+  const packageBytes = JSON.stringify(packageManifest);
+  const packageZip = new JSZip();
+  packageZip.file("package-bundle.json", packageBytes);
+  packageZip.file(packageManifest.tarballName, tarball);
+  const packageArchive = await packageZip.generateAsync({
+    type: "nodebuffer",
+    compression: "STORE",
+    platform: "UNIX",
+  });
+  const preparedBundle = {
+    schema: "openclaw.prepared-npm-bundle/v1",
+    source: { sha: identity.sourceSha },
+    producer: preparedProducer,
+    artifact: {
+      id: "554",
+      name: "openclaw-npm-package-81-1",
+      digest: hash(packageArchive),
+      runId: "81",
+      runAttempt: "1",
+    },
+    package: {
+      name: "openclaw",
+      version: "2026.9.9",
+      fileName: packageManifest.tarballName,
+      sha256: hash(tarball),
+      sourceSha: identity.sourceSha,
+    },
+    corePackages: [],
+    manifestSha256: hash(packageBytes),
+  };
+  const npmManifest = {
+    version: 3,
+    releaseSha: identity.sourceSha,
+    tarballName: "openclaw.tgz",
+    tarballSha256: hash(tarball),
+    producer,
+    preparedBundle,
+    pluginSdkApi: createPluginSdkApiReleaseEvidence({
+      baseRef: "v2026.9.8",
+      baseSha: "c".repeat(40),
+      headSha: identity.sourceSha,
+      workflowSha: identity.workflowSha,
+      diff: { ...diff, digest: hash(JSON.stringify(diff)) },
+    }),
+  };
+  const manifestBytes = JSON.stringify(npmManifest);
+  const zip = new JSZip();
+  zip.file("preflight-manifest.json", manifestBytes);
+  zip.file(npmManifest.tarballName, tarball);
+  const archive = await zip.generateAsync({
+    type: "nodebuffer",
+    compression: "STORE",
+    platform: "UNIX",
+  });
+  const archivePath = join(directory, "qualified-npm.zip");
+  writeFileSync(archivePath, archive);
+  const qualified = {
+    schema: "openclaw.qualified-npm-preflight/v1",
+    source: { sha: identity.sourceSha },
+    producer,
+    preparedBundle,
+    manifestSha256: hash(manifestBytes),
+    artifact: {
+      id: "555",
+      name: `openclaw-npm-preflight-${identity.sourceSha}`,
+      digest: hash(archive),
+      runId: producer.runId,
+      runAttempt: producer.runAttempt,
+    },
+  };
+  const run = {
+    id: 81,
+    run_attempt: 1,
+    head_sha: identity.workflowSha,
+    path: workflow,
+    head_branch: identity.workflowFullRef.replace("refs/heads/", ""),
+    event: "workflow_dispatch",
+    status: "completed",
+    conclusion: "success",
+    repository: { full_name: repository },
+    head_repository: { full_name: repository },
+  };
+  const artifact = {
+    id: 555,
+    name: qualified.artifact.name,
+    digest: `sha256:${qualified.artifact.digest}`,
+    size_in_bytes: archive.length,
+    expired: false,
+    expires_at: "2099-01-01T00:00:00Z",
+    workflow_run: { id: 81, head_sha: identity.workflowSha },
+  };
+  const api = `repos/${repository}/actions`;
+  const responses = {
+    [`${api}/runs/81`]: run,
+    [`${api}/runs/81/attempts/1`]: run,
+    [`${api}/runs/81/attempts/1/jobs?per_page=100&page=1`]: {
+      total_count: 1,
+      jobs: [
+        {
+          id: 901,
+          name: producer.jobName,
+          run_id: 81,
+          run_attempt: 1,
+          head_sha: identity.workflowSha,
+          status: "completed",
+          conclusion: "success",
+        },
+      ],
+    },
+    [`${api}/artifacts/555`]: artifact,
+  };
+  const preload = join(directory, "publication-transport.mjs");
+  writeFileSync(
+    preload,
+    `
+import childProcess from "node:child_process";
+import { readFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const responses = ${JSON.stringify(responses)};
+childProcess.execFileSync = (command, args) => {
+  if (command !== "gh" || args[0] !== "api" || !Object.hasOwn(responses, args[1])) {
+    throw new Error("Unexpected publication fixture subprocess");
+  }
+  for (let index = 2; index < args.length; index += 2) {
+    if ((args[index] !== "--method" || args[index + 1] !== "GET") &&
+        (args[index] !== "--jq" || typeof args[index + 1] !== "string")) {
+      throw new Error("Unexpected publication fixture GitHub operation");
+    }
+  }
+  return JSON.stringify(responses[args[1]]);
+};
+syncBuiltinESMExports();
+globalThis.fetch = async (input, options) => {
+  const url = new URL(input instanceof Request ? input.url : String(input));
+  if (url.href === "https://registry.npmjs.org/openclaw") {
+    return Response.json({ versions: { "2026.9.8": {} }, "dist-tags": { latest: "2026.9.8", beta: "2026.9.8" } });
+  }
+  if (url.origin !== "https://api.github.com" || new Headers(options?.headers).get("authorization") !== "Bearer artifact-fixture-token") {
+    throw new Error("Unexpected publication fixture transport");
+  }
+  const endpoint = url.pathname.slice(1) + url.search;
+  if (endpoint === ${JSON.stringify(`${api}/artifacts/555/zip`)}) return new Response(readFileSync(${JSON.stringify(archivePath)}));
+  if (Object.hasOwn(responses, endpoint)) return Response.json(responses[endpoint]);
+  throw new Error("Unexpected publication fixture endpoint");
+};
+`,
+  );
+  return {
+    GH_TOKEN: "artifact-fixture-token",
+    GITHUB_TOKEN: "",
+    NODE_OPTIONS: `--import ${pathToFileURL(preload).href}`,
+    QUALIFIED_NPM_BUNDLE_JSON: JSON.stringify(qualified),
+  };
+}
 
 function registryEvidence(
   runId = "123",
@@ -209,7 +399,7 @@ describe("retained publication admission", () => {
 
   it.each(["beta", "stable"])(
     "writes fresh %s performance and Telegram evidence through the actual workflow command",
-    (releaseProfile) => {
+    async (releaseProfile) => {
       const telegram = {
         npm_telegram_package_spec: "openclaw@2026.9.9",
         npm_telegram_provider_mode: "live-frontier",
@@ -222,7 +412,10 @@ describe("retained publication admission", () => {
         release_profile: releaseProfile,
       });
       expect(plan.evidenceReuse.requested).toBe(false);
-      const writer = loadManifestWriter();
+      const workflow = parse(readFileSync(".github/workflows/full-release-validation.yml", "utf8"));
+      const writer = workflow.jobs.summary.steps.find(
+        (step: { name: string }) => step.name === "Write release validation manifest",
+      );
       const directory = directories.make("publication-fresh-manifest-");
       const planPath = join(directory, "plan.json");
       const drainPath = join(directory, "drain.json");
@@ -262,7 +455,7 @@ describe("retained publication admission", () => {
         env: {
           ...Object.fromEntries(Object.keys(writer.env).map((key) => [key, ""])),
           ...selectedEnv,
-          ...manifestWriterEnvironment(directory, context.targetRef, context.workflowSha),
+          PATH: process.env.PATH,
           RUNNER_TEMP: directory,
           GITHUB_RUN_ID: context.runId,
           GITHUB_RUN_ATTEMPT: context.runAttempt,
@@ -275,6 +468,11 @@ describe("retained publication admission", () => {
           RUN_RELEASE_SOAK: context.runReleaseSoak,
           RELEASE_EXECUTION_PLAN_PATH: planPath,
           DIAGNOSTIC_DRAIN_PATH: drainPath,
+          ...(await publicationWriterFixture(directory, {
+            sourceSha: context.targetRef,
+            workflowSha: context.workflowSha,
+            workflowFullRef: context.workflowFullRef,
+          })),
         },
       });
       expect(result.status, result.stderr).toBe(0);
@@ -285,7 +483,9 @@ describe("retained publication admission", () => {
         ),
       );
       expect(manifest.releaseProfile).toBe(releaseProfile);
+      // Validation records advisory performance; the publisher owns strict stable gates.
       expect(manifest.controls).toMatchObject({
+        stableSoakRequired: releaseProfile !== "beta",
         performanceBlocking: false,
         performanceReportPublication: "artifact-only",
       });
@@ -298,8 +498,15 @@ describe("retained publication admission", () => {
         allowUnreleasedChangelog: "true",
       });
       expect(manifest.publicationAdmission).toEqual(plan.publicationAdmission);
-      expect(manifest.publishInputs.targetSha).toBe(context.targetRef);
-      expect(manifest.publishInputs.npmDecisions[0].decision).toBe("plan");
+      expect(manifest.publicationArtifacts.npmPreflight).toMatchObject({
+        source: { sha: context.targetRef },
+        producer: { workflowSha: context.workflowSha, runId: "81", runAttempt: "1" },
+      });
+      expect(manifest.publishInputs).toMatchObject({
+        targetSha: context.targetRef,
+        pluginSdkApiAcknowledgement: "",
+        npmDecisions: [{ packageName: "openclaw", packageVersion: "2026.9.9", decision: "plan" }],
+      });
     },
   );
 
@@ -636,7 +843,10 @@ describe("retained publication admission", () => {
         sourceManifest,
       },
     };
-    const writer = loadManifestWriter();
+    const workflow = parse(readFileSync(".github/workflows/full-release-validation.yml", "utf8"));
+    const writer = workflow.jobs.summary.steps.find(
+      (step: { name: string }) => step.name === "Write release validation manifest",
+    );
     const directory = directories.make("publication-retained-root-");
     const planPath = join(directory, "plan.json");
     const drainPath = join(directory, "drain.json");
@@ -646,7 +856,7 @@ describe("retained publication admission", () => {
       encoding: "utf8",
       env: {
         ...Object.fromEntries(Object.keys(writer.env).map((key) => [key, ""])),
-        ...manifestWriterEnvironment(directory, context.targetRef, context.workflowSha),
+        PATH: process.env.PATH,
         RUNNER_TEMP: directory,
         GITHUB_RUN_ID: context.runId,
         GITHUB_RUN_ATTEMPT: context.runAttempt,
@@ -1118,8 +1328,11 @@ describe("full release artifact contract", () => {
     { reuse: true, source: true },
   ])(
     "writes all matrix evidence with reuse=$reuse source=$source without argv size limits",
-    ({ reuse, source }) => {
-      const writer = loadManifestWriter();
+    async ({ reuse, source }) => {
+      const workflow = parse(readFileSync(".github/workflows/full-release-validation.yml", "utf8"));
+      const writer = workflow.jobs.summary.steps.find(
+        (entry: { name: string }) => entry.name === "Write release validation manifest",
+      );
       const children = fullMatrixChildren();
       const drain = fullMatrixDecision(children);
       const expectedChildren = Object.fromEntries(
@@ -1247,7 +1460,7 @@ describe("full release artifact contract", () => {
         env: {
           ...Object.fromEntries(Object.keys(writer.env).map((key) => [key, ""])),
           EXTENSION_TEST_EXCLUDE_PATTERNS_JSON: "[]",
-          ...manifestWriterEnvironment(dir, SHA, "d".repeat(40)),
+          PATH: process.env.PATH,
           RUNNER_TEMP: dir,
           GITHUB_RUN_ID: "124",
           GITHUB_RUN_ATTEMPT: "2",
@@ -1268,6 +1481,13 @@ describe("full release artifact contract", () => {
           RUN_RELEASE_SOAK: "true",
           RELEASE_EXECUTION_PLAN_PATH: planPath,
           DIAGNOSTIC_DRAIN_PATH: drainPath,
+          ...(source
+            ? await publicationWriterFixture(dir, {
+                sourceSha: SHA,
+                workflowSha: "d".repeat(40),
+                workflowFullRef: "refs/heads/release-ci/test",
+              })
+            : {}),
         },
       });
       expect(result.status, result.stderr).toBe(0);
@@ -1278,7 +1498,15 @@ describe("full release artifact contract", () => {
       expect(Buffer.byteLength(bytes)).toBeLessThan(MAX_RELEASE_ARTIFACT_BYTES);
       const manifest = JSON.parse(bytes);
       if (source) {
-        expect(manifest.publishInputs.targetSha).toBe(SHA);
+        expect(manifest.publicationArtifacts.npmPreflight).toMatchObject({
+          source: { sha: SHA },
+          producer: { workflowSha: "d".repeat(40), runId: "81", runAttempt: "1" },
+        });
+        expect(manifest.publishInputs).toMatchObject({
+          targetSha: SHA,
+          pluginSdkApiAcknowledgement: "",
+          npmDecisions: [{ packageName: "openclaw", packageVersion: "2026.9.9", decision: "plan" }],
+        });
         expect(
           validatePublicationSourceBinding(manifest, { sourceAdmissionContract: "1" }),
         ).toEqual(sourceAdmission);
