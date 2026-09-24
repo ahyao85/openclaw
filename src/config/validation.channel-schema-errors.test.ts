@@ -42,6 +42,63 @@ function validate(origin: PluginManifestRecord["origin"]) {
 }
 
 describe("channel schema error ownership", () => {
+  const closedBranch = {
+    type: "object",
+    properties: { mode: { type: "string" } },
+    additionalProperties: false,
+  };
+  const declaredBranch = {
+    type: "object",
+    properties: { mode: { type: "string" }, deny: { type: "boolean" } },
+  };
+  const restrictedValue = { mode: "secure", deny: true };
+  it.each([
+    {
+      name: "allOf",
+      schema: { ...declaredBranch, allOf: [closedBranch] },
+      value: restrictedValue,
+    },
+    {
+      name: "dependentSchemas",
+      schema: { ...declaredBranch, dependentSchemas: { mode: closedBranch } },
+      value: restrictedValue,
+    },
+    {
+      name: "a reference sibling",
+      schema: { ...closedBranch, $ref: "#/$defs/Declared", $defs: { Declared: declaredBranch } },
+      value: restrictedValue,
+    },
+    {
+      name: "overlapping properties and patterns",
+      schema: {
+        type: "object",
+        properties: { room: declaredBranch },
+        patternProperties: { "^room$": closedBranch },
+      },
+      value: { room: restrictedValue },
+    },
+    {
+      name: "contains alongside items",
+      schema: {
+        type: "object",
+        properties: {
+          entries: { type: "array", items: closedBranch, contains: declaredBranch },
+        },
+      },
+      value: { entries: [restrictedValue, { mode: "secure" }] },
+    },
+  ])("does not remove a declared field rejected by $name", ({ schema, value }) => {
+    const registry = createRegistry("global", schema);
+    const original = structuredClone(value);
+    expect(
+      validateConfigObjectRawWithPlugins(
+        { channels: { "schema-channel": value } },
+        { schemaValidation: "runtime", pluginMetadataSnapshot: { manifestRegistry: registry } },
+      ).ok,
+    ).toBe(false);
+    expect(value).toEqual(original);
+  });
+
   it.each(["bundled", "global"] as const)("projects extras using the %s schema owner", (origin) => {
     const registry = createRegistry(origin, {
       type: "object",

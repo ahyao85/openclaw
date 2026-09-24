@@ -439,14 +439,67 @@ const schemaMapKeywords = new Set([
   "dependencies",
 ]);
 
-function schemaPropertyNames(path: readonly (string | number)[]): string[] {
+const semanticSchemaKeywords = [
+  "$ref",
+  "$dynamicRef",
+  "$recursiveRef",
+  "allOf",
+  "anyOf",
+  "oneOf",
+  "not",
+  "if",
+  "then",
+  "else",
+  "dependentSchemas",
+  "dependentRequired",
+  "dependencies",
+  "contains",
+  "prefixItems",
+  "unevaluatedProperties",
+  "unevaluatedItems",
+] as const;
+
+function runtimeSchemaPropertyNames(
+  schema: unknown,
+  path: readonly (string | number)[],
+): string[] | undefined {
   const names: string[] = [];
-  for (let index = 0; index < path.length; index += 1) {
+  let current = schema;
+  for (let index = 0; index <= path.length; index += 1) {
+    if (current === null || typeof current !== "object") {
+      return undefined;
+    }
+    // Other branches can declare or depend on a property rejected here. Removing
+    // it can satisfy the schema by changing its meaning, even when revalidation passes.
+    if (semanticSchemaKeywords.some((keyword) => Object.hasOwn(current, keyword))) {
+      return undefined;
+    }
+    const patterns = asOptionalObjectRecord(Reflect.get(current, "patternProperties"));
+    const properties = asOptionalObjectRecord(Reflect.get(current, "properties"));
+    // One pattern with no named properties is a record. Multiple independently
+    // applied shapes can disagree about whether a member's property is declared.
+    if (
+      patterns &&
+      (Object.keys(patterns).length > 1 || (properties && Object.keys(properties).length > 0))
+    ) {
+      return undefined;
+    }
+    if (index === path.length) {
+      return names;
+    }
     const keyword = path[index];
+    if (keyword === undefined) {
+      return undefined;
+    }
+    current = Reflect.get(current, keyword);
     if (typeof keyword !== "string" || !schemaMapKeywords.has(keyword)) {
       continue;
     }
     const name = path[++index];
+    if (current === null || typeof current !== "object" || name === undefined) {
+      return undefined;
+    }
+    current = Reflect.get(current, name);
     if (keyword === "properties" && typeof name === "string") {
       names.push(name);
     }
@@ -564,6 +617,7 @@ function validateJsonSchemaValueInternal(
       const schema = normalizeJsonSchemaForTypeBox(cached.schema);
       const paths = errors.flatMap((error) => {
         const schemaPath = resolveTypeBoxInstancePath(schema, (error.schemaPath ?? "#").slice(1));
+        const propertyNames = schemaPath && runtimeSchemaPropertyNames(schema, schemaPath);
         const owner = schemaPath?.reduce<unknown>(
           (current, key) =>
             current !== null && typeof current === "object" ? Reflect.get(current, key) : undefined,
@@ -573,8 +627,9 @@ function validateJsonSchemaValueInternal(
         // Only false marks extras; never omit an entire configured owner as recovery.
         if (
           !schemaPath ||
+          !propertyNames ||
           asOptionalObjectRecord(owner)?.additionalProperties !== false ||
-          !isRuntimeConfigUnknownPath(schemaPropertyNames(schemaPath))
+          !isRuntimeConfigUnknownPath(propertyNames)
         ) {
           return [];
         }
