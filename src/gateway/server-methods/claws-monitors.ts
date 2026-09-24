@@ -256,6 +256,11 @@ export const clawsMonitorHandlers = {
       }
       await waitForDrain(context, input.agentId, input.phase === "drain", assertCurrent);
       const journal = assertCurrent();
+      if (!isLocallyDrained(context, input.agentId, input.phase === "drain")) {
+        throw new Error(
+          "Gateway cleanup state changed before database preparation; retry Claw removal.",
+        );
+      }
       if (input.phase === "quiesce") {
         await prepareAgentDeleteDatabases(
           context.getRuntimeConfig(),

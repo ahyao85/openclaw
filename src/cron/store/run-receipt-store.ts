@@ -477,7 +477,7 @@ export function exactCronRunReceiptMatches(
 }
 
 export function isCronRunReceiptOwnerStale(
-  candidate: CronRunReceiptOwnerObservation,
+  candidate: CronRunReceiptOwnerObservation | CronRunReceiptHandle,
   nowMs = Date.now(),
 ): boolean {
   return ownerStale(candidate, nowMs);
