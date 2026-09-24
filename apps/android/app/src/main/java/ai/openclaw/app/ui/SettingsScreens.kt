@@ -3520,7 +3520,7 @@ internal fun SettingsMetricPanel(rows: List<SettingsMetric>) {
 }
 
 @Composable
-private fun SettingsIconMark(icon: ImageVector) {
+internal fun SettingsIconMark(icon: ImageVector) {
   Surface(
     modifier = Modifier.size(30.dp),
     shape = CircleShape,

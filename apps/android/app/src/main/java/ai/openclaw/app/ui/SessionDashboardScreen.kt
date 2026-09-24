@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.DesktopWindows
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -89,6 +90,7 @@ internal fun SessionDashboardScreen(
             onClick = { showingDesktop = true },
           )
         }
+        SettingsIconMark(icon = Icons.Outlined.Dashboard)
       }
       Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
         val page = controlPage
