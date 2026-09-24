@@ -7,17 +7,22 @@ export function captureRenderState(root: HTMLElement) {
       ? focusedElement.dataset.tab
       : null;
   const tabScrollLeft = tabBar?.scrollLeft ?? 0;
-  return { focusedId, focusedTab, tabScrollLeft };
+  const tabClientWidth = tabBar?.clientWidth ?? 0;
+  return { focusedId, focusedTab, tabScrollLeft, tabClientWidth };
 }
 
 export function restoreRenderState(
   root: HTMLElement,
   snapshot: ReturnType<typeof captureRenderState>,
 ) {
-  const { focusedId, focusedTab, tabScrollLeft } = snapshot;
-  // The six tabs use data-tab identities. Synchronous focus handlers can reveal
-  // a tab even with preventScroll, so restore the user's viewport after focus.
+  const { focusedId, focusedTab, tabScrollLeft, tabClientWidth } = snapshot;
   const tabBar = root.querySelector<HTMLElement>("nav.tab-bar");
+  const sameWidth = tabBar?.clientWidth === tabClientWidth;
+  // A resized scrollport needs the focus handler's reveal to survive. Unchanged
+  // polling instead preserves the user's viewport, even after focus reveals a tab.
+  if (tabBar && !sameWidth) {
+    tabBar.scrollLeft = tabScrollLeft;
+  }
   if (focusedTab) {
     tabBar
       ?.querySelector<HTMLButtonElement>(`button[data-tab="${CSS.escape(focusedTab)}"]`)
@@ -28,7 +33,7 @@ export function restoreRenderState(
       el.focus();
     }
   }
-  if (tabBar) {
+  if (tabBar && sameWidth) {
     tabBar.scrollLeft = tabScrollLeft;
   }
 }

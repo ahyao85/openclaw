@@ -54,6 +54,127 @@ describe("QA Lab tab navigation retention", () => {
     await vi.advanceTimersByTimeAsync(1_000);
   }
 
+  function mockTabGeometry(root: HTMLElement) {
+    const offsets = new WeakMap<Element, number>();
+    const width = (nav: Element) =>
+      nav.closest(".app-shell--evidence-focus, .app-shell--sidebar-collapsed") ? 800 : 440;
+    // jsdom has no layout. Model the shell width and native clamping while the
+    // actual app binding and revealTab own every focus-driven scroll adjustment.
+    const clientWidth = vi
+      .spyOn(Element.prototype, "clientWidth", "get")
+      .mockImplementation(function (this: Element) {
+        return root.contains(this) && this.matches("nav.tab-bar") ? width(this) : 0;
+      });
+    const scrollGet = vi.spyOn(Element.prototype, "scrollLeft", "get").mockImplementation(function (
+      this: Element,
+    ) {
+      return offsets.get(this) ?? 0;
+    });
+    const scrollSet = vi.spyOn(Element.prototype, "scrollLeft", "set").mockImplementation(function (
+      this: Element,
+      value: number,
+    ) {
+      offsets.set(this, Math.max(0, Math.min(value, 600 - width(this))));
+    });
+    const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element,
+    ) {
+      if (root.contains(this) && this.matches("nav.tab-bar")) {
+        return new DOMRect(0, 0, width(this), 40);
+      }
+      const nav = this.parentElement;
+      if (root.contains(this) && nav?.matches("nav.tab-bar") && this.matches("button[data-tab]")) {
+        return new DOMRect([...nav.children].indexOf(this) * 100 - nav.scrollLeft, 0, 100, 40);
+      }
+      return new DOMRect();
+    });
+    return () => {
+      rect.mockRestore();
+      scrollSet.mockRestore();
+      scrollGet.mockRestore();
+      clientWidth.mockRestore();
+    };
+  }
+
+  it.each([false, true])(
+    "keeps Capture visible when leaving Evidence (sidebar collapsed=%s)",
+    async (collapsed) => {
+      localStorage.setItem("qa-lab-sidebar-collapsed", collapsed ? "1" : "0");
+      const { root, snapshot } = await mountNavigation();
+      const restoreGeometry = mockTabGeometry(root);
+      try {
+        root.querySelector<HTMLButtonElement>('[data-tab="evidence"]')!.click();
+        const capture = root.querySelector<HTMLButtonElement>('[data-tab="capture"]')!;
+        capture.focus();
+        expect(capture.parentElement!.clientWidth).toBe(800);
+        expect(capture.parentElement!.scrollLeft).toBe(0);
+        capture.click();
+
+        const next = root.querySelector<HTMLButtonElement>('[data-tab="capture"]')!;
+        const nav = next.parentElement!;
+        expect(document.activeElement).toBe(next);
+        expect(next.classList.contains("active")).toBe(true);
+        expect(nav.clientWidth).toBe(collapsed ? 800 : 440);
+        expect(nav.scrollLeft).toBe(collapsed ? 0 : 160);
+        expect(next.getBoundingClientRect().right).toBeLessThanOrEqual(nav.clientWidth);
+
+        await pollWithMessage(snapshot);
+        const refreshed = root.querySelector<HTMLButtonElement>('[data-tab="capture"]')!;
+        expect(document.activeElement).toBe(refreshed);
+        expect(refreshed.parentElement!.scrollLeft).toBe(nav.scrollLeft);
+      } finally {
+        restoreGeometry();
+      }
+    },
+  );
+
+  it("clamps the saved offset before restoring focus when Evidence widens the tab bar", async () => {
+    const { root } = await mountNavigation();
+    const restoreGeometry = mockTabGeometry(root);
+    try {
+      const capture = root.querySelector<HTMLButtonElement>('[data-tab="capture"]')!;
+      capture.focus();
+      expect(capture.parentElement!.scrollLeft).toBe(160);
+      const evidence = root.querySelector<HTMLButtonElement>('[data-tab="evidence"]')!;
+      evidence.focus();
+      evidence.click();
+
+      const next = root.querySelector<HTMLButtonElement>('[data-tab="evidence"]')!;
+      expect(document.activeElement).toBe(next);
+      expect(next.classList.contains("active")).toBe(true);
+      expect(next.parentElement!.clientWidth).toBe(800);
+      expect(next.parentElement!.scrollLeft).toBe(0);
+      expect(next.getBoundingClientRect().left).toBeGreaterThanOrEqual(0);
+    } finally {
+      restoreGeometry();
+    }
+  });
+
+  it.each([false, true])(
+    "keeps non-tab focus during width changes (outside focus=%s)",
+    async (outside) => {
+      const { root } = await mountNavigation();
+      const restoreGeometry = mockTabGeometry(root);
+      try {
+        const button = document.createElement("button");
+        document.body.append(button);
+        if (outside) {
+          button.focus();
+        }
+        const focused = document.activeElement;
+        root.querySelector<HTMLElement>("nav.tab-bar")!.scrollLeft = 120;
+        root.querySelector<HTMLButtonElement>('[data-tab="evidence"]')!.click();
+        expect(root.querySelector<HTMLElement>("nav.tab-bar")!.scrollLeft).toBe(0);
+        expect(document.activeElement).toBe(focused);
+        root.querySelector<HTMLButtonElement>('[data-tab="capture"]')!.click();
+        expect(root.querySelector<HTMLElement>("nav.tab-bar")!.scrollLeft).toBe(0);
+        expect(document.activeElement).toBe(focused);
+      } finally {
+        restoreGeometry();
+      }
+    },
+  );
+
   it.each(["chat", "results", "evidence", "report", "events", "capture"])(
     "retains the focused %s tab and offset when polling replaces the navigation",
     async (tab) => {
