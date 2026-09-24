@@ -470,9 +470,10 @@ function runtimeSchemaPropertyNames(
     if (current === null || typeof current !== "object") {
       return undefined;
     }
+    const owner = current;
     // Other branches can declare or depend on a property rejected here. Removing
     // it can satisfy the schema by changing its meaning, even when revalidation passes.
-    if (semanticSchemaKeywords.some((keyword) => Object.hasOwn(current, keyword))) {
+    if (semanticSchemaKeywords.some((keyword) => Object.hasOwn(owner, keyword))) {
       return undefined;
     }
     const patterns = asOptionalObjectRecord(Reflect.get(current, "patternProperties"));
