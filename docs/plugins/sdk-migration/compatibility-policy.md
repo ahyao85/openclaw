@@ -214,6 +214,12 @@ The result reports `changed` and the retained `backupPath`; a no-op creates no
 backup. Plugins classify their own historical jobs and retain ambiguous rows.
 Older hosts may omit these methods, so a migration must check availability.
 
+These helpers follow the [native-plugin trust model](/plugins/architecture#execution-model):
+eligible plugins run with host privileges and own historical job classification.
+The host enforces installation provenance, offline repair authority, unchanged
+definitions, verified backup, and atomic persistence. The API does not promise
+isolation between mutually untrusted native plugins.
+
 The setup-entry `legacyStateMigrations` option and feature flag,
 `setupFeatures.legacyStateMigrations`,
 `BundledChannelLegacyStateMigrationDetector`, and
