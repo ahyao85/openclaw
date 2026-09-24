@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { safeParseJson } from "@openclaw/normalization-core/json-coercion";
 import { Check } from "typebox/value";
 import {
   GATEWAY_OWNER_PROFILE_ID,
@@ -50,12 +51,7 @@ export function userChannelIdentitySubject(identity: UserChannelIdentity): strin
 }
 
 function readIdentity(subject: string): UserChannelIdentity | undefined {
-  let tuple: unknown;
-  try {
-    tuple = JSON.parse(subject);
-  } catch {
-    return undefined;
-  }
+  const tuple = safeParseJson(subject);
   if (!Array.isArray(tuple) || tuple.length !== 3) {
     return undefined;
   }
