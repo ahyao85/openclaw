@@ -45,7 +45,7 @@ export async function withRetainedUpdateRuntime<T>(
       await operation(async ({ mutationRoots, installTarget, env, timeoutMs, assertCurrent }) => {
         assertCurrent();
         if (prepared) {
-          return;
+          return undefined;
         }
         const root = await resolveOpenClawPackageRoot({ moduleUrl });
         if (!root) {
@@ -61,7 +61,7 @@ export async function withRetainedUpdateRuntime<T>(
             (entry) => isPathInside(entry, sourceRoot) || isPathInside(sourceRoot, entry),
           )
         ) {
-          return;
+          return undefined;
         }
         // Package inventories include their module owner, and native activation
         // replaces its whole project. Scratch must be a sibling of both boundaries.
