@@ -1,8 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import {
-  hasCurrentGitCoauthorTrailers,
-  prepareGitCoauthorAttribution,
-} from "../agents/git-coauthor-attribution.js";
+import { prepareGitCoauthorAttribution } from "../agents/git-coauthor-attribution.js";
 import type { PreparedGitHubPublicationIdentity } from "../agents/github-tool-identity.js";
 import { resolveControlUiSessionUrl } from "../config/control-ui-link-base.js";
 import type { SessionRepositoryWorkspaceRecord } from "../state/session-repository-workspaces.types.js";
@@ -23,6 +20,7 @@ import {
 } from "./github-publication-failure.js";
 import {
   appendGitHubPublicationMessage,
+  hasGitHubPublicationMessageFooter,
   requirePublicationCommand,
   runPublicationCommand,
 } from "./github-publication-git-transport.js";
@@ -342,7 +340,11 @@ export async function executeRepositoryGitHubPublication(params: {
     if (
       headCommit &&
       remoteHead !== headCommit &&
-      !hasCurrentGitCoauthorTrailers(preparedCommitMessage ?? "", attribution)
+      !hasGitHubPublicationMessageFooter(
+        preparedCommitMessage ?? "",
+        attribution?.trailers ?? [],
+        "OpenClaw-Publication: " + row.request_id,
+      )
     ) {
       throw new GitHubPublicationCreditChangedError();
     }

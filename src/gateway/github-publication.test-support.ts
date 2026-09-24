@@ -74,15 +74,10 @@ vi.mock("../agents/worktrees/git-lock.js", async (importOriginal) => ({
   unlockWorktree: vi.fn(async () => undefined),
 }));
 
-vi.mock("../agents/git-coauthor-attribution.js", async (importOriginal) => {
-  const { hasCurrentGitCoauthorTrailers } =
-    await importOriginal<typeof import("../agents/git-coauthor-attribution.js")>();
-  return {
-    resolveGitCoauthorAttribution: mocks.attribution,
-    prepareGitCoauthorAttribution: mocks.prepareAttribution,
-    hasCurrentGitCoauthorTrailers,
-  };
-});
+vi.mock("../agents/git-coauthor-attribution.js", () => ({
+  resolveGitCoauthorAttribution: mocks.attribution,
+  prepareGitCoauthorAttribution: mocks.prepareAttribution,
+}));
 
 vi.mock("../agents/worktrees/service.js", () => ({
   managedWorktrees: {

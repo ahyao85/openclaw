@@ -11,6 +11,8 @@ import {
   persistPublicationTestSession,
   root,
 } from "./github-publication.test-support.js";
+import { execFileSync } from "node:child_process";
+import os from "node:os";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { GIT_COAUTHOR_PREFERENCE_KEY } from "../../packages/gateway-protocol/src/schema/user-profile-constants.js";
 import { createInitialSubagentSession } from "../agents/subagents/spawn/subagent-spawn-session-patch.js";
@@ -52,6 +54,40 @@ async function prepareRealPublicationCredit() {
 
 describe("Gateway GitHub publication attribution", () => {
   installGitHubPublicationTestHarness();
+
+  it("emits a Git-recognized coauthor trailer even when the title contains the exact credit", async () => {
+    await persistPublicationTestSession();
+    await prepareRealPublicationCredit();
+    const trailer = "Co-authored-by: alice <7+alice@users.noreply.github.com>";
+    const coordinator = createGitHubPublicationCoordinator({
+      placements: createWorkerSessionPlacementStore({ database: openOpenClawStateDatabase() }),
+    });
+    const result = await coordinator.requestForSession({
+      agentId: "main",
+      sessionKey: SESSION_KEY,
+      idempotencyKey: "credit-in-title",
+      title: trailer,
+    });
+
+    expect(result.status).toBe("published");
+    const message = commandCalls.find(({ argv }) => argv.includes("commit-tree"))?.input;
+    expect(message).toBeDefined();
+    const parsed = execFileSync("git", ["interpret-trailers", "--parse", "--no-divider"], {
+      cwd: root,
+      input: message,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_CONFIG_GLOBAL: os.devNull,
+        GIT_CONFIG_SYSTEM: os.devNull,
+        GIT_CONFIG_COUNT: "0",
+      },
+    });
+    expect(parsed.trim().split("\n")).toEqual([
+      trailer,
+      `OpenClaw-Publication: ${result.requestId}`,
+    ]);
+  });
 
   it.each(
     (["local", "repository"] as const).flatMap((surface) =>
@@ -181,40 +217,59 @@ describe("Gateway GitHub publication attribution", () => {
     },
   );
 
-  it("does not resume an unpushed checkpoint commit containing revoked credit", async () => {
-    const repository = await createRepositoryPublicationFixture(checkpoint);
-    const person = await prepareRealPublicationCredit();
-    const transport = mocks.runCommand.getMockImplementation()!;
-    mocks.runCommand.mockImplementation(async (argv: string[], options) => {
-      if (argv.includes("graphql")) {
-        throw new Error("Synthetic interruption before the remote ref update");
+  it.each(["revoked", "body-only"] as const)(
+    "does not resume an unpushed checkpoint commit containing %s credit",
+    async (credit) => {
+      const repository = await createRepositoryPublicationFixture(checkpoint);
+      const person = await prepareRealPublicationCredit();
+      const transport = mocks.runCommand.getMockImplementation()!;
+      mocks.runCommand.mockImplementation(async (argv: string[], options) => {
+        if (argv.includes("graphql")) {
+          throw new Error("Synthetic interruption before the remote ref update");
+        }
+        if (
+          credit === "body-only" &&
+          argv.includes("POST") &&
+          argv.some((arg) => arg.endsWith("/git/commits"))
+        ) {
+          const commit = JSON.parse(options.input);
+          const marker = commit.message.match(/^OpenClaw-Publication: .+$/mu)?.[0];
+          expect(marker).toBeDefined();
+          // Retain a real Git object produced by an older publisher whose credit was only prose.
+          commit.message = `Prepared change\n\nCo-authored-by: alice <7+alice@users.noreply.github.com>\n\nThe line above is quoted attribution.\n\n${marker}\n`;
+          return await transport(argv, { ...options, input: JSON.stringify(commit) });
+        }
+        return await transport(argv, options);
+      });
+      const request = {
+        agentId: "main",
+        sessionKey: SESSION_KEY,
+        idempotencyKey: "unpushed-credit-recovery",
+      };
+      const interrupted = await repository.coordinator.requestForSession(request);
+      expect(interrupted.status).toBe("requested");
+      expect(readRepositoryGitHubPublication(interrupted.requestId)?.head_commit).toBeTruthy();
+      expect(repository.runtime.head).toBeNull();
+      expect(repository.runtime.effects).toEqual([]);
+
+      if (credit === "revoked") {
+        expect(setUserPreferences(person.id, { [GIT_COAUTHOR_PREFERENCE_KEY]: false }).ok).toBe(
+          true,
+        );
       }
-      return await transport(argv, options);
-    });
-    const request = {
-      agentId: "main",
-      sessionKey: SESSION_KEY,
-      idempotencyKey: "unpushed-credit-recovery",
-    };
-    const interrupted = await repository.coordinator.requestForSession(request);
-    expect(interrupted.status).toBe("requested");
-    expect(readRepositoryGitHubPublication(interrupted.requestId)?.head_commit).toBeTruthy();
-    expect(repository.runtime.head).toBeNull();
-    expect(repository.runtime.effects).toEqual([]);
+      mocks.runCommand.mockClear().mockImplementation(transport);
+      const resumed = await repository.coordinator.requestForSession(request);
 
-    expect(setUserPreferences(person.id, { [GIT_COAUTHOR_PREFERENCE_KEY]: false }).ok).toBe(true);
-    mocks.runCommand.mockClear().mockImplementation(transport);
-    const resumed = await repository.coordinator.requestForSession(request);
-
-    expect(resumed).toMatchObject({
-      status: "failed",
-      code: "identity_changed",
-      nextAction: expect.stringMatching(/credit/i),
-    });
-    expect(repository.runtime.head).toBeNull();
-    expect(repository.runtime.effects).toEqual([]);
-    expect(mocks.runCommand.mock.calls.some(([argv]) => argv.includes("graphql"))).toBe(false);
-  });
+      expect(resumed).toMatchObject({
+        status: "failed",
+        code: "identity_changed",
+        nextAction: expect.stringMatching(/credit/i),
+      });
+      expect(repository.runtime.head).toBeNull();
+      expect(repository.runtime.effects).toEqual([]);
+      expect(mocks.runCommand.mock.calls.some(([argv]) => argv.includes("graphql"))).toBe(false);
+    },
+  );
 
   it("publishes inherited and direct human credit once with current consent and a final session backlink", async () => {
     const config = {
@@ -228,6 +283,7 @@ describe("Gateway GitHub publication attribution", () => {
     mocks.attribution.mockImplementation(resolveGitCoauthorAttribution);
     const people = [
       { accountId: 7, login: "alice" },
+      // Grace contributed earlier in the source session; session-level credit follows delegation.
       { accountId: 9, login: "grace" },
       { accountId: 11, login: "opted-out" },
     ].map((identity) =>
@@ -255,6 +311,18 @@ describe("Gateway GitHub publication attribution", () => {
       collect: false,
     });
     expect(child.status).toBe("ok");
+    const laterContributor = syncGitHubIdentity({
+      identity: { accountId: 13, login: "later-contributor" },
+      authenticationAlias: { kind: "email", email: "later-contributor@example.test" },
+    });
+    recordSessionParticipant(
+      { agentId: "main", sessionKey: SESSION_KEY },
+      {
+        identity: { type: "profile", id: laterContributor.id },
+        promptedAt: 3,
+        sessionAgentId: "main",
+      },
+    );
     const worktree = {
       id: "delegated-worktree",
       name: "delegated-publication",

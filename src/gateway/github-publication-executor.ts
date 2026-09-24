@@ -1,10 +1,7 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { readNonBlankString } from "@openclaw/normalization-core/string-coerce";
 import type { SessionGitHubPublicationResult } from "../../packages/gateway-protocol/src/schema/session-github-publication.js";
-import {
-  hasCurrentGitCoauthorTrailers,
-  prepareGitCoauthorAttribution,
-} from "../agents/git-coauthor-attribution.js";
+import { prepareGitCoauthorAttribution } from "../agents/git-coauthor-attribution.js";
 import type { PreparedGitHubPublicationIdentity } from "../agents/github-tool-identity.js";
 import { resolveControlUiSessionUrl } from "../config/control-ui-link-base.js";
 import { gitNullConfigPath } from "../infra/git-exec.js";
@@ -47,6 +44,7 @@ import {
   githubPublicationRemoteHeadArgs,
   githubPublicationUpdateRefArgs,
   hasGitHubPublicationWorkflowChanges,
+  hasGitHubPublicationMessageFooter,
   requirePublicationCommand as requireCommand,
   runPublicationCommand as runCommand,
 } from "./github-publication-git-transport.js";
@@ -470,7 +468,7 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
     if (
       markerPresent &&
       remoteHead !== headCommit &&
-      !hasCurrentGitCoauthorTrailers(currentMessage, attribution)
+      !hasGitHubPublicationMessageFooter(currentMessage, attribution?.trailers ?? [], marker)
     ) {
       throw new GitHubPublicationCreditChangedError();
     }

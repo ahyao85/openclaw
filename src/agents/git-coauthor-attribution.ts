@@ -37,19 +37,6 @@ type PreparedGitCoauthorAttribution = {
   isCurrent: () => boolean;
 };
 
-/** Recovery can reuse a prepared commit only while its recorded public credit still matches. */
-export function hasCurrentGitCoauthorTrailers(
-  message: string,
-  attribution: GitCoauthorAttribution | undefined,
-): boolean {
-  const actual = message
-    .split(/\r?\n/u)
-    .filter((line) => /^co-authored-by:/iu.test(line.trim()))
-    .map((line) => line.trim());
-  const expected = attribution?.trailers ?? [];
-  return actual.length === expected.length && expected.every((trailer) => actual.includes(trailer));
-}
-
 export async function resolveGitCoauthorAttribution(
   params: GitCoauthorAttributionParams,
 ): Promise<GitCoauthorAttribution | undefined> {
