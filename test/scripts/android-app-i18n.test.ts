@@ -47,21 +47,23 @@ describe("Android app i18n resources", () => {
     const kotlinPath = path.resolve(
       "apps/android/app/src/main/java/ai/openclaw/app/i18n/NativeStringResources.kt",
     );
+    const catalog = await buildAndroidAppI18nCatalog();
+    const currentKotlin = catalog.kotlin;
     const obsoleteKotlin = '    "Talk stopped" to R.string.native_c38a575f77e9b336,\n';
     const obsoleteString =
       '    <string name="native_c38a575f77e9b336" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Talk stopped"</string>\n';
-    const catalog = await buildAndroidAppI18nCatalog();
-    const currentKotlin = catalog.kotlin;
     const warnings: string[] = [];
     const options = { reportObsolete: (message: string) => warnings.push(message) };
     const basePath = path.resolve("apps/android/app/src/main/res/values/strings.xml");
     try {
       generatedOverrides.set(kotlinPath, currentKotlin.replace("  )\n", `${obsoleteKotlin}  )\n`));
-      // Post-merge refresh can leave committed rows pending; isolate this fixture's only drift.
+      // Source changes may await locale refresh; the fixture needs only obsolete drift.
       for (const [filePath, current] of catalog.resources) {
+        const appStrings =
+          filePath.includes("/app/src/main/res/") && filePath.endsWith("/strings.xml");
         generatedOverrides.set(
           filePath,
-          filePath.includes("/app/src/main/res/") && filePath.endsWith("/strings.xml")
+          appStrings
             ? current.replace("</resources>\n", `${obsoleteString}</resources>\n`)
             : current,
         );
