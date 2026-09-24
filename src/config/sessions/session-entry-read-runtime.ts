@@ -310,9 +310,8 @@ export async function readSessionEntryInWorker(
           await owner.refreshBeforeDispatch(assertRetainedTarget);
           assertRetainedTarget();
           await execution.prepare(source);
-          return execution.runExisting(
-            source,
-            (worker) => worker.execute({ type: "session.entry.read", input: { sessionKey } }),
+          return execution.runExisting(source, (worker) =>
+            worker.execute({ type: "session.entry.read", input: { sessionKey } }),
           );
         });
         await owner.revalidateTarget();

@@ -4,7 +4,6 @@ import type { Worker } from "node:worker_threads";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
-import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
 import { createSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
 import {
   createOpenClawAgentDatabaseClaim,
@@ -329,12 +328,7 @@ it.each([
       return;
     }
     await expect(
-      generation.run(
-        source,
-        async () => "opened",
-        undefined,
-        proof === "prepared-existing" ? readDatabasePathIdentitySync(database.path) : undefined,
-      ),
+      generation.run(source, async () => "opened", undefined, proof === "prepared-existing"),
     ).resolves.toBe("opened");
     if (proof === "prepared-existing") {
       expect(quickCheck).toHaveBeenCalledOnce();
