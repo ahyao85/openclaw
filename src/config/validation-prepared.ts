@@ -30,7 +30,8 @@ export function validatePreparedPluginSchemaValue(
     previous &&
     (previous.schema === params.schema || isDeepStrictEqual(previous.schema, params.schema)) &&
     previous.origin === params.origin &&
-    previous.ignoreUnknownProperties === params.ignoreUnknownProperties &&
+    (previous.ignoreUnknownProperties === params.ignoreUnknownProperties ||
+      (previous.result.ok && !previous.result.ignoredPaths?.length)) &&
     isDeepStrictEqual(previous.input, params.value)
   ) {
     return structuredClone(previous.result);

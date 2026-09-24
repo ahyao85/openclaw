@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isSecretRef } from "../config/types.secrets.js";
+import { omitRuntimeConfigPaths } from "../config/validation-runtime.js";
 import { requestActiveCronJobCancellationByDeclarationKeyPrefix } from "../cron/active-jobs.js";
 import { resolveSkillWorkshopConfig } from "../skills/workshop/config.js";
 import { isRecord } from "../utils.js";
@@ -14,30 +15,34 @@ function projectCanonicalSecretRefsOntoRuntime(
   if (isSecretRef(sourceValue)) {
     return sourceValue;
   }
-  if (Array.isArray(runtimeValue) && Array.isArray(sourceValue)) {
-    return runtimeValue.map((entry, index) =>
-      projectCanonicalSecretRefsOntoRuntime(sourceValue[index], entry),
+  if (Array.isArray(sourceValue)) {
+    const runtimeArray = Array.isArray(runtimeValue) ? runtimeValue : [];
+    return sourceValue.map((entry, index) =>
+      projectCanonicalSecretRefsOntoRuntime(entry, runtimeArray[index]),
     );
   }
-  if (isRecord(runtimeValue) && isRecord(sourceValue)) {
-    const projected: Record<string, unknown> = { ...runtimeValue };
-    // Restore refs only on retained runtime paths. Source also holds deliberately
-    // ignored settings and must not repopulate the accepted runtime candidate.
-    for (const key of Object.keys(runtimeValue)) {
-      if (Object.hasOwn(sourceValue, key)) {
-        projected[key] = projectCanonicalSecretRefsOntoRuntime(sourceValue[key], runtimeValue[key]);
-      }
+  if (isRecord(sourceValue)) {
+    const runtimeRecord = isRecord(runtimeValue) ? runtimeValue : {};
+    const projected: Record<string, unknown> = { ...runtimeRecord };
+    for (const [key, entry] of Object.entries(sourceValue)) {
+      projected[key] = projectCanonicalSecretRefsOntoRuntime(entry, runtimeRecord[key]);
     }
     return projected;
   }
-  return runtimeValue;
+  return runtimeValue === undefined ? sourceValue : runtimeValue;
 }
 
 export function restoreCanonicalSecretRefs(
   runtimeConfig: OpenClawConfig,
   sourceConfig: OpenClawConfig,
+  ignoredPaths?: ReadonlyArray<ReadonlyArray<string | number>>,
 ): OpenClawConfig {
-  return projectCanonicalSecretRefsOntoRuntime(sourceConfig, runtimeConfig) as OpenClawConfig;
+  // Source-only settings still belong to secret snapshot custody. Omit only
+  // paths rejected by runtime validation before restoring canonical refs.
+  const acceptedSource = ignoredPaths?.length
+    ? omitRuntimeConfigPaths(sourceConfig, ignoredPaths)
+    : sourceConfig;
+  return projectCanonicalSecretRefsOntoRuntime(acceptedSource, runtimeConfig) as OpenClawConfig;
 }
 
 export function revokeActiveSkillReviewsBeforeConfigPublication(config: OpenClawConfig): void {

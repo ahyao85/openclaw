@@ -448,14 +448,23 @@ export function validateConfigObjectRaw(
               key,
             ])
             .filter((segments) => {
+              // This owner reads only its two named booleans; future marker names
+              // do not select migration or authority behavior.
+              if (segments.length === 3 && segments[0] === "meta" && segments[1] === "migrations") {
+                return true;
+              }
               const dotted = segments.join(".");
-              // Migration and authority containers describe contracts, not optional preferences.
+              // Authority containers and retired policy aliases require their owning migration.
               if (
                 !isRuntimeConfigUnknownPath(segments) ||
                 (segments.length === 1 &&
                   normalizeBundledChannelId(String(segments[0])) !== null) ||
                 segments[0] === "routing" ||
-                (segments[0] === "meta" && segments[1] === "migrations") ||
+                segments[0] === "tools" ||
+                (segments[0] === "agents" &&
+                  (segments.length === 2 ||
+                    (segments[1] === "defaults" && segments.length === 3) ||
+                    (segments[1] === "entries" && segments.length === 4))) ||
                 (segments[0] === "gateway" &&
                   ["auth", "roles", "token"].includes(String(segments[1])))
               ) {

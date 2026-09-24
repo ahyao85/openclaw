@@ -58,7 +58,7 @@ describe("config snapshot plugin metadata", () => {
     const raw = `{
       // Preserve editor formatting and future data.
       future: { enabled: true },
-      meta: { editorNote: "keep" },
+      meta: { editorNote: "keep", migrations: { modelPolicyAllowlist: true, utilityModelSeparation: true, auth: { keep: true } } },
       gateway: { auth: { mode: "token", token: "\${FIXTURE_TOKEN}" } },
       channels: { discord: { $include: "discord.json" } },
     }`;
@@ -72,9 +72,23 @@ describe("config snapshot plugin metadata", () => {
       },
     );
     expect(snapshot.valid).toBe(true);
+    expect(snapshot.runtimeIgnoredPaths).toHaveLength(5);
+    expect(snapshot.runtimeIgnoredPaths).toEqual(
+      expect.arrayContaining([
+        ["future"],
+        ["meta", "editorNote"],
+        ["meta", "migrations", "auth"],
+        ["channels", "discord", "future"],
+        ["channels", "discord", "guilds", "12.34", "extra"],
+      ]),
+    );
     for (const config of [loaded, snapshot.runtimeConfig]) {
       expect(config).not.toHaveProperty("future");
       expect(config.meta).not.toHaveProperty("editorNote");
+      expect(config.meta?.migrations).toEqual({
+        modelPolicyAllowlist: true,
+        utilityModelSeparation: true,
+      });
       expect(config.channels?.discord).not.toHaveProperty("future");
       expect(config.channels?.discord?.guilds?.["12.34"]).toEqual({ requireMention: false });
       expect(config.gateway?.auth?.token).toBe("fixture-token-value");

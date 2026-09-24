@@ -7,6 +7,7 @@ import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coer
 // Compiles plugin manifest schemas for validation without runtime loading.
 import { Format } from "typebox/format";
 import { Compile, type Validator as TypeBoxValidator } from "typebox/schema";
+import { Settings } from "typebox/system";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import { appendAllowedValuesHint, summarizeAllowedValues } from "../config/allowed-values.js";
 import {
@@ -153,15 +154,52 @@ function withPluginFormatSemantics<T>(callback: () => T): T {
   }
 }
 
+function countValidationInputNodes(value: unknown): number {
+  const pending = [value];
+  const seen = new WeakSet<object>();
+  let count = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    count += 1;
+    if (current === null || typeof current !== "object" || seen.has(current)) {
+      continue;
+    }
+    seen.add(current);
+    for (const entry of Object.values(current)) {
+      pending.push(entry);
+    }
+  }
+  return count;
+}
+
 function checkSchemaWithCurrentFormats(
   validate: TypeBoxValidator,
   value: unknown,
-): TypeBoxValidationError[] | null {
+  runtimePreparation = false,
+): { errors: TypeBoxValidationError[] | null; complete: boolean } {
   if (validate.Check(value)) {
-    return null;
+    return { errors: null, complete: true };
   }
-  // The schema-only compiler returns [valid, errors], without loading value codecs.
-  return normalizeTypeBoxValidationErrors(validate.Errors(value)[1]);
+  const previousLimit = Settings.Get().maxErrors;
+  // Recovery needs the whole failing batch, not TypeBox's eight-error display
+  // window. Bound collection by input size; complex/truncated batches stay invalid.
+  const limit = runtimePreparation
+    ? Math.max(previousLimit, (countValidationInputNodes(value) + 1) * 8)
+    : previousLimit;
+  try {
+    if (runtimePreparation) {
+      Settings.Set({ maxErrors: limit });
+    }
+    const errors = validate.Errors(value)[1];
+    return {
+      errors: normalizeTypeBoxValidationErrors(errors),
+      complete: errors.length < limit,
+    };
+  } finally {
+    if (runtimePreparation) {
+      Settings.Set({ maxErrors: previousLimit });
+    }
+  }
 }
 
 function isDefaultActivatedConditionalFailure(params: {
@@ -173,10 +211,10 @@ function isDefaultActivatedConditionalFailure(params: {
   const relaxedConditionalValidator = compileSchema(
     relaxConditionalRequiredKeywords(params.schema),
   );
-  if (checkSchemaWithCurrentFormats(relaxedConditionalValidator, params.defaultedValue)) {
+  if (checkSchemaWithCurrentFormats(relaxedConditionalValidator, params.defaultedValue).errors) {
     return false;
   }
-  return checkSchemaWithCurrentFormats(params.validate, params.originalValue) === null;
+  return checkSchemaWithCurrentFormats(params.validate, params.originalValue).errors === null;
 }
 
 /**
@@ -370,14 +408,21 @@ function resolveTypeBoxInstancePath(value: unknown, path: string): (string | num
     if (current === null || typeof current !== "object") {
       return;
     }
-    for (const key of Object.keys(current)) {
-      const prefix = `/${key}`;
-      if (remaining === prefix || remaining.startsWith(`${prefix}/`)) {
-        visit(Reflect.get(current, key), remaining.slice(prefix.length), [
+    // Test possible raw path segments rather than scanning every map entry for
+    // every error. Slash-containing keys still participate in ambiguity checks.
+    let end = remaining.indexOf("/", 1);
+    for (;;) {
+      const key = remaining.slice(1, end < 0 ? undefined : end);
+      if (Object.hasOwn(current, key)) {
+        visit(Reflect.get(current, key), end < 0 ? "" : remaining.slice(end), [
           ...segments,
           Array.isArray(current) ? Number(key) : key,
         ]);
       }
+      if (end < 0) {
+        break;
+      }
+      end = remaining.indexOf("/", end + 1);
     }
   };
   visit(value, path, []);
@@ -481,9 +526,11 @@ function validateJsonSchemaValueInternal(
         ? applyJsonSchemaDefaults(params.schema, structuredClone(originalValue))
         : originalValue;
     let ignoredPaths: (string | number)[][] = [];
-    let errors = checkSchemaWithCurrentFormats(cached.validate, value);
+    const checked = checkSchemaWithCurrentFormats(cached.validate, value, ignoreUnknownProperties);
+    let errors = checked.errors;
     if (
       ignoreUnknownProperties &&
+      checked.complete &&
       params.sourceValue === undefined &&
       errors?.length &&
       errors.every((error) => error.keyword === "additionalProperties")
@@ -516,7 +563,7 @@ function validateJsonSchemaValueInternal(
           params.applyDefaults && cached.hasDefaults
             ? applyJsonSchemaDefaults(params.schema, projected)
             : projected;
-        errors = checkSchemaWithCurrentFormats(cached.validate, value);
+        errors = checkSchemaWithCurrentFormats(cached.validate, value).errors;
       }
     }
     // Defaults may activate a required-only conditional failure in otherwise valid source.

@@ -1,5 +1,6 @@
 // Verifies channel schema failures follow the plugin manifest trust boundary.
 
+import { Settings } from "typebox/system";
 import { describe, expect, it } from "vitest";
 import type { PluginManifestRecord, PluginManifestRegistry } from "../plugins/manifest-registry.js";
 import { validateConfigObjectRawWithPlugins } from "./validation.js";
@@ -9,14 +10,17 @@ const malformedSchema = {
   properties: { mode: { $ref: "#/$defs/Mode" } },
 };
 
-function createRegistry(origin: PluginManifestRecord["origin"]): PluginManifestRegistry {
+function createRegistry(
+  origin: PluginManifestRecord["origin"],
+  schema: Record<string, unknown> = malformedSchema,
+): PluginManifestRegistry {
   return {
     diagnostics: [],
     plugins: [
       {
         id: "schema-owner",
         channels: ["schema-channel"],
-        channelConfigs: { "schema-channel": { schema: malformedSchema } },
+        channelConfigs: { "schema-channel": { schema } },
         cliBackends: [],
         hooks: [],
         manifestPath: "/plugins/schema-owner/openclaw.plugin.json",
@@ -39,44 +43,61 @@ function validate(origin: PluginManifestRecord["origin"]) {
 
 describe("channel schema error ownership", () => {
   it.each(["bundled", "global"] as const)("projects extras using the %s schema owner", (origin) => {
-    const registry = createRegistry(origin);
-    registry.plugins[0].channelConfigs = {
-      "schema-channel": {
-        schema: {
+    const registry = createRegistry(origin, {
+      type: "object",
+      properties: {
+        auth: {
           type: "object",
-          properties: {
-            auth: {
-              type: "object",
-              properties: { mode: { type: "string" } },
-              additionalProperties: false,
-            },
-            entries: {
-              type: "object",
-              properties: { documented: { type: "string" } },
-              additionalProperties: {
-                type: "object",
-                properties: { enabled: { type: "boolean" } },
-                required: ["enabled"],
-                additionalProperties: false,
-              },
-            },
-          },
+          properties: { mode: { type: "string" } },
           additionalProperties: false,
         },
+        entries: {
+          type: "object",
+          properties: { documented: { type: "string" } },
+          additionalProperties: {
+            type: "object",
+            properties: { enabled: { type: "boolean" } },
+            required: ["enabled"],
+            additionalProperties: false,
+          },
+        },
       },
-    };
-    const value = { entries: { "01.a/~1": { enabled: true, "extra./~": { keep: true } } } };
+      additionalProperties: false,
+    });
+    const entries = Object.fromEntries(
+      Array.from({ length: 20 }, (_, index) => [
+        `${index}.a/~1`,
+        { enabled: true, "extra./~": { keep: true } },
+      ]),
+    );
+    const value = { entries };
     const raw = { channels: { "schema-channel": value } };
+    const previousErrorLimit = Settings.Get().maxErrors;
     const result = validateConfigObjectRawWithPlugins(raw, {
       schemaValidation: "runtime",
       pluginMetadataSnapshot: { manifestRegistry: registry },
     });
     expect(result).toMatchObject({
       ok: true,
-      config: { channels: { "schema-channel": { entries: { "01.a/~1": { enabled: true } } } } },
-      ignoredPaths: [["channels", "schema-channel", "entries", "01.a/~1", "extra./~"]],
+      config: {
+        channels: {
+          "schema-channel": {
+            entries: Object.fromEntries(
+              Object.keys(entries).map((key) => [key, { enabled: true }]),
+            ),
+          },
+        },
+      },
+      ignoredPaths: Object.keys(entries).map((key) => [
+        "channels",
+        "schema-channel",
+        "entries",
+        key,
+        "extra./~",
+      ]),
     });
-    expect(raw.channels["schema-channel"].entries["01.a/~1"]["extra./~"]).toEqual({ keep: true });
+    expect(Settings.Get().maxErrors).toBe(previousErrorLimit);
+    expect(raw.channels["schema-channel"].entries["0.a/~1"]?.["extra./~"]).toEqual({ keep: true });
     expect(
       validateConfigObjectRawWithPlugins(
         { channels: { "schema-channel": { auth: { mode: "token", requireMfa: true } } } },

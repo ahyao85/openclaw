@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import * as installedRecords from "../plugins/installed-plugin-index-record-reader.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { computeModelPolicyAllowlist } from "./model-policy-allowlist-migration.js";
 import type { OpenClawConfig } from "./types.js";
+import { hasUtilityModelSeparationMigrationMarker } from "./utility-model-separation-migration.js";
 import {
   validateConfigObjectWithPlugins,
   validateConfigObjectWithPluginsAsync,
@@ -71,11 +73,49 @@ describe("async config plugin validation", () => {
     });
   });
 
+  it.each([false, true])(
+    "ignores future markers without changing known migration semantics (%s)",
+    (marked) => {
+      const raw = {
+        meta: {
+          migrations: {
+            futureMarker: true,
+            ...(marked ? { modelPolicyAllowlist: true, utilityModelSeparation: true } : {}),
+          },
+        },
+        agents: { defaults: { models: { "example/model": {} } } },
+      };
+      const result = validateConfigObjectRawWithPlugins(raw, {
+        env,
+        schemaValidation: "runtime",
+        pluginValidation: "core-only",
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error("runtime marker projection failed");
+      }
+      expect(
+        computeModelPolicyAllowlist({
+          root: result.config,
+          defaults: result.config.agents?.defaults,
+        }),
+      ).toEqual(marked ? null : ["example/model"]);
+      expect(hasUtilityModelSeparationMigrationMarker(result.config)).toBe(marked);
+      expect(result.config.meta?.migrations).not.toHaveProperty("futureMarker");
+      expect(raw.meta.migrations.futureMarker).toBe(true);
+    },
+  );
+
   it.each([
-    { meta: { migrations: { futurePolicy: true } } },
+    { meta: { migrations: { modelPolicyAllowlist: false } } },
+    { meta: { migrations: { utilityModelSeparation: false } } },
+    { meta: { migrations: [] } },
     { gateway: { auth: { mode: "token", token: "test", extraPolicy: true } } },
     { gateway: { auth: { mode: "invalid" } } },
     { routing: { allowFrom: ["123"] } },
+    { tools: { agentToAgent: { enabld: false } } },
+    { agents: { defaults: { sandbx: { mode: "all" } } } },
+    { agents: { entries: { main: { sandbx: { mode: "all" } } } } },
     { agents: { defaults: { sandbox: { perSession: true } } } },
     { secrets: { providers: { default: { source: "exec", command: "/test", args: "invalid" } } } },
     {

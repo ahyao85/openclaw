@@ -73,10 +73,9 @@ async function validateConfigObjectWithPluginsAsyncInternal(
     if (!prepareStrictValidation || !result.ok) {
       return result;
     }
-    const strict = prepareConfigObjectWithPlugins(raw, {
-      ...validationParams,
-      schemaValidation: "strict",
-    });
+    const strict = prepared.ignoredPaths?.length
+      ? prepareConfigObjectWithPlugins(raw, { ...validationParams, schemaValidation: "strict" })
+      : prepared;
     return { ...result, strictIssues: strict.ok ? [] : strict.result.issues };
   }
   // Raw-reference checks and parsed defaults must describe the same input after the await.
@@ -91,12 +90,19 @@ async function validateConfigObjectWithPluginsAsyncInternal(
   };
   const metadata = await loadPluginMetadataSnapshotAsync(pending.parsedConfig);
   const strictPrepared = prepareStrictValidation
-    ? prepareConfigObjectWithPlugins(pending.migrated, {
-        ...validationParams,
-        schemaValidation: "strict",
-      })
+    ? pending.ignoredPaths?.length
+      ? prepareConfigObjectWithPlugins(pending.migrated, {
+          ...validationParams,
+          schemaValidation: "strict",
+        })
+      : pending
     : undefined;
-  const strictConfig = strictPrepared?.ok ? strictPrepared.parsedConfig : undefined;
+  const strictConfig = strictPrepared?.ok
+    ? inheritLegacyDefaultAgentId(
+        strictPrepared.parsedConfig,
+        cloneConfigWithResolutionFacts(strictPrepared.parsedConfig),
+      )
+    : undefined;
   const schemaValidations: PreparedPluginSchemaValidations | undefined = strictConfig
     ? new Map()
     : undefined;

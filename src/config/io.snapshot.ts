@@ -422,6 +422,7 @@ async function readConfigSnapshotWithPreparation(
             ...snapshotSource(),
             valid: true,
             runtimeConfig: snapshotConfig,
+            runtimeIgnoredPaths: validated.ignoredPaths,
             issues: [],
             legacyIssues: [],
           }),

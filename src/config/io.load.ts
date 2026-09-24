@@ -318,6 +318,7 @@ function* loadConfigWithEffects(
       sourceConfig: coerceConfig(effectiveConfigRaw),
       valid: true,
       runtimeConfig: cfg,
+      runtimeIgnoredPaths: validated.ignoredPaths,
       deferredPluginMigrations,
       hash,
       issues: [],

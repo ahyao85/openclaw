@@ -93,7 +93,7 @@ export function validateExplicitPluginConfig(params: {
   applyDefaults: boolean;
   schemaValidations?: PreparedPluginSchemaValidations;
   schemaValidation?: "runtime" | "strict";
-  ignoredPaths: (string | number)[][];
+  ignoredPaths?: (string | number)[][];
   registry: PluginManifestRegistry;
   knownIds: Set<string>;
   normalizedPlugins: ReturnType<typeof normalizePluginsConfig>;
@@ -401,7 +401,7 @@ export function validateExplicitPluginConfig(params: {
           }
         } else if (shouldReplacePluginConfig) {
           for (const segments of result.ignoredPaths ?? []) {
-            params.ignoredPaths.push(["plugins", "entries", pluginId, "config", ...segments]);
+            params.ignoredPaths?.push(["plugins", "entries", pluginId, "config", ...segments]);
           }
           let nextValue = result.value as Record<string, unknown>;
           const nativeCatalog =

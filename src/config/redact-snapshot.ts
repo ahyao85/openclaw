@@ -285,11 +285,15 @@ export function redactConfigObject<T>(value: T, uiHints?: ConfigUiHints): T {
 export function redactConfigSnapshot(
   snapshot: ConfigFileSnapshot,
   uiHints?: ConfigUiHints,
-): Omit<ConfigFileSnapshot, "authoredConfig" | "sourceConfigBeforeMigrations"> {
+): Omit<
+  ConfigFileSnapshot,
+  "authoredConfig" | "sourceConfigBeforeMigrations" | "runtimeIgnoredPaths"
+> {
   // Internal migration inputs can contain resolved secrets; never expose them in public snapshots.
   const {
     authoredConfig: _authoredConfig,
     sourceConfigBeforeMigrations: _sourceConfigBeforeMigrations,
+    runtimeIgnoredPaths: _runtimeIgnoredPaths,
     pluginMetadataSnapshot: _pluginMetadataSnapshot,
     ...publicSnapshot
   } = snapshot as typeof snapshot & { pluginMetadataSnapshot?: unknown };
