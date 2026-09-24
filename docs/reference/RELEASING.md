@@ -634,11 +634,15 @@ response`, `PR context and evidence`, `Labeler`, the `CodeQL` workflows,
   cancels it; then records what was actually cancelled (`--out <file>`,
   `--dry-run`). Repeating the command keeps the original window and cancellations.
 - `pnpm frv prioritize --restore <file>` first clears the variable when it still
-  names that parent, then `gh run rerun`s the recorded cancelled runs plus every
-  run the gate deferred since the window opened (skipped gated runs, and `CI`
-  runs whose only executed jobs are `security-fast` and the failed gate),
-  coalesced to the newest run per workflow and branch so an obsolete run never
-  cancels validation of a newer head. Run it after the release seals; deferred
+  names that parent, then `gh run rerun`s recorded runs that are still cancelled
+  plus runs the gate deferred since the window opened (skipped gated runs, and
+  `CI` runs whose only executed jobs are `security-fast` and the failed gate).
+  Bounded timestamp searches cover the full window despite GitHub's filtered
+  result cap; incomplete inventories stop restoration. Selection keeps the newest
+  observed run per workflow and PR identity, falling back to head repository and
+  branch when no single PR is identified. Unknown identities stay separate. Manual
+  dispatches cannot supersede PR checks, and already-restored cancellation records
+  do not replay successful or active attempts. Run it after the release seals; deferred
   PR work is never re-dispatched automatically. Not yet proven live: GitHub
   re-evaluating the `vars` gate on `gh run rerun`.
 - Publish children run on hosted `ubuntu-latest`; Blacksmith testbox runs are

@@ -34,6 +34,7 @@ import {
   RELEASE_PRIORITY_VARIABLE,
   defaultReleasePriorityRecordPath,
   describeRun,
+  isDeferrableRun,
   isDeferredCiJobSet,
   isQueuedRun,
   listReleasePriorityRuns,
@@ -1214,10 +1215,24 @@ export async function restoreReleasePriority(recordPath, client, options = {}) {
       deferred.push(describeRun(run));
     }
   }
-  const candidates = [...record.cancelled, ...deferred];
+  const observed = new Map(runs.map((run) => [String(run.id), run]));
+  const cancelled = [];
+  for (const saved of record.cancelled) {
+    // Older records predate lane identity, and a prior restore can have rerun the same ID.
+    const current = observed.get(saved.id) ?? (await client.getRun(saved.id));
+    if (String(current.id) !== saved.id) {
+      throw new Error(`Cancelled workflow run identity changed: ${saved.id}`);
+    }
+    if (current.status === "completed" && current.conclusion === "cancelled") {
+      cancelled.push(describeRun(current));
+    }
+  }
+  const candidates = [...cancelled, ...deferred];
   const eligible = new Set(candidates.map((run) => run.id));
-  // A newer active or already-executed run owns its lane even when it was not deferred.
-  const rerun = selectLatestRunsPerLane([...candidates, ...runs.map(describeRun)]).filter((run) =>
+  // Manual dispatches have independent concurrency and cannot replace a PR check.
+  const laneRuns = runs.filter((run) => isDeferrableRun(run, record.parentRunId)).map(describeRun);
+  // A newer active or already-executed PR run owns its lane even when it was not deferred.
+  const rerun = selectLatestRunsPerLane([...candidates, ...laneRuns]).filter((run) =>
     eligible.has(run.id),
   );
   if (options.dryRun) {

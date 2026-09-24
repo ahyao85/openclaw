@@ -30,7 +30,7 @@ export function isReleaseBranch(name) {
 }
 
 // Release children are dispatched; operator dispatches keep their intent.
-function deferrable(run, parentRunId) {
+export function isDeferrableRun(run, parentRunId) {
   return (
     RELEASE_PRIORITY_WORKFLOWS.includes(run?.name) &&
     run.event !== "workflow_dispatch" &&
@@ -40,10 +40,21 @@ function deferrable(run, parentRunId) {
 }
 
 export function describeRun(run) {
+  const pullRequests = run.pull_requests ?? [];
+  const pullRequest = pullRequests.length === 1 ? pullRequests[0].number : undefined;
+  const repository = run.head_repository?.id;
+  // Forks often reuse branch names. Prefer the PR concurrency owner when GitHub supplies it.
+  const lane =
+    Number.isSafeInteger(pullRequest) && pullRequest > 0
+      ? `pr:${pullRequest}`
+      : Number.isSafeInteger(repository) && repository > 0
+        ? `repository:${repository}:branch:${String(run.head_branch ?? "")}`
+        : `run:${run.id}`;
   return {
     event: String(run.event ?? ""),
     headBranch: String(run.head_branch ?? ""),
     id: String(run.id),
+    lane,
     name: String(run.name ?? ""),
     url: String(run.html_url ?? ""),
   };
@@ -51,7 +62,7 @@ export function describeRun(run) {
 
 export function selectQueuedRunsToCancel(runs, parentRunId) {
   return runs
-    .filter((run) => QUEUED_STATUSES.has(run.status) && deferrable(run, parentRunId))
+    .filter((run) => QUEUED_STATUSES.has(run.status) && isDeferrableRun(run, parentRunId))
     .map(describeRun);
 }
 
@@ -62,7 +73,7 @@ export function selectDeferredRunCandidates(runs, record) {
     (run) =>
       run.status === "completed" &&
       String(run.created_at ?? "") >= record.recordedAt &&
-      deferrable(run, record.parentRunId) &&
+      isDeferrableRun(run, record.parentRunId) &&
       (run.conclusion === "skipped" || (run.name === "CI" && run.conclusion === "failure")),
   );
 }
@@ -80,12 +91,12 @@ export function isDeferredCiJobSet(jobs) {
   );
 }
 
-// A PR's CI groups by PR number with cancel-in-progress, so only the newest
-// run per workflow and branch may be re-queued.
+// A PR's CI groups by PR number with cancel-in-progress. Unknown identities stay
+// separate rather than suppressing an independent run with the same branch name.
 export function selectLatestRunsPerLane(runs) {
   const latest = new Map();
   for (const run of runs) {
-    const key = `${run.name}\n${run.headBranch}`;
+    const key = `${run.name}\n${run.lane}`;
     if (!latest.has(key) || Number(latest.get(key).id) < Number(run.id)) {
       latest.set(key, run);
     }
@@ -135,6 +146,9 @@ export function readReleasePriorityRecord(path, options = {}) {
     record.cancelled.some((run) => !/^[1-9][0-9]*$/u.test(String(run?.id)))
   ) {
     throw new Error(`release priority record is invalid: ${path}`);
+  }
+  for (const run of record.cancelled) {
+    run.id = String(run.id);
   }
   return record;
 }
