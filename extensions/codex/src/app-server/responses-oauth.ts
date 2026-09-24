@@ -36,7 +36,7 @@ export function isCodexResponsesOAuth(prepared: CodexAppServerPreparedAuth | und
 }
 
 /** The OAuth owner verified this ID token. Decoding here compares identity, never proves it. */
-export function fingerprintCodexResponsesOAuth(credential: AuthProfileCredential | undefined) {
+function fingerprintCodexResponsesOAuth(credential: AuthProfileCredential | undefined) {
   if (!isCodexResponsesOAuthCredential(credential) || credential?.type !== "oauth") {
     throw new Error("ChatGPT subscription sharing is unavailable; sign in with OpenClaw again.");
   }

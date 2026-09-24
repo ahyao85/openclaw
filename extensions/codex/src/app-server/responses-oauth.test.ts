@@ -2,7 +2,6 @@ import type { AuthProfileCredential, AuthProfileStore } from "openclaw/plugin-sd
 import { beforeEach, expect, it, vi } from "vitest";
 import {
   createCodexResponsesOAuth,
-  fingerprintCodexResponsesOAuth,
   resolveCodexResponsesOAuthProfileFingerprint,
 } from "./responses-oauth.js";
 
@@ -37,7 +36,7 @@ beforeEach(() => {
   owner.credential = credential();
   owner.resolve.mockReset();
 });
-function create() {
+async function create() {
   const store: AuthProfileStore = {
     version: 1,
     profiles: { [profileId]: credential() },
@@ -46,12 +45,12 @@ function create() {
   return createCodexResponsesOAuth({
     profileId,
     store,
-    fingerprint: fingerprintCodexResponsesOAuth(credential()),
+    fingerprint: await resolveCodexResponsesOAuthProfileFingerprint({ profileId, store }),
   });
 }
 
 it("refreshes through the selected persisted OAuth owner and retains only same-subject authority", async () => {
-  const auth = create();
+  const auth = await create();
   owner.resolve.mockImplementation(async (params) => {
     expect(params.forceRefresh).toBe(true);
     expect(params.allowProfileFallback).toBe(false);
@@ -71,7 +70,7 @@ it("refreshes through the selected persisted OAuth owner and retains only same-s
 it.each(["deleted", "sharing-declined"])(
   "rejects a %s grant after the awaited OAuth resolution",
   async (change) => {
-    const auth = create();
+    const auth = await create();
     owner.resolve.mockImplementation(async () => {
       owner.credential =
         change === "deleted" ? undefined : { ...credential(), authFlow: "chatgpt-identity" };
@@ -83,7 +82,9 @@ it.each(["deleted", "sharing-declined"])(
 
 it("does not revive a deleted persisted profile from its prepared snapshot", async () => {
   owner.credential = undefined;
-  await expect(create().resolve(false)).rejects.toThrow("subscription sharing is unavailable");
+  await expect((await create()).resolve(false)).rejects.toThrow(
+    "subscription sharing is unavailable",
+  );
   expect(owner.resolve).not.toHaveBeenCalled();
 });
 
@@ -101,7 +102,7 @@ function pendingFence() {
 }
 
 it("joins the exact persisted refresh generation and accepts its pending marker at final I/O", async () => {
-  const auth = create();
+  const auth = await create();
   owner.credential = pendingFence();
   owner.resolve.mockImplementation(async () => {
     owner.credential = credential();
@@ -123,6 +124,11 @@ it("materializes a pending cold-start snapshot from the existing refresh owner's
     credential: credential(),
   });
   const fingerprint = await resolveCodexResponsesOAuthProfileFingerprint({ profileId, store });
-  expect(fingerprint).toBe(fingerprintCodexResponsesOAuth(credential()));
+  expect(fingerprint).toBe(
+    await resolveCodexResponsesOAuthProfileFingerprint({
+      profileId,
+      store: { version: 1, profiles: { [profileId]: credential() } },
+    }),
+  );
   expect(store.profiles[profileId]).toEqual(credential());
 });
