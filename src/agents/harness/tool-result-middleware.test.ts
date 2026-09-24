@@ -1,6 +1,9 @@
 // Verifies tool-result middleware validation, sanitization, and fail-closed behavior.
 import { describe, expect, it } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
+import type { AgentToolResultMiddleware } from "../../plugins/agent-tool-result-middleware-types.js";
 import { PluginInstanceUnavailableError } from "../../plugins/plugin-instance-error.js";
+import { PluginInstance } from "../../plugins/plugin-instance.js";
 import { createAgentToolResultMiddlewareRunner } from "./tool-result-middleware.js";
 
 describe("createAgentToolResultMiddlewareRunner", () => {
@@ -51,6 +54,37 @@ describe("createAgentToolResultMiddlewareRunner", () => {
     });
 
     expect(result.details).toEqual({ status: "error", middlewareError: true });
+  });
+
+  it("skips a later middleware whose plugin is removed while an earlier one runs", async () => {
+    const earlierEntered = createDeferred<void>();
+    const releaseEarlier = createDeferred<void>();
+    const earlier: AgentToolResultMiddleware = async (event) => {
+      earlierEntered.resolve();
+      await releaseEarlier.promise;
+      return { result: { ...event.result, content: [{ type: "text", text: "compacted" }] } };
+    };
+    // No live registry lists this plugin, so disposal leaves it removed.
+    const instance = new PluginInstance("removed-mid-call");
+    const later = instance.wrap<AgentToolResultMiddleware>((event) => ({
+      result: { ...event.result, content: [{ type: "text", text: "later" }] },
+    }));
+    const runner = createAgentToolResultMiddlewareRunner({ runtime: "openclaw" }, [earlier, later]);
+
+    const applied = runner.applyToolResultMiddleware({
+      toolCallId: "call-1",
+      toolName: "exec",
+      args: {},
+      result: { content: [{ type: "text", text: "exit 0" }], details: {} },
+    });
+    await earlierEntered.promise;
+    await instance.dispose();
+    releaseEarlier.resolve();
+
+    expect(await applied).toEqual({
+      content: [{ type: "text", text: "compacted" }],
+      details: {},
+    });
   });
 
   it("fails closed for invalid middleware results", async () => {

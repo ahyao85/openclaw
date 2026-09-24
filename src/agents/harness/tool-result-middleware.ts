@@ -406,8 +406,8 @@ function reconcileDeliveredMessagingFailure(
 /**
  * A run resolves middleware once. When a handler's own plugin was retired and is
  * gone from the live registry, its post-processing no longer applies. The runner
- * filters these before invoking any handler, so a skipped plugin cannot have
- * touched the result.
+ * checks this before choosing a path and again before each call, so a skipped
+ * plugin never runs and cannot have touched the result.
  */
 function isRemovedPluginMiddleware(handler: AgentToolResultMiddleware): boolean {
   const instance = getPluginValueInstance(handler);
@@ -463,6 +463,10 @@ export function createAgentToolResultMiddlewareRunner(
       );
       let current = sanitizeToolResultForMiddleware(event.result);
       for (const handler of handlersForRun) {
+        // An earlier handler can await while a later handler's plugin is removed.
+        if (isRemovedPluginMiddleware(handler)) {
+          continue;
+        }
         try {
           const next = await handler({ ...event, result: current }, ctx);
           // Middleware may mutate event.result in place for legacy runtime parity.
