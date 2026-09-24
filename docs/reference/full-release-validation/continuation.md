@@ -34,7 +34,7 @@ pnpm frv prioritize --restore <record> [--dry-run]
 ```
 
 `prioritize` gives an active parent hosted-runner priority (see
-[Release priority](/reference/RELEASING#release-priority)); `continue --failed`
+[Release priority](https://github.com/openclaw/openclaw/blob/main/.agents/skills/release-openclaw-ci/SKILL.md#guardrails)); `continue --failed`
 and `verify` release it once the parent seals.
 
 `rerun --job` selects an exact executed, terminal job name inside a child key shown by
