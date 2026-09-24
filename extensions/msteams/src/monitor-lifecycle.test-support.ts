@@ -212,7 +212,9 @@ const routeServer = createServer((req, res) => {
     res.writeHead(404).end();
     return;
   }
-  Promise.resolve(route.handler(req, res)).catch((error) => res.destroy(error));
+  Promise.resolve(route.handler(req, res)).catch((error: unknown) => {
+    res.destroy(error instanceof Error ? error : new Error(String(error)));
+  });
 });
 let routeBaseUrl: string;
 let portClaim: Awaited<ReturnType<typeof acquireTestPortBlock>>;
