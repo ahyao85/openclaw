@@ -16,9 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.DesktopWindows
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -63,7 +61,7 @@ internal fun SessionDashboardScreen(
     return
   }
   ClawScaffold(
-    contentPadding = PaddingValues(start = ClawTheme.spacing.lg, top = 14.dp, end = ClawTheme.spacing.lg, bottom = 6.dp),
+    contentPadding = PaddingValues(horizontal = ClawTheme.spacing.sm, vertical = ClawTheme.spacing.xxs),
   ) {
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
       Row(
@@ -78,7 +76,7 @@ internal fun SessionDashboardScreen(
         )
         Text(
           text = nativeString("Dashboard"),
-          style = ClawTheme.type.title,
+          style = ClawTheme.type.display,
           color = ClawTheme.colors.text,
           modifier = Modifier.weight(1f),
           maxLines = 1,
@@ -91,11 +89,6 @@ internal fun SessionDashboardScreen(
             onClick = { showingDesktop = true },
           )
         }
-        Icon(
-          imageVector = Icons.Outlined.Dashboard,
-          contentDescription = null,
-          tint = ClawTheme.colors.textMuted,
-        )
       }
       Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
         val page = controlPage
