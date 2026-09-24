@@ -398,6 +398,7 @@ export async function sendSubagentAnnounceDirectly(params: {
     const classifyResponse = createDirectAnnounceResponseClassifier({
       params,
       parentOnly,
+      requesterSessionBound,
       deliveryTarget,
       shouldDeliverAgentFinal,
       requiresMessageToolDelivery,
