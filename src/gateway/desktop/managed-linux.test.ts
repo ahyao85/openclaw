@@ -10,8 +10,12 @@ import type {
   RunExit,
   SpawnInput,
 } from "../../process/supervisor/types.js";
+import * as audioBridge from "./audio-bridge.js";
+import { createHostDesktopService } from "./host-source.js";
 import { createManagedLinuxAudio } from "./managed-linux-audio.js";
 import { createManagedLinuxDesktop } from "./managed-linux.js";
+import { releaseDesktopObserverToken } from "./observe-bridge.js";
+import * as rfbProbe from "./rfb-probe.js";
 import { createDesktopSessionRegistry } from "./session-registry.js";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -176,6 +180,43 @@ async function createFixture(createAudio = noAudio) {
 }
 
 describe("managed Linux desktop", () => {
+  it("refreshes a restarted audio generation through the cached host registry acquisition", async () => {
+    const createAudio: typeof createManagedLinuxAudio = (params) =>
+      createManagedLinuxAudio({ ...params, runtime: { detectBinary: async () => true } });
+    const { desktop, fake } = await createFixture(createAudio);
+    const probe = vi.spyOn(rfbProbe, "probeRfbServer").mockResolvedValue({ kind: "unreachable" });
+    const minted = vi.spyOn(audioBridge, "mintDesktopAudioObserver");
+    const registry = createDesktopSessionRegistry();
+    cleanups.push(() => registry.stopAll());
+    const service = createHostDesktopService({
+      getConfig: () => ({ enabled: true, managed: true }),
+      registry,
+      platform: "linux",
+      managedDesktop: desktop,
+    });
+    const requester = { connId: "restart-viewer", isCurrent: () => true };
+    try {
+      const first = await service.observe({ control: true, requester });
+      const firstSource = minted.mock.calls[0]![0].source;
+      await firstSource.start(new AbortController().signal);
+      fake.exit(0);
+      await fake.afterSpawn(9);
+      const second = await service.observe({ control: true, requester });
+      const nextSource = minted.mock.calls[1]![0].source;
+      expect(nextSource).not.toBe(firstSource);
+      await expect(firstSource.start(new AbortController().signal)).rejects.toThrow();
+      const capture = await nextSource.start(new AbortController().signal);
+      expect(probe).toHaveBeenCalledTimes(1);
+      await releaseDesktopObserverToken(first.wsPath, requester);
+      await releaseDesktopObserverToken(second.wsPath, requester);
+      await registry.stopAll();
+      expect(capture.stream.destroyed).toBe(true);
+    } finally {
+      probe.mockRestore();
+      minted.mockRestore();
+    }
+  });
+
   it.each(["pulseaudio missing", "parec missing", "private server startup failed"])(
     "preserves inherited application and activation routing when %s",
     async (reason) => {
