@@ -461,22 +461,41 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
       remoteHead === headCommit &&
       currentTree === workspaceTree &&
       sourceIndexTree === workspaceTree &&
-      messageLines.some((line) => line.startsWith(`${PUBLICATION_MARKER}: `)) &&
-      (attribution?.trailers ?? []).every((trailer) => messageLines.includes(trailer))
+      messageLines.some((line) => line.startsWith(`${PUBLICATION_MARKER}: `))
     ) {
-      // The owned open PR already exposes this exact attributed tree. A new request
-      // needs a receipt, not a new commit marker or index transaction. First publication
-      // and missing contributor credit still use the request-owned recovery marker below.
-      return params.projectResult(
-        params.complete(row, {
-          requestId: row.request_id,
-          status: "published",
-          url: existingPullRequest,
-          repository,
-          branch,
-          headCommit,
-        }),
-      );
+      // Text in prose or an earlier paragraph is not Git co-author credit.
+      // Parse the pinned commit before deciding its attributed tree can be reused.
+      const trailers = (
+        await command(
+          [
+            "git",
+            "-c",
+            "trailer.separators=:",
+            "-c",
+            "trailer.co-authored-by.key=Co-authored-by",
+            "show",
+            "-s",
+            "--format=%(trailers:key=Co-authored-by,only,unfold)",
+            headCommit,
+          ],
+          { cwd: worktree.path },
+        )
+      ).split(/\r?\n/u);
+      if ((attribution?.trailers ?? []).every((trailer) => trailers.includes(trailer))) {
+        // The owned open PR already exposes this exact attributed tree. A new request
+        // needs a receipt, not a new commit marker or index transaction. First publication
+        // and missing contributor credit still use the request-owned recovery marker below.
+        return params.projectResult(
+          params.complete(row, {
+            requestId: row.request_id,
+            status: "published",
+            url: existingPullRequest,
+            repository,
+            branch,
+            headCommit,
+          }),
+        );
+      }
     }
     const previousBranchHead = headCommit;
     let updateBranchRef: (() => Promise<void>) | undefined;
