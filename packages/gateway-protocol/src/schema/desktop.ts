@@ -39,6 +39,15 @@ export const DesktopObserveResultSchema = closedObject({
   wsPath: NonEmptyString,
   expiresAtMs: Type.Integer({ minimum: 0 }),
   control: Type.Boolean(),
+  // Separate, screen-owned stream; capture waits for an explicit viewer action.
+  audio: Type.Optional(
+    closedObject({
+      wsPath: NonEmptyString,
+      encoding: Type.Literal("pcm-s16le"),
+      sampleRate: Type.Literal(48000),
+      channels: Type.Literal(2),
+    }),
+  ),
   // Permission to request resizing, not proof that the RFB server supports it.
   canResize: Type.Optional(Type.Boolean()),
   vncPassword: Type.Optional(NonEmptyString),
