@@ -4,6 +4,7 @@ import { expect, it } from "vitest";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createRetainedAgentDatabaseMatcherFromSnapshot } from "./agent-deletion-discovery.js";
+import { reconstructAgentDeletionJournal } from "./agent-deletion-journal-recovery.js";
 import {
   beginAgentDeletionJournal,
   completeAgentDeletionJournalInDatabase,
@@ -52,16 +53,20 @@ it("reads fresh deletion and surviving-owner facts from its captured source with
     try {
       const { snapshot, assertCurrent } = await prepared.read();
       expect(snapshot).toMatchObject({
-        retainedDeletions: [
-          {
-            agentId: "retired",
-            agentDir,
-            databasePaths: expect.arrayContaining([
-              path.join(agentDir, "openclaw-agent.sqlite"),
-              survivor.path,
-            ]),
-          },
-        ],
+        retainedDeletions: {
+          status: "present",
+          held: [],
+          entries: [
+            {
+              agentId: "retired",
+              agentDir,
+              databasePaths: expect.arrayContaining([
+                path.join(agentDir, "openclaw-agent.sqlite"),
+                survivor.path,
+              ]),
+            },
+          ],
+        },
         registeredAgentDatabases: expect.arrayContaining([
           expect.objectContaining({ agentId: "survivor", path: survivor.path }),
         ]),
@@ -82,7 +87,7 @@ it("reads fresh deletion and surviving-owner facts from its captured source with
       observation.restore();
     }
     expect(removeAgentDeletionJournal("retired", "retained-owner", options)).toBe(true);
-    expect((await prepared.read()).snapshot?.retainedDeletions).toEqual([]);
+    expect((await prepared.read()).snapshot?.retainedDeletions).toEqual({ status: "empty" });
   });
 });
 
@@ -128,7 +133,50 @@ it("keeps absent discovery conservative without creating shared state or sidecar
       () => [],
       result.snapshot,
     );
-    expect(isRetained(state.statePath("unknown.sqlite"), "unknown")).toBe(true);
+    expect(isRetained(state.statePath("unknown.sqlite"), "unknown")).toBe("unavailable");
     expect(files.map((file) => fs.existsSync(file))).toEqual([false, false, false, false]);
   });
 });
+
+it.each(["runtime", "maintenance"] as const)(
+  "keeps reconstructed deletion holds with their %s purpose through the native snapshot",
+  async (purpose) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const held = { agentId: "held", path: state.statePath("held.sqlite") };
+      runOpenClawStateWriteTransaction(
+        (database) => {
+          database.db.exec("DROP TABLE agent_deletion_journal");
+          reconstructAgentDeletionJournal(database, [held]);
+        },
+        { env: state.env },
+      );
+      const prepared = prepareAgentDatabaseDeletionSnapshotRead({ env: state.env }, purpose);
+      const observation = observeHostDataSql(state.env);
+      try {
+        const { snapshot, assertCurrent } = await prepared.read();
+        expect(snapshot?.retainedDeletions).toEqual(
+          purpose === "maintenance"
+            ? { status: "present", entries: [], held: [held] }
+            : { status: "empty" },
+        );
+        const isRetained = createRetainedAgentDatabaseMatcherFromSnapshot(
+          state.env,
+          () => [],
+          snapshot,
+          "database",
+          purpose,
+        );
+        expect(isRetained(held.path, held.agentId)).toBe(
+          purpose === "maintenance" ? "held" : undefined,
+        );
+        expect(assertCurrent).not.toThrow();
+        expect(observation.queries).toEqual([]);
+        for (const call of observation.calls) {
+          expect(call).not.toHaveBeenCalled();
+        }
+      } finally {
+        observation.restore();
+      }
+    });
+  },
+);

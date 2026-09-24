@@ -188,7 +188,11 @@ serveOwnedWorkerTasks(
                     ok: true,
                     type: command.type,
                     sourceAdmitted,
-                    snapshot: readAgentDatabaseDeletionSnapshotInDatabase(db, input.databasePath),
+                    snapshot: readAgentDatabaseDeletionSnapshotInDatabase(
+                      db,
+                      input.databasePath,
+                      command.purpose,
+                    ),
                   };
                 }
                 if (command.type === "agentDeletionJournal.status") {

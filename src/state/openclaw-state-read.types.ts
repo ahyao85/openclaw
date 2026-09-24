@@ -67,6 +67,7 @@ import type {
 } from "../tasks/task-registry.store.types.js";
 import type {
   AgentDatabaseDeletionSnapshot,
+  AgentDeletionJournalPurpose,
   AgentDeletionJournalStatus,
 } from "./agent-deletion-journal.types.js";
 import type {
@@ -136,7 +137,7 @@ export type OpenClawStateReadCommand =
       };
     }[keyof SkillLibraryReadOnlyOperations]
   | { type: "agentDatabaseRegistry.read" }
-  | { type: "agentDatabaseDeletion.snapshot" }
+  | { type: "agentDatabaseDeletion.snapshot"; purpose: AgentDeletionJournalPurpose }
   | { type: "agentDeletionJournal.status"; agentId: string }
   | { type: "workerEnvironments.snapshot"; ids?: readonly string[] }
   | { type: "workerEnvironments.pruneCandidates"; input: WorkerEnvironmentPruneReadInput }

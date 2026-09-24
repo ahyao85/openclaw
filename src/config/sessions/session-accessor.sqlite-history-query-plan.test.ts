@@ -18,11 +18,11 @@ import {
   waitForSessionTranscriptProjection,
   type SessionTranscriptReadScope,
 } from "./session-accessor.js";
+import { readRecentSessionTranscriptHistoryEvents } from "./session-accessor.sqlite-history-events.js";
 import {
-  readRecentSessionTranscriptHistoryEvents,
+  insertSyntheticHistory,
   readSessionTranscriptHistoryEventCount,
-} from "./session-accessor.sqlite-history-events.js";
-import { insertSyntheticHistory } from "./session-accessor.sqlite-history.test-support.js";
+} from "./session-accessor.sqlite-history.test-support.js";
 import { waitForSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
 import { transcriptMessage } from "./transcript-message.test-support.js";
 

@@ -61,7 +61,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
   const inOwnerContext = AsyncLocalStorage.snapshot();
   const env = cloneEnvWithPlatformSemantics(process.env);
   env.OPENCLAW_STATE_DIR = resolveStateDir(env);
-  const discoveryRead = prepareAgentDatabaseDeletionSnapshotRead({ env });
+  const discoveryRead = prepareAgentDatabaseDeletionSnapshotRead({ env }, "runtime");
   while (!getSubagentSessionListReadSnapshotIdentity()) {
     await prepareSubagentSessionListReadCache();
   }

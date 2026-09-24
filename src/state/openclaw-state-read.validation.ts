@@ -117,7 +117,8 @@ export function isReadRequest(input: unknown): input is OpenClawStateReadRequest
             isRecord(pin) && typeof pin.skillId === "string" && typeof pin.revision === "string",
         )) ||
       input.command.type === "agentDatabaseRegistry.read" ||
-      input.command.type === "agentDatabaseDeletion.snapshot" ||
+      (input.command.type === "agentDatabaseDeletion.snapshot" &&
+        (input.command.purpose === "runtime" || input.command.purpose === "maintenance")) ||
       (input.command.type === "agentDeletionJournal.status" &&
         typeof input.command.agentId === "string") ||
       input.command.type === "sessionGroups.snapshot" ||

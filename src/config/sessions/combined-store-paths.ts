@@ -89,6 +89,12 @@ export function createGatewayRetainedStoreMatcher(
   const readConfiguredTargets = () =>
     resolveConfiguredAgentDatabaseTargets(cfg, { env, ...readOptions });
   return discovery
-    ? createRetainedAgentDatabaseMatcherFromSnapshot(env, readConfiguredTargets, discovery.snapshot)
-    : createRetainedAgentDatabaseMatcher(env, readConfiguredTargets);
+    ? createRetainedAgentDatabaseMatcherFromSnapshot(
+        env,
+        readConfiguredTargets,
+        discovery.snapshot,
+        "database",
+        "runtime",
+      )
+    : createRetainedAgentDatabaseMatcher(env, readConfiguredTargets, "database", "runtime");
 }

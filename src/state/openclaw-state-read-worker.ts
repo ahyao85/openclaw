@@ -220,6 +220,9 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
 
 function commandBytes(command: OpenClawStateReadRequest["command"]): number {
   let bytes = Buffer.byteLength(command.type, "utf8");
+  if (command.type === "agentDatabaseDeletion.snapshot") {
+    return bytes + Buffer.byteLength(command.purpose, "utf8");
+  }
   if (command.type === "agentDeletionJournal.status") {
     return bytes + Buffer.byteLength(command.agentId, "utf8");
   }
@@ -443,7 +446,7 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
 
 function requestBytes(request: OpenClawStateReadRequest): number {
   return [
-    ...Object.values(request.context.environment),
+    ...Object.entries(request.context.environment).flatMap(([key, value]) => [key, value]),
     request.context.coordinatorRuntime.directory,
     request.context.existingSchemaPath,
     request.databasePath,
