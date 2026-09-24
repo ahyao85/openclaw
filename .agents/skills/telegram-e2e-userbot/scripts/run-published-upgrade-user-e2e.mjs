@@ -79,7 +79,7 @@ async function reservePorts() {
   }
 }
 
-export async function runPublishedUpgrade(options, signal) {
+async function runPublishedUpgrade(options, signal) {
   mkdirSync(options.output, { recursive: true, mode: 0o700 });
   const publicPath = join(options.output, "published-upgrade.json");
   if (existsSync(publicPath)) {
