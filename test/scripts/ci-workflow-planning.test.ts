@@ -2021,106 +2021,6 @@ describe("ci workflow guards", () => {
       });
     }
 
-    it.each([
-      { eventName: "push" as const, runnerBackend: "hybrid" as const },
-      { eventName: "pull_request" as const, runnerBackend: "hybrid" as const },
-      { eventName: "push" as const, runnerBackend: "runson" as const },
-      { eventName: "pull_request" as const, runnerBackend: "runson" as const },
-      { eventName: "workflow_dispatch" as const, runnerBackend: "runson" as const },
-    ])(
-      "routes admitted control gates without hosted queue waits ($eventName, $runnerBackend)",
-      (options) => {
-        const qualification = options.eventName === "workflow_dispatch";
-        const manifest = manifestWithHostedNodeRows(0, {
-          ...options,
-          runnerProfile: "hybrid",
-          nodeRunnerBackend: options.runnerBackend,
-          nodeTestShards: undefined,
-          releaseGate: qualification,
-          changedPaths: [".github/workflows/ci.yml"],
-        });
-        expect(manifest.status, manifest.output).toBe(0);
-        const workflow = readCiWorkflow();
-        for (const [jobName, runner] of [
-          ["checks-baseline-ratchets", "blacksmith-16vcpu-ubuntu-2404"],
-          ["ci-gate", "blacksmith-4vcpu-ubuntu-2404"],
-        ] as const) {
-          const context = {
-            ...options,
-            repository: "openclaw/openclaw",
-            runAttempt: 1,
-            preflightOutputs: manifest.outputs,
-          };
-          const expression = workflow.jobs[jobName]["runs-on"];
-          expect(evaluateWorkflowExpression(expression, context), jobName).toBe(runner);
-          // Failed-job reruns reuse the successful first preflight's outputs.
-          expect
-            .soft(
-              evaluateWorkflowExpression(expression, { ...context, runAttempt: 2 }),
-              `${jobName}: retry with retained admission`,
-            )
-            .toBe("ubuntu-24.04");
-          if (qualification) {
-            expect(
-              evaluateWorkflowExpression(expression, {
-                ...context,
-                dispatchId: "full-release-validation-fixture",
-                releaseRunnerGroup: "release-fixture",
-              }),
-              jobName,
-            ).toEqual({ group: "release-fixture", labels: runner });
-            expect
-              .soft(
-                evaluateWorkflowExpression(expression, {
-                  ...context,
-                  runAttempt: 2,
-                  dispatchId: "full-release-validation-fixture",
-                  releaseRunnerGroup: "release-fixture",
-                }),
-                `${jobName}: release-group retry with retained admission`,
-              )
-              .toEqual({ group: "release-fixture", labels: "ubuntu-24.04" });
-          }
-          for (const result of ["failure", "cancelled", "skipped"]) {
-            expect(
-              evaluateWorkflowExpression(expression, {
-                ...context,
-                jobResults: { preflight: result },
-              }),
-              `${jobName}: ${result}`,
-            ).toBe("ubuntu-24.04");
-          }
-          expect(
-            evaluateWorkflowExpression(expression, {
-              ...context,
-              preflightOutputs: {},
-            }),
-            `${jobName}: no decision`,
-          ).toBe("ubuntu-24.04");
-        }
-        expect(
-          evaluateWorkflowExpression(workflow.jobs.preflight.outputs.hybrid_paid_controls, {
-            ...options,
-            repository: "openclaw/openclaw",
-            runAttempt: 1,
-            steps: { manifest: { outputs: manifest.outputs } },
-          }),
-        ).toBe("true");
-        expect(manifest.outputs.hybrid_hosted_reserved_rows).toBe("2");
-      },
-    );
-
-    it("reserves only the final control gate when baseline ratchets are unselected", () => {
-      const manifest = manifestWithHostedNodeRows(0, { runNode: false });
-      expect(manifest.status, manifest.output).toBe(0);
-      expect(manifest.outputs.run_baseline_ratchets).toBe("false");
-      expect(manifest.outputs.hybrid_paid_controls).toBe("true");
-      expect(manifest.outputs.hybrid_hosted_reserved_rows).toBe("1");
-      expect(Number(manifest.outputs.hybrid_hosted_total_rows)).toBe(
-        emittedHostedRows(manifest.outputs).length,
-      );
-    });
-
     it("counts the actual workflow rows and admits five offloads only below the base threshold", () => {
       const planner = readCiWorkflow().jobs.preflight.steps.find(
         (step: WorkflowStep) => step.name === "Build CI manifest",
@@ -2129,13 +2029,14 @@ describe("ci workflow guards", () => {
       expect(planner.run).toContain("const HYBRID_HOSTED_BASE_ROW_LIMIT = 40;");
       const baseline = manifestWithHostedNodeRows(0);
       expect(baseline.status, baseline.output).toBe(0);
-      const originalBase = emittedHostedRows({
-        ...baseline.outputs,
-        hybrid_hosted_offload: "false",
-      }).length;
-      expect(Number(baseline.outputs.hybrid_hosted_base_rows)).toBe(originalBase);
+      const originalBase =
+        emittedHostedRows({
+          ...baseline.outputs,
+          hybrid_hosted_offload: "false",
+        }).length + 2;
+      expect(Number(baseline.outputs.hybrid_hosted_base_rows)).toBe(originalBase - 2);
       for (const baseRows of [40, 41, 45, 46]) {
-        const manifest = manifestWithHostedNodeRows(baseRows - originalBase - 2);
+        const manifest = manifestWithHostedNodeRows(baseRows - originalBase);
         expect(manifest.status, manifest.output).toBe(0);
         if (baseRows === 46) {
           expect(manifest.output).toContain(
@@ -2494,6 +2395,106 @@ describe("ci workflow guards", () => {
         "blacksmith-4vcpu-ubuntu-2404",
       );
       expect(evaluateWorkflowExpression(job.if, { ...context, cancelled: true })).toBe(false);
+    });
+
+    it.each([
+      { eventName: "push" as const, runnerBackend: "hybrid" as const },
+      { eventName: "pull_request" as const, runnerBackend: "hybrid" as const },
+      { eventName: "push" as const, runnerBackend: "runson" as const },
+      { eventName: "pull_request" as const, runnerBackend: "runson" as const },
+      { eventName: "workflow_dispatch" as const, runnerBackend: "runson" as const },
+    ])(
+      "routes admitted control gates without hosted queue waits ($eventName, $runnerBackend)",
+      (options) => {
+        const qualification = options.eventName === "workflow_dispatch";
+        const manifest = manifestWithHostedNodeRows(0, {
+          ...options,
+          runnerProfile: "hybrid",
+          nodeRunnerBackend: options.runnerBackend,
+          nodeTestShards: undefined,
+          releaseGate: qualification,
+          changedPaths: [".github/workflows/ci.yml"],
+        });
+        expect(manifest.status, manifest.output).toBe(0);
+        const workflow = readCiWorkflow();
+        for (const [jobName, runner] of [
+          ["checks-baseline-ratchets", "blacksmith-16vcpu-ubuntu-2404"],
+          ["ci-gate", "blacksmith-4vcpu-ubuntu-2404"],
+        ] as const) {
+          const context = {
+            ...options,
+            repository: "openclaw/openclaw",
+            runAttempt: 1,
+            preflightOutputs: manifest.outputs,
+          };
+          const expression = workflow.jobs[jobName]["runs-on"];
+          expect(evaluateWorkflowExpression(expression, context), jobName).toBe(runner);
+          // Failed-job reruns reuse the successful first preflight's outputs.
+          expect
+            .soft(
+              evaluateWorkflowExpression(expression, { ...context, runAttempt: 2 }),
+              `${jobName}: retry with retained admission`,
+            )
+            .toBe("ubuntu-24.04");
+          if (qualification) {
+            expect(
+              evaluateWorkflowExpression(expression, {
+                ...context,
+                dispatchId: "full-release-validation-fixture",
+                releaseRunnerGroup: "release-fixture",
+              }),
+              jobName,
+            ).toEqual({ group: "release-fixture", labels: runner });
+            expect
+              .soft(
+                evaluateWorkflowExpression(expression, {
+                  ...context,
+                  runAttempt: 2,
+                  dispatchId: "full-release-validation-fixture",
+                  releaseRunnerGroup: "release-fixture",
+                }),
+                `${jobName}: release-group retry with retained admission`,
+              )
+              .toEqual({ group: "release-fixture", labels: "ubuntu-24.04" });
+          }
+          for (const result of ["failure", "cancelled", "skipped"]) {
+            expect(
+              evaluateWorkflowExpression(expression, {
+                ...context,
+                jobResults: { preflight: result },
+              }),
+              `${jobName}: ${result}`,
+            ).toBe("ubuntu-24.04");
+          }
+          expect(
+            evaluateWorkflowExpression(expression, {
+              ...context,
+              preflightOutputs: {},
+            }),
+            `${jobName}: no decision`,
+          ).toBe("ubuntu-24.04");
+        }
+        expect(
+          evaluateWorkflowExpression(workflow.jobs.preflight.outputs.hybrid_paid_controls, {
+            ...options,
+            repository: "openclaw/openclaw",
+            runAttempt: 1,
+            steps: { manifest: { outputs: manifest.outputs } },
+          }),
+        ).toBe("true");
+        expect(manifest.outputs.hybrid_hosted_reserved_rows).toBe("2");
+      },
+    );
+
+    it("reserves only the final control gate when baseline ratchets are unselected", () => {
+      const manifest = manifestWithHostedNodeRows(0, { runNode: false });
+      expect(manifest.status, manifest.output).toBe(0);
+      expect(manifest.outputs.run_baseline_ratchets).toBe("false");
+      expect(manifest.outputs.hybrid_paid_controls).toBe("true");
+      expect(manifest.outputs.hybrid_hosted_reserved_rows).toBe("1");
+      expect(Number(manifest.outputs.hybrid_hosted_total_rows)).toBe(
+        emittedHostedRows(manifest.outputs).length,
+      );
     });
   });
 
