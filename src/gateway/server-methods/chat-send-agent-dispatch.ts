@@ -18,6 +18,7 @@ import { isOperatorUiClient } from "../../utils/message-channel.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { updateChatRunProvider } from "../chat-abort.js";
 import { discardPreparedInboundMedia } from "../chat-attachments.js";
+import { attachSessionGitHubIssueContext } from "../chat-github-issue-context.js";
 import { chatRunBelongsToSelectedAgent } from "../chat-run-owner.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "../session-request-agent.js";
 import { buildAbortedChatSendPayload } from "./chat-abort-authorization.js";
@@ -294,6 +295,21 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                 counts: { tool: 0, block: 0, final: 0 },
               };
             }
+          }
+          if (request.turnKind === "main") {
+            await attachSessionGitHubIssueContext({
+              agentId,
+              assertActive: () => {
+                if (!isRunCurrent()) {
+                  throw new Error("GitHub issue context turn changed during preparation");
+                }
+              },
+              config: cfg,
+              context,
+              message: request.inboundMessage,
+              repositoryWorkspaceId: entry?.repositoryWorkspaceId,
+              templateContext: ctx,
+            });
           }
           const pluginBoundMedia = await pluginBoundMediaPromise;
           assertWorkspaceRunOwnership?.();

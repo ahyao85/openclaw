@@ -17,6 +17,7 @@ import { getSessionRepositoryWorkspaceStore } from "../../state/session-reposito
 import { generateWorktreeSessionTitle } from "../dashboard-session-title.js";
 import { githubApiToken } from "../github-public-api.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
+import { prepareGatewayProjectGitHubIdentity } from "../project-github-identity.js";
 import type {
   PrepareGatewaySessionLifecycle,
   PreparedGatewaySessionLifecycle,
@@ -265,12 +266,21 @@ export async function prepareSessionWorkspace(params: {
       delete entry.pendingWorktree;
       return;
     }
+    const configuredToken = gitUrl ? githubApiToken(process.env, cfg) : undefined;
+    const projectIdentity =
+      gitUrl && !configuredToken
+        ? await prepareGatewayProjectGitHubIdentity({
+            agentId,
+            assertActive: assertRunOwnership,
+            config: cfg,
+            context,
+          })
+        : undefined;
+    const projectToken = configuredToken ?? projectIdentity?.token;
     const project = gitUrl
-      ? await materializeProjectClone(
-          { cfg, gitUrl },
-          { signal, token: githubApiToken(process.env, cfg) },
-        )
+      ? await materializeProjectClone({ cfg, gitUrl }, { signal, token: projectToken })
       : undefined;
+    projectIdentity?.assertSelected();
     assertRunOwnership();
     const directory = project
       ? await resolveProjectDirectory(project.repoRoot)
@@ -330,8 +340,9 @@ export async function prepareSessionWorkspace(params: {
         ) {
           await refreshProjectClone(project, {
             signal,
-            token: githubApiToken(process.env, cfg),
+            token: projectToken,
           });
+          projectIdentity?.assertSelected();
           assertRunOwnership();
           resolved = await resolveSessionWorktreeBase(directory, pending.baseRef, signal);
         }
