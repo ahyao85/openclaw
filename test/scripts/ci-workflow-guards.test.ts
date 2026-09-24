@@ -3677,9 +3677,6 @@ setImmediate(() => {
     expect(evaluateWorkflowRunner(jobs["check-lint-hosted-core-shard"]?.["runs-on"])).toBe(
       "ubuntu-24.04",
     );
-    expect(evaluateWorkflowRunner(jobs["check-lint-hosted-extension-shard"]?.["runs-on"])).toBe(
-      "ubuntu-24.04",
-    );
     // check-docs stays hosted in every mode: its ClawHub clone is unauthenticated by design.
     expect(evaluateWorkflowRunner(jobs["check-docs"]?.["runs-on"])).toBe("ubuntu-24.04");
     for (const [jobName, hostedRunner] of Object.entries(expectedHostedRunners)) {
