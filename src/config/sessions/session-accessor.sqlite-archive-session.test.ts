@@ -622,6 +622,67 @@ describe("SQLite transcript archive sessions", () => {
     },
   );
 
+  it.each(["path", "agent"] as const)(
+    "refuses a prepared archive reply with a different physical %s owner",
+    async (changed) => {
+      const sessionId = "archive-reply-owner";
+      const sessionKey = "agent:main:archive-reply-owner";
+      const scope = { sessionKey, sessionId, storePath };
+      await replaceSessionEntry(scope, { sessionId, updatedAt: 1 });
+      await replaceTranscriptEvents(scope, [createTranscriptEvent(sessionId, "original archive")]);
+      await waitForSessionTranscriptIndexReconcilesInStateDir(tempDir);
+      const database = openLifecycleTestDatabase(storePath);
+      const otherPath = path.join(tempDir, "different-owner.sqlite");
+      const reclaim = reclamation.runSqliteSessionReclamation;
+      let changedPlans = 0;
+      const prepareObserver = vi
+        .spyOn(reclamation, "runSqliteSessionReclamation")
+        .mockImplementation(async (params) => {
+          const result = await reclaim(params);
+          if (result.kind === "archive-publish-prepare") {
+            for (const plan of result.value) {
+              if (plan.sessionId === sessionId) {
+                changedPlans += 1;
+                if (changed === "path") {
+                  plan.databasePath = otherPath;
+                } else {
+                  plan.agentId = "other";
+                }
+              }
+            }
+          }
+          return result;
+        });
+      const workers = observeArchiveSessionWorkers();
+      try {
+        await expect(
+          deleteSessionEntryLifecycle({
+            archiveTranscript: true,
+            storePath,
+            target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
+          }),
+        ).rejects.toThrow(/database owner/);
+      } finally {
+        prepareObserver.mockRestore();
+        workers.stop();
+      }
+      expect(changedPlans).toBe(1);
+      expect(workers.replies.map(({ message }) => message.type)).toEqual(["done"]);
+      expect(workers.replies.every(({ worker }) => worker.threadId === -1)).toBe(true);
+      const archive = database.db
+        .prepare(
+          "SELECT archive_name, published_at, publish_attempts FROM session_transcript_archives WHERE session_id = ?",
+        )
+        .get(sessionId);
+      expect(archive).toMatchObject({ published_at: null, publish_attempts: 0 });
+      if (typeof archive?.archive_name !== "string") {
+        throw new Error("Expected the original committed archive row");
+      }
+      expect(fs.existsSync(path.join(path.dirname(storePath), archive.archive_name))).toBe(false);
+      expect(fs.existsSync(otherPath)).toBe(false);
+    },
+  );
+
   it.runIf(process.platform !== "win32").each(["before file", "before record"] as const)(
     "refuses a physical database replacement %s without publishing to its successor",
     async (boundary) => {
@@ -731,6 +792,32 @@ describe("SQLite transcript archive sessions", () => {
   it.each(["publication fails", "publication succeeds"] as const)(
     "preserves retained claim release failures when %s",
     async (outcome) => {
+      let requested: Parameters<typeof publishSessionStateArchives>[1] = [
+        {
+          sessionId: "missing-canonical-archive",
+          generation: "missing-generation",
+          sourcePath: path.join(tempDir, "missing-source.jsonl"),
+          archivedPath: path.join(tempDir, "missing-archive.jsonl"),
+        },
+      ];
+      if (outcome === "publication succeeds") {
+        const sessionId = "archive-release-success";
+        const sessionKey = "agent:main:archive-release-success";
+        await replaceSessionEntry({ sessionKey, storePath }, { sessionId, updatedAt: 1 });
+        await replaceTranscriptEvents({ sessionKey, sessionId, storePath }, [
+          createTranscriptEvent(sessionId, "publish before releasing the claim"),
+        ]);
+        requested = (
+          await deleteSessionEntryLifecycle({
+            archiveTranscript: true,
+            storePath,
+            target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
+          })
+        ).archivedTranscripts;
+        expect(requested).toHaveLength(1);
+        await waitForSessionTranscriptIndexReconcilesInStateDir(tempDir);
+        await closeOpenClawAgentDatabasesAsync(tempDir);
+      }
       const database = openLifecycleTestDatabase(storePath);
       const options = { agentId: "main", path: database.path, env: testState.env };
       const releaseFailure = new Error("synthetic retained archive claim release failure");
@@ -753,17 +840,6 @@ describe("SQLite transcript archive sessions", () => {
           return retained;
         });
       try {
-        const requested =
-          outcome === "publication fails"
-            ? [
-                {
-                  sessionId: "missing-canonical-archive",
-                  generation: "missing-generation",
-                  sourcePath: path.join(tempDir, "missing-source.jsonl"),
-                  archivedPath: path.join(tempDir, "missing-archive.jsonl"),
-                },
-              ]
-            : [];
         const caught = await publishSessionStateArchives(options, requested).then(
           () => undefined,
           (error: unknown) => error,
@@ -782,6 +858,13 @@ describe("SQLite transcript archive sessions", () => {
           expect(caught.errors[1]).toBe(releaseFailure);
         } else {
           expect(caught).toBe(releaseFailure);
+          expect(
+            database.db
+              .prepare(
+                "SELECT publish_attempts FROM session_transcript_archives WHERE session_id = ?",
+              )
+              .get("archive-release-success"),
+          ).toEqual({ publish_attempts: 2 });
         }
       } finally {
         retainObserver.mockRestore();

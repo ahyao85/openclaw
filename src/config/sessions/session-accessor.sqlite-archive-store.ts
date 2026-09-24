@@ -8,10 +8,10 @@ import {
 } from "../../state/openclaw-agent-db-identity.js";
 import { retainOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
-  getOpenClawAgentDatabaseIfOpen,
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
+import { supportsOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { tableExists } from "../../state/openclaw-state-db-schema-helpers.js";
 import { withSqliteTranscriptArchiveSession } from "./session-accessor.sqlite-archive-session.js";
 import {
@@ -27,6 +27,7 @@ import {
   runSqliteTranscriptArchivePublishWorker,
 } from "./session-accessor.sqlite-archive.js";
 import type { SessionLifecycleArchivedTranscript } from "./session-accessor.sqlite-contract.js";
+import { hasPreparedNativeSessionDeletion } from "./session-accessor.sqlite-deletion.js";
 import { emitArchivedTranscriptUpdates } from "./session-accessor.sqlite-events.js";
 import {
   resolveSessionReclamationDatabaseOptions,
@@ -58,9 +59,11 @@ export async function publishSessionStateArchives(
     return publishPreparedSessionStateArchives(requested, storage);
   }
   const databaseOptions = resolveSessionReclamationDatabaseOptions(toDatabaseOptions(scope));
+  const forceInProcess =
+    hasPreparedNativeSessionDeletion() || !supportsOpenClawAgentDatabaseExecution(databaseOptions);
   return withSqliteMutationWorkerLifetime(databaseOptions, ({ assertCurrent, signal }) =>
     withSqliteTranscriptArchiveSession(databaseOptions, async () => {
-      if (requested.length === 0 && !getOpenClawAgentDatabaseIfOpen(databaseOptions)) {
+      if (!forceInProcess && requested.length === 0) {
         try {
           const pending = await readPendingSqliteTranscriptArchivesInWorker(
             {
@@ -105,7 +108,10 @@ export async function publishSessionStateArchives(
       };
       let result: SessionLifecycleArchivedTranscript[];
       try {
-        const identity = readOpenClawAgentDatabaseIdentity(database).identity;
+        const retainedIdentity = readOpenClawAgentDatabaseIdentity(database);
+        const preparedDatabasePath = path.resolve(
+          forceInProcess ? database.path : retainedIdentity.filename,
+        );
         result = await publishPreparedSessionStateArchives(
           requested,
           {
@@ -113,7 +119,7 @@ export async function publishSessionStateArchives(
               assertOwnerCurrent();
               const prepared = await runSqliteSessionReclamation({
                 assertCommitAllowed: assertOwnerCurrent,
-                forceInProcess: false,
+                forceInProcess,
                 plan: {
                   kind: "archive-publish-prepare",
                   databaseOptions,
@@ -127,7 +133,18 @@ export async function publishSessionStateArchives(
               }
               assertOwnerCurrent();
               for (const plan of prepared.value) {
-                plan.databaseIdentity = typeof identity === "string" ? identity : undefined;
+                if (
+                  plan.agentId !== database.agentId ||
+                  path.resolve(plan.databasePath) !== preparedDatabasePath
+                ) {
+                  throw new Error("SQLite archive preparation changed its retained database owner");
+                }
+                // Reclamation uses the native filename; the archive session retains the caller's spelling.
+                plan.databasePath = databaseOptions.path;
+                plan.databaseIdentity =
+                  typeof retainedIdentity.identity === "string"
+                    ? retainedIdentity.identity
+                    : undefined;
               }
               return prepared.value;
             },
@@ -135,7 +152,7 @@ export async function publishSessionStateArchives(
               assertOwnerCurrent();
               const recorded = await runSqliteSessionReclamation({
                 assertCommitAllowed: assertOwnerCurrent,
-                forceInProcess: false,
+                forceInProcess,
                 plan: {
                   kind: "archive-publish-record",
                   databaseOptions,

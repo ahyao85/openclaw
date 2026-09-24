@@ -173,17 +173,20 @@ async function runPendingMaintenance(
           ? normalizeResolvedMaintenanceConfigInput(owner.maintenanceConfig)
           : resolveMaintenanceConfig();
         const ageCapture = captureSessionEntryMaintenanceAgeFact(owner.database.db, maintenance);
-        const operation = createSessionMaintenancePlanningOperation({
-          databaseOptions: toDatabaseOptions(owner.scope),
-          input: {
-            ageFact: ageCapture.fact,
-            activeSessionKeys,
-            archiveDirectory: owner.archiveDirectory,
-            maintenance,
-            preservation: null,
-            storePath: owner.storePath,
-          },
-        });
+        const operation =
+          maintenance.mode === "warn"
+            ? null
+            : createSessionMaintenancePlanningOperation({
+                databaseOptions: toDatabaseOptions(owner.scope),
+                input: {
+                  ageFact: ageCapture.fact,
+                  activeSessionKeys,
+                  archiveDirectory: owner.archiveDirectory,
+                  maintenance,
+                  preservation: null,
+                  storePath: owner.storePath,
+                },
+              });
         return { maintenance, operation, ageCapture };
       },
       "session.maintenance.plan",
@@ -193,7 +196,7 @@ async function runPendingMaintenance(
       return;
     }
     const { maintenance, operation } = prepared;
-    if (maintenance.mode === "warn") {
+    if (operation === null) {
       if (isCurrent() && owner.generation !== generation) {
         scheduleMaintenanceAfterWriteQuiet(databasePath, owner);
       } else {
