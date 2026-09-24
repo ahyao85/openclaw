@@ -301,6 +301,79 @@ describe("project registry", () => {
     });
   });
 
+  it("scopes private clone and refresh credentials to the repository origin", async () => {
+    const root = tempDirs.make("openclaw-project-auth-origin-");
+    const checkout = await initializeRepository(root, "checkout");
+    const token = "synthetic-project-token";
+    const runCommand = processExec.runCommandWithTimeout;
+    const commandSpy = vi.spyOn(processExec, "runCommandWithTimeout");
+    commandSpy.mockImplementation(async (argv, options) => {
+      if (argv.includes("clone") || argv.includes("fetch")) {
+        return {
+          code: 0,
+          stdout: "",
+          stderr: "",
+          signal: null,
+          killed: false,
+          termination: "exit",
+        };
+      }
+      return await runCommand(argv, options);
+    });
+    try {
+      await cloneProjectCheckout(
+        {
+          url: "https://microsoft.ghe.com/acme/enterprise.git",
+          target: path.join(root, "enterprise"),
+        },
+        { token },
+      );
+      await cloneProjectCheckout(
+        {
+          url: "https://github.com/acme/public-cloud.git",
+          target: path.join(root, "public-cloud"),
+        },
+        { token },
+      );
+      await refreshProjectCheckout(
+        { target: checkout, url: "https://microsoft.ghe.com/acme/enterprise.git" },
+        { token },
+      );
+
+      const networkCalls = commandSpy.mock.calls.filter(
+        ([argv]) => argv.includes("clone") || argv.includes("fetch"),
+      );
+      expect(networkCalls).toHaveLength(3);
+      expect(networkCalls.map(([, options]) => options?.env?.GIT_CONFIG_KEY_0)).toEqual([
+        "http.https://microsoft.ghe.com/.extraHeader",
+        "http.https://github.com/.extraHeader",
+        "http.https://microsoft.ghe.com/.extraHeader",
+      ]);
+      expect(networkCalls.map(([, options]) => options?.env?.GIT_CONFIG_COUNT)).toEqual([
+        "1",
+        "1",
+        "1",
+      ]);
+      expect(networkCalls.flatMap(([argv]) => argv)).not.toContain(token);
+      expect(networkCalls.map(([, options]) => options?.env?.GIT_CONFIG_KEY_0)).not.toContain(
+        "http.extraHeader",
+      );
+      const unrelatedOrigin = await runCommand(
+        [
+          "git",
+          "config",
+          "--get-urlmatch",
+          "http.extraHeader",
+          "https://unrelated.example/acme/repository.git",
+        ],
+        { env: networkCalls[0]?.[1]?.env },
+      );
+      expect(unrelatedOrigin).toMatchObject({ code: 1, stdout: "" });
+    } finally {
+      commandSpy.mockRestore();
+    }
+  });
+
   it.runIf(process.platform !== "win32")(
     "does not run checkout hooks while refreshing managed refs",
     async () => {
