@@ -324,7 +324,8 @@ export function receiveSqliteWorkerReply(
   if (job.request.type === "close") {
     owner.finish(job, undefined, value, undefined, reply.closeReceipt);
   } else {
-    owner.finish(job, undefined, value);
+    // A domain can encode a refused transaction inside a successful wire reply.
+    owner.finish(job, job.operationAdmission?.admission.failure, value);
   }
   owner.dispatch();
 }
