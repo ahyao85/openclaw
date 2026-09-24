@@ -143,7 +143,14 @@ describe("DraftPlaceState repository selection", () => {
 
   it("does not clone a configured worker repository onto the Gateway", () => {
     const configured = createRepositoryFixture();
-    configured.readPreference.mockReturnValue({ folder: "/workspace" });
+    configured.readPreference.mockReturnValue({
+      folder: "/workspace",
+      remoteProject: {
+        identity: "bic/lobster",
+        cloneUrl: "https://microsoft.ghe.com/bic/lobster.git",
+        defaultBranch: "main",
+      },
+    });
     vi.spyOn(configured.browser, "projectsReady", "get").mockReturnValue(true);
     vi.spyOn(configured.browser, "defaultRemoteProject", "get").mockReturnValue({
       identity: "bic/lobster",
@@ -160,6 +167,39 @@ describe("DraftPlaceState repository selection", () => {
     expect(configured.browser.remoteProject).toBeNull();
     expect(configured.state.remoteRepository).toBeUndefined();
     expect(configured.state.cloudProfileId).toBe("");
+  });
+
+  it("moves a saved configured repository from the Gateway onto its worker profile", () => {
+    const configured = createRepositoryFixture();
+    configured.readPreference.mockReturnValue({
+      folder: "/workspace",
+      remoteProject: {
+        identity: "bic/lobster",
+        cloneUrl: "https://microsoft.ghe.com/bic/lobster.git",
+        defaultBranch: "main",
+      },
+      baseRef: "main",
+      where: { kind: "local" },
+    });
+    vi.spyOn(configured.browser, "projectsReady", "get").mockReturnValue(true);
+    vi.spyOn(configured.browser, "defaultRemoteProject", "get").mockReturnValue({
+      identity: "bic/lobster",
+      cloneUrl: "https://microsoft.ghe.com/bic/lobster.git",
+      defaultBranch: "main",
+    });
+    vi.spyOn(configured.browser, "defaultRemoteProjectProfileId", "get").mockReturnValue("aws");
+
+    configured.state.adoptAgentDefaults();
+    configured.state.restorePreferenceSelections();
+
+    expect(configured.browser.remoteProject?.cloneUrl).toBe(
+      "https://microsoft.ghe.com/bic/lobster.git",
+    );
+    expect(configured.state.cloudProfileId).toBe("aws");
+    expect(configured.state.remoteRepository).toEqual({
+      url: "https://microsoft.ghe.com/bic/lobster.git",
+      ref: "main",
+    });
   });
 
   it("remembers a remote project and restores its default branch", () => {

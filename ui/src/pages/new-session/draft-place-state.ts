@@ -750,12 +750,19 @@ export class DraftPlaceState {
     let changed = false;
     const preferredWhere = this.whereSelectedByUser ? null : this.preferredWhereRestore;
     const preferredProject = this.projectSelectedByUser ? "" : this.preferredProjectRestore;
+    const configuredRemoteProject = this.browser.defaultRemoteProject;
     const configuredProfileId = this.browser.defaultRemoteProjectProfileId;
     const configuredProfile = configuredProfileId
       ? this.gateway.cloudProfiles.find((profile) => profile.id === configuredProfileId)
       : undefined;
+    const restoringConfiguredRemoteProject = Boolean(
+      configuredRemoteProject &&
+      this.preferredRemoteProjectRestore?.cloneUrl === configuredRemoteProject.cloneUrl,
+    );
+    const configuredDefaultRequested =
+      this.configuredDefaultRepositoryPending || restoringConfiguredRemoteProject;
     const configuredDefaultReady =
-      this.configuredDefaultRepositoryPending &&
+      configuredDefaultRequested &&
       this.browser.projectsReady &&
       (!configuredProfileId || this.gateway.cloudProfilesReady);
     const configuredDefaultAllowed = Boolean(
@@ -767,16 +774,31 @@ export class DraftPlaceState {
     );
     const preferredRemoteProject = this.projectSelectedByUser
       ? null
-      : (this.preferredRemoteProjectRestore ??
-        (configuredDefaultAllowed ? this.browser.defaultRemoteProject : null));
+      : restoringConfiguredRemoteProject
+        ? configuredDefaultReady && configuredDefaultAllowed
+          ? this.preferredRemoteProjectRestore
+          : null
+        : (this.preferredRemoteProjectRestore ??
+          (configuredDefaultAllowed ? configuredRemoteProject : null));
 
     if (configuredDefaultReady) {
       this.configuredDefaultRepositoryPending = false;
+      if (restoringConfiguredRemoteProject && !configuredDefaultAllowed) {
+        this.preferredRemoteProjectRestore = null;
+      }
       changed = true;
     }
 
     if (preferredRemoteProject) {
-      if (configuredProfileId && configuredDefaultAllowed && !preferredWhere) {
+      const selectingConfiguredRemoteProject =
+        configuredDefaultRequested &&
+        preferredRemoteProject.cloneUrl === configuredRemoteProject?.cloneUrl;
+      if (
+        configuredProfileId &&
+        selectingConfiguredRemoteProject &&
+        configuredDefaultAllowed &&
+        !preferredWhere
+      ) {
         this.deviceIdValue = "";
         this.autoDeviceValue = false;
         this.cloudProfileIdValue = configuredProfileId;
