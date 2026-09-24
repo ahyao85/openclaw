@@ -14,8 +14,8 @@ import type { CronAgentAvailability } from "../agent-availability.js";
 import { toPublicCronJob } from "../public-job.js";
 import type { CronRuntimeAuthority } from "../runtime-authority.js";
 import type { CronScheduledToolPolicy } from "../scheduled-tool-policy.js";
-import type { QuarantinedCronConfigJob } from "../store.js";
 import type { CronRunReceiptHandle } from "../store/run-receipt.types.js";
+import type { QuarantinedCronConfigJob } from "../store/types.js";
 import type {
   CronCompletionStatus,
   CronTriggerEvaluationResult,

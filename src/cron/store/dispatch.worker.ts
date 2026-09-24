@@ -1,7 +1,3 @@
-import type {
-  ExecutionOwnerBinding,
-  ExecutionOwnerBindingResult,
-} from "../../audit/execution-owner-binding.js";
 import type { SqliteWorkerCommand } from "../../infra/sqlite-worker-contract.js";
 import { requestSqliteWorkerOperationAdmission } from "../../infra/sqlite-worker-operation-admission.js";
 import { getSqliteWorkerStateContext } from "../../infra/sqlite-worker-state-context.js";
@@ -10,16 +6,13 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
-import type { CronStoreWorkerOperations } from "./load-worker.types.js";
 import { loadMutableCronStoreInWorker } from "./load.worker.js";
 import {
   bindCronRunReceiptExecutionInDatabase,
   ensureCronRunReceiptSchema,
 } from "./run-receipt-store.js";
-import type { CronRunReceiptHandle } from "./run-receipt.types.js";
-import type { CronRuntimeWorkerOperations } from "./runtime-worker.types.js";
-import type { CronStoreSaveWorkerOperations } from "./save-worker.types.js";
 import { executeCronStoreSaveCommand } from "./save.worker.js";
+import type { CronStateWorkerOperations } from "./worker-contract.js";
 
 const loadAdmission = createLazyRuntimeModule(() => import("./run-admission.worker.js"));
 let admission: typeof import("./run-admission.worker.js") | undefined;
@@ -58,19 +51,6 @@ export function prepareCronStateWorkerCommand(type: PropertyKey): Promise<void> 
     recovery = loaded;
   });
 }
-
-export type CronStateWorkerOperations = CronStoreWorkerOperations &
-  CronRuntimeWorkerOperations &
-  CronStoreSaveWorkerOperations & {
-    "cron.initializeRunReceipts": {
-      input: Record<string, never>;
-      output: void;
-    };
-    "cron.bindReceiptExecution": {
-      input: { handle: CronRunReceiptHandle; binding: ExecutionOwnerBinding };
-      output: ExecutionOwnerBindingResult;
-    };
-  };
 
 export function isCronStateWorkerCommand(command: {
   type: string;
