@@ -500,7 +500,21 @@ suite.define(() => {
     const catalogRequests = new Set<string>();
     const catalogParams: unknown[] = [];
     let rejectCatalogReplies = false;
+    let configPublication:
+      | {
+          committed: boolean;
+          reads: Set<string>;
+          modelId: string;
+          completion: ReturnType<typeof Promise.withResolvers<void>>;
+        }
+      | undefined;
     const publish = async (id: string) => {
+      configPublication = {
+        committed: false,
+        reads: new Set(),
+        modelId: id,
+        completion: Promise.withResolvers<void>(),
+      };
       const args = [
         "config",
         "set",
@@ -512,6 +526,7 @@ suite.define(() => {
       const result = await instance.cli(args);
       commands.push({ args, ...result });
       expect(result.code, result.stderr).toBe(0);
+      await configPublication.completion.promise;
     };
     try {
       await suite.withPage(
@@ -526,6 +541,12 @@ suite.define(() => {
                 if (frame.method === "models.list" && typeof frame.id === "string") {
                   catalogRequests.add(frame.id);
                   catalogParams.push(frame.params);
+                  if (configPublication?.committed) {
+                    const params = requireRecord(frame.params);
+                    if (params.agentId === "main" && params.sessionKey === undefined) {
+                      configPublication.reads.add(frame.id);
+                    }
+                  }
                 }
               }
               server.send(message);
@@ -555,6 +576,26 @@ suite.define(() => {
                 );
               } else {
                 socket.send(message);
+                const publication = configPublication;
+                if (publication && frame.event === "config.changed") {
+                  publication.committed = true;
+                } else if (
+                  publication &&
+                  typeof frame.id === "string" &&
+                  publication.reads.has(frame.id) &&
+                  frame.ok === true
+                ) {
+                  const result = requireRecord(frame.payload);
+                  if (
+                    Array.isArray(result.models) &&
+                    result.models.some((model) => {
+                      const row = requireRecord(model);
+                      return row.provider === "fixture" && row.id === publication.modelId;
+                    })
+                  ) {
+                    publication.completion.resolve();
+                  }
+                }
               }
             });
           });
@@ -575,6 +616,8 @@ suite.define(() => {
           if (captureEnabled) {
             await page.screenshot({ path: path.join(suite.artifactDir, "initial.png") });
           }
+          // Runtime publication can expose the row before config.changed retires display facts.
+          // Join a replacement read issued after that event before simulating transport failure.
           await publish("palette-published");
           await expect.poll(() => published.count()).toBe(1);
           expect(await retiring.count()).toBe(0);
