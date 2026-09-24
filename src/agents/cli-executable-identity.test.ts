@@ -4,12 +4,49 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { makeTempDir } from "../../test/helpers/temp-dir.js";
 import type { CliBackendRuntimeArtifactPolicy } from "../plugins/cli-backend.types.js";
 import { resolveCliExecutableIdentity } from "./cli-executable-identity.js";
 
 const tempDirs: string[] = [];
+// Diagnostic-only branch: no pre-removal native probes or cleanup retries.
+const cleanupReceipts = new Map<string, unknown>();
+function observeCleanupFailure(directory: string, error: unknown) {
+  const paths = [directory];
+  try {
+    paths.push(
+      ...fs.readdirSync(directory, { recursive: true }).map((entry) => path.join(directory, entry)),
+    );
+  } catch (enumerationError) {
+    console.error("[cli-cleanup-enumeration]", String(enumerationError));
+  }
+  console.error("[cli-cleanup-original-error]", error, cleanupReceipts.get(directory));
+  const observation = spawnSync(
+    "pwsh.exe",
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-File",
+      path.join(process.cwd(), "src/agents/cli-cleanup-diagnostic.test-support.ps1"),
+    ],
+    {
+      encoding: "utf8",
+      env: { ...process.env, OPENCLAW_CLEANUP_DIAGNOSTIC_PATHS: JSON.stringify(paths) },
+      timeout: 15_000,
+    },
+  );
+  console.error(
+    "[cli-cleanup-native-observation]",
+    JSON.stringify({
+      status: observation.status,
+      error: observation.error?.message,
+      stdout: observation.stdout,
+      stderr: observation.stderr,
+    }),
+  );
+}
 
 function makePackage(): { root: string; entrypoint: string; implementation: string } {
   const root = fs.realpathSync.native(
@@ -46,8 +83,54 @@ const packageCommandEnv = {
 describe("CLI executable implementation identity", () => {
   afterEach(() => {
     for (const directory of tempDirs.splice(0)) {
-      fs.rmSync(directory, { recursive: true, force: true });
+      try {
+        fs.rmSync(directory, { recursive: true, force: true });
+        console.log(
+          "[cli-cleanup-settled]",
+          JSON.stringify({ directory, child: cleanupReceipts.get(directory) }),
+        );
+      } catch (error) {
+        if (process.platform === "win32") {
+          try {
+            observeCleanupFailure(directory, error);
+          } catch (diagnosticError) {
+            console.error("[cli-cleanup-diagnostic-error]", diagnosticError);
+          }
+        }
+        throw error;
+      } finally {
+        cleanupReceipts.delete(directory);
+      }
     }
+  });
+
+  afterAll(() => {
+    if (process.platform !== "win32") {
+      return;
+    }
+    const calibration = spawnSync(
+      "pwsh.exe",
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        path.join(process.cwd(), "src/agents/cli-cleanup-diagnostic.test-support.ps1"),
+        "-Calibrate",
+      ],
+      { encoding: "utf8", timeout: 15_000 },
+    );
+    console.log(
+      "[cli-cleanup-calibration]",
+      JSON.stringify({
+        status: calibration.status,
+        error: calibration.error?.message,
+        stdout: calibration.stdout,
+        stderr: calibration.stderr,
+      }),
+    );
+    expect(calibration.error).toBeUndefined();
+    expect(calibration.status).toBe(0);
   });
 
   it.each(
@@ -271,6 +354,15 @@ describe("CLI executable implementation identity", () => {
           windowsHide: true,
         },
       );
+      cleanupReceipts.set(fixture.root, {
+        scenario,
+        pid: child.pid,
+        status: child.status,
+        signal: child.signal,
+        error: child.error?.message,
+        stdout: child.stdout,
+        executable: identity.invocation.command,
+      });
       expect(child.error).toBeUndefined();
       expect(child.status).toBe(0);
       expect(child.stdout).toBe("identity-ok");
