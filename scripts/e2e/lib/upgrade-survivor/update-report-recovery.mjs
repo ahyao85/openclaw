@@ -422,7 +422,7 @@ async function run(ctx) {
     assert.equal(state.runStatusError, undefined);
     assert.equal(state.lastRun?.status, "failed");
     assert.equal(state.lastRun.reason, "global-install-failed");
-    const failedSteps = ["package-install", "package-install-omit-optional"].map((name) => {
+    const failedSteps = ["global update", "global update (omit optional)"].map((name) => {
       const step = state.lastRun.steps.find((entry) => entry.step === name);
       assert.equal(step?.status, "failed", `Missing real npm failure step ${name}`);
       assert(
