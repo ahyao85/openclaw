@@ -98,9 +98,11 @@ Schema-valid values still reach their normal semantic checks: an incompatible mo
 route, a missing credential, or an unusably small context window is not repaired by omission.
 
 For example, if a Discord guild has `requireMention: false` and a channel override
-contains `requireMention: "false"`, the invalid override is omitted from the runtime
-view and the channel inherits the guild's `false`. The authored string remains on
-disk for correction. Scalar recovery leaves parent objects in place, preserving each
+contains `requireMention: "true"`, the invalid override is omitted from the runtime
+view and the channel inherits the guild's `false`. The string is not interpreted
+as a boolean. With no valid parent setting, Discord keeps its normal require-mention
+default. Sender user/role allowlists remain independent and continue to apply.
+The authored string remains on disk for correction. Scalar recovery leaves parent objects in place, preserving each
 owner's rules for object-level overrides and defaults. The optional environment badge
 is one label/color value: if either required part is unusable, that annotation is omitted.
 
