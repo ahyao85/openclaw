@@ -34,9 +34,7 @@ export type CodexAppServerToolTelemetry = {
   messagingToolSentMediaUrls: string[];
   messagingToolSentTargets: MessagingToolSend[];
   messagingToolSourceReplyPayloads?: MessagingToolSourceReplyPayload[];
-  confirmedMediaDeliveries?: Readonly<
-    AgentHarnessToolResultTelemetry["confirmedMediaDeliveries"]
-  >;
+  confirmedMediaDeliveries?: Readonly<AgentHarnessToolResultTelemetry["confirmedMediaDeliveries"]>;
   heartbeatToolResponse?: HeartbeatToolResponse;
   toolMediaUrls?: string[];
   toolAutoDeliveryMediaUrls?: string[];
