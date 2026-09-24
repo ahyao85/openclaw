@@ -66,7 +66,7 @@ describe("channel schema error ownership", () => {
     });
     const entries = Object.fromEntries(
       Array.from({ length: 20 }, (_, index) => [
-        `${index}.a/~1`,
+        ["security", "roles", "auth"][index] ?? `${index}.a/~1`,
         { enabled: true, "extra./~": { keep: true } },
       ]),
     );
@@ -97,7 +97,7 @@ describe("channel schema error ownership", () => {
       ]),
     });
     expect(Settings.Get().maxErrors).toBe(previousErrorLimit);
-    expect(raw.channels["schema-channel"].entries["0.a/~1"]?.["extra./~"]).toEqual({ keep: true });
+    expect(raw.channels["schema-channel"].entries.security?.["extra./~"]).toEqual({ keep: true });
     expect(
       validateConfigObjectRawWithPlugins(
         { channels: { "schema-channel": { auth: { mode: "token", requireMfa: true } } } },
@@ -115,6 +115,27 @@ describe("channel schema error ownership", () => {
         { schemaValidation: "runtime", pluginMetadataSnapshot: { manifestRegistry: registry } },
       ).ok,
     ).toBe(false);
+  });
+
+  it("keeps Discord account IDs separate from policy property names", () => {
+    const accounts = Object.fromEntries(
+      ["security", "roles", "auth"].map((id) => [id, { enabled: false, futureProperty: true }]),
+    );
+    const raw = { channels: { discord: { accounts } } };
+    const result = validateConfigObjectRawWithPlugins(raw, {
+      schemaValidation: "runtime",
+      pluginMetadataSnapshot: { manifestRegistry: { plugins: [], diagnostics: [] } },
+      env: {},
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("Discord account projection failed");
+    }
+    for (const id of Object.keys(accounts)) {
+      expect(result.config.channels?.discord?.accounts?.[id]).toMatchObject({ enabled: false });
+      expect(result.config.channels?.discord?.accounts?.[id]).not.toHaveProperty("futureProperty");
+      expect(raw.channels.discord.accounts[id]).toHaveProperty("futureProperty", true);
+    }
   });
 
   it("reports malformed external channel schemas as scoped issues", () => {

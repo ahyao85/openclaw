@@ -39,6 +39,7 @@ import {
   parseOperatorModelPolicyWildcardRef,
 } from "./model-policy-ref.js";
 import { isBuiltInModelProviderOverlayId } from "./model-provider-overlay-ids.js";
+import { resolveConfigSchemaStructuralPath } from "./schema.walk.js";
 import type { ConfigValidationIssue, OpenClawConfig } from "./types.js";
 import {
   collectRawBundledChannelConfigIssues,
@@ -438,47 +439,46 @@ export function validateConfigObjectRaw(
     const legacyPaths = findLegacyConfigIssues(normalizedRaw, opts?.sourceRaw).map(
       (issue) => issue.path,
     );
-    const paths = validated.error.issues.flatMap((issue) =>
-      issue.code === "unrecognized_keys"
-        ? issue.keys
-            .map((key) => [
-              ...issue.path.map((segment) =>
-                typeof segment === "number" ? segment : String(segment),
-              ),
-              key,
-            ])
-            .filter((segments) => {
-              // This owner reads only its two named booleans; future marker names
-              // do not select migration or authority behavior.
-              if (segments.length === 3 && segments[0] === "meta" && segments[1] === "migrations") {
-                return true;
-              }
-              const dotted = segments.join(".");
-              // Authority containers and retired policy aliases require their owning migration.
-              if (
-                !isRuntimeConfigUnknownPath(segments) ||
-                (segments.length === 1 &&
-                  normalizeBundledChannelId(String(segments[0])) !== null) ||
-                segments[0] === "routing" ||
-                segments[0] === "tools" ||
-                (segments[0] === "agents" &&
-                  (segments.length === 2 ||
-                    (segments[1] === "defaults" && segments.length === 3) ||
-                    (segments[1] === "entries" && segments.length === 4))) ||
-                (segments[0] === "gateway" &&
-                  ["auth", "roles", "token"].includes(String(segments[1])))
-              ) {
-                return false;
-              }
-              return !legacyPaths.some(
-                (legacy) =>
-                  dotted === legacy ||
-                  dotted.startsWith(`${legacy}.`) ||
-                  legacy.startsWith(`${dotted}.`),
-              );
-            })
-        : [],
-    );
+    const paths = validated.error.issues.flatMap((issue) => {
+      if (issue.code !== "unrecognized_keys") {
+        return [];
+      }
+      const structuralPath = resolveConfigSchemaStructuralPath(OpenClawSchema, issue.path);
+      return issue.keys
+        .map((key) => [
+          ...issue.path.map((segment) => (typeof segment === "number" ? segment : String(segment))),
+          key,
+        ])
+        .filter((segments) => {
+          // This owner reads only its two named booleans; future marker names
+          // do not select migration or authority behavior.
+          if (segments.length === 3 && segments[0] === "meta" && segments[1] === "migrations") {
+            return true;
+          }
+          const dotted = segments.join(".");
+          // Authority containers and retired policy aliases require their owning migration.
+          if (
+            !structuralPath ||
+            !isRuntimeConfigUnknownPath(structuralPath) ||
+            (segments.length === 1 && normalizeBundledChannelId(String(segments[0])) !== null) ||
+            segments[0] === "routing" ||
+            segments[0] === "tools" ||
+            (segments[0] === "agents" &&
+              (segments.length === 2 ||
+                (segments[1] === "defaults" && segments.length === 3) ||
+                (segments[1] === "entries" && segments.length === 4))) ||
+            (segments[0] === "gateway" && ["auth", "roles", "token"].includes(String(segments[1])))
+          ) {
+            return false;
+          }
+          return !legacyPaths.some(
+            (legacy) =>
+              dotted === legacy ||
+              dotted.startsWith(`${legacy}.`) ||
+              legacy.startsWith(`${dotted}.`),
+          );
+        });
+    });
     if (paths.length > 0) {
       validated = OpenClawSchema.safeParse(omitRuntimeConfigPaths(normalizedRaw, paths));
       ignoredPaths = paths;

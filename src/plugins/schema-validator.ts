@@ -429,6 +429,31 @@ function resolveTypeBoxInstancePath(value: unknown, path: string): (string | num
   return matches.length === 1 ? matches[0] : undefined;
 }
 
+// Schema-map entry names belong to the schema vocabulary, not to user record IDs.
+const schemaMapKeywords = new Set([
+  "properties",
+  "patternProperties",
+  "$defs",
+  "definitions",
+  "dependentSchemas",
+  "dependencies",
+]);
+
+function schemaPropertyNames(path: readonly (string | number)[]): string[] {
+  const names: string[] = [];
+  for (let index = 0; index < path.length; index += 1) {
+    const keyword = path[index];
+    if (typeof keyword !== "string" || !schemaMapKeywords.has(keyword)) {
+      continue;
+    }
+    const name = path[++index];
+    if (keyword === "properties" && typeof name === "string") {
+      names.push(name);
+    }
+  }
+  return names;
+}
+
 /**
  * Result of validating manifest-sourced input. `schemaError` on the failure branch tells
  * callers whether the schema itself is unusable (true) versus the value failing a
@@ -546,15 +571,15 @@ function validateJsonSchemaValueInternal(
         );
         // A schema-valued additionalProperties reports failing record entries too.
         // Only false marks extras; never omit an entire configured owner as recovery.
-        if (asOptionalObjectRecord(owner)?.additionalProperties !== false) {
+        if (
+          !schemaPath ||
+          asOptionalObjectRecord(owner)?.additionalProperties !== false ||
+          !isRuntimeConfigUnknownPath(schemaPropertyNames(schemaPath))
+        ) {
           return [];
         }
         const parent = resolveTypeBoxInstancePath(value, error.instancePath ?? "");
-        return parent
-          ? resolveAdditionalProperties(error)
-              .map((key) => parent.concat(key))
-              .filter(isRuntimeConfigUnknownPath)
-          : [];
+        return parent ? resolveAdditionalProperties(error).map((key) => parent.concat(key)) : [];
       });
       if (paths.length > 0) {
         ignoredPaths = paths;

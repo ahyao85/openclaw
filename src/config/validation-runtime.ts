@@ -1,5 +1,5 @@
-// Unknown properties in authority and isolation containers can represent required
-// restrictions from another version. Their owners must explicitly migrate them.
+// Callers supply declared schema property owners, excluding record keys and indices.
+// Authority and isolation containers require their owners to migrate unknown restrictions.
 export function isRuntimeConfigUnknownPath(path: readonly (string | number)[]): boolean {
   return !path.some(
     (segment) =>

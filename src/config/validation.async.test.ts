@@ -107,6 +107,41 @@ describe("async config plugin validation", () => {
   );
 
   it.each([
+    ...["security", "roles"].map((id) => ({
+      name: `agent ${id}`,
+      raw: { agents: { entries: { [id]: { identity: { name: "Fixture", extra: true } } } } },
+      ignoredPath: ["agents", "entries", id, "identity", "extra"],
+    })),
+    ...["auth", "security"].map((id) => ({
+      name: `provider ${id}`,
+      raw: {
+        models: {
+          providers: { [id]: { baseUrl: "https://fixture.invalid", models: [], extra: true } },
+        },
+      },
+      ignoredPath: ["models", "providers", id, "extra"],
+    })),
+    {
+      name: "nested human delay",
+      raw: { agents: { defaults: { humanDelay: { mode: "off", extra: true } } } },
+      ignoredPath: ["agents", "defaults", "humanDelay", "extra"],
+    },
+  ])("classifies structural owners independently of record IDs: $name", ({ raw, ignoredPath }) => {
+    const options = { env, pluginValidation: "core-only" as const };
+    const result = validateConfigObjectRawWithPlugins(raw, {
+      ...options,
+      schemaValidation: "runtime",
+    });
+    expect(result).toMatchObject({ ok: true, ignoredPaths: [ignoredPath] });
+    if (!result.ok) {
+      throw new Error("runtime structural owner projection failed");
+    }
+    expect(result.config).not.toHaveProperty(ignoredPath);
+    expect(raw).toHaveProperty(ignoredPath, true);
+    expect(validateConfigObjectRawWithPlugins(raw, options).ok).toBe(false);
+  });
+
+  it.each([
     { meta: { migrations: { modelPolicyAllowlist: false } } },
     { meta: { migrations: { utilityModelSeparation: false } } },
     { meta: { migrations: [] } },
@@ -117,6 +152,7 @@ describe("async config plugin validation", () => {
     { agents: { defaults: { sandbx: { mode: "all" } } } },
     { agents: { entries: { main: { sandbx: { mode: "all" } } } } },
     { agents: { defaults: { sandbox: { perSession: true } } } },
+    { agents: { entries: { security: { sandbox: { extraPolicy: true } } } } },
     { secrets: { providers: { default: { source: "exec", command: "/test", args: "invalid" } } } },
     {
       models: {
