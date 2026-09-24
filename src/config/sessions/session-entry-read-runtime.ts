@@ -18,6 +18,7 @@ import {
   isIncognitoOpenClawAgentSqlitePath,
   resolveOpenClawAgentSqlitePath,
 } from "../../state/openclaw-agent-db.paths.js";
+import type { AgentDatabaseRequestExecutionSource } from "../../state/openclaw-agent-execution-contract.js";
 import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { runOpenClawAgentWorkerWrite } from "../../state/openclaw-agent-write-admission.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
@@ -270,7 +271,9 @@ export async function readSessionEntryInWorker(
       const sessionKey = resolveSqliteSessionKey(scope.sessionKey, target.logicalAgentId);
       const options = { ...target.database, env };
       const targetIdentity = readDatabasePathIdentitySync(options.path);
-      const execution = captureOpenClawAgentDatabaseExecution(options);
+      const execution = captureOpenClawAgentDatabaseExecution(options, {
+        expectedCreationIdentity: targetIdentity,
+      });
       const assertRetainedTarget = () => {
         execution.assertCurrent();
         const currentIdentity = readDatabasePathIdentitySync(options.path);
@@ -285,28 +288,30 @@ export async function readSessionEntryInWorker(
         execution.assertCurrent();
         owner.assertCurrent();
       };
+      const source = {
+        assertCurrent,
+        onRegistryChange: owner.onRegistryChange,
+        createAdmission(binding) {
+          return () => ({
+            nativeLocations: binding.nativeLocations,
+            admission: createSqliteWorkerOperationAdmission((request, grant) => {
+              binding.authorize(request);
+              assertCurrent();
+              if (!grant()) {
+                throw new Error("Session read authority expired");
+              }
+            }),
+          });
+        },
+      } satisfies AgentDatabaseRequestExecutionSource;
       let entry: SessionEntry | undefined;
       try {
         entry = await runOpenClawAgentWorkerWrite(options, async () => {
           await owner.refreshBeforeDispatch(assertRetainedTarget);
           assertRetainedTarget();
-          return execution.runCreate(
-            {
-              assertCurrent,
-              onRegistryChange: owner.onRegistryChange,
-              createAdmission(binding) {
-                return () => ({
-                  nativeLocations: binding.nativeLocations,
-                  admission: createSqliteWorkerOperationAdmission((request, grant) => {
-                    binding.authorize(request);
-                    assertCurrent();
-                    if (!grant()) {
-                      throw new Error("Session read authority expired");
-                    }
-                  }),
-                });
-              },
-            },
+          await execution.prepare(source);
+          return execution.runExisting(
+            source,
             (worker) => worker.execute({ type: "session.entry.read", input: { sessionKey } }),
           );
         });

@@ -79,7 +79,7 @@ export type AgentDatabaseNativeGeneration = {
     source: AgentDatabaseRequestExecutionSource,
     operation: (scope: AgentDatabaseExecutionScope) => Promise<T>,
     assertCallerCurrent?: () => void,
-    creatingIdentity?: DatabasePathIdentity,
+    createIfMissing?: boolean,
   ): Promise<T | undefined>;
   close(): Promise<void>;
 };
@@ -93,14 +93,16 @@ export function createAgentDatabaseNativeGeneration(
   assertCleanupOwned: () => void,
   expectedIdentity: AgentDatabaseExecutionFileIdentity | undefined,
   acceptFileIdentity: (identity: AgentDatabaseExecutionFileIdentity) => void,
+  creatingIdentity?: DatabasePathIdentity,
 ): AgentDatabaseNativeGeneration {
-  let input: AgentDatabaseExecutionOpen = {
+  const input: AgentDatabaseExecutionOpen = {
     leaseId: randomUUID(),
     agentId,
     databasePath: pathname,
     stateDatabasePath: context.admission.databasePath,
     environment: context.environment,
     ...(expectedIdentity ? { expectedIdentity } : {}),
+    ...(creatingIdentity ? { creatingIdentity } : {}),
   };
   let retiring = false;
   let opening: Promise<Store | undefined> | undefined;
@@ -233,6 +235,7 @@ export function createAgentDatabaseNativeGeneration(
             !isRecord(received) ||
             received.kind !== "file" ||
             typeof received.physicalIdentity !== "string" ||
+            typeof received.birthtime !== "string" ||
             typeof received.incarnation !== "string" ||
             typeof received.nativeLocation !== "string" ||
             (nativeIdentity && !isDeepStrictEqual(received, nativeIdentity))
@@ -242,10 +245,15 @@ export function createAgentDatabaseNativeGeneration(
           const receivedIdentity: AgentDatabaseExecutionIdentity = {
             kind: "file",
             physicalIdentity: received.physicalIdentity,
+            birthtime: received.birthtime,
             incarnation: received.incarnation,
             nativeLocation: received.nativeLocation,
           };
-          assertExistingDatabaseIdentity(pathname, `file:${receivedIdentity.physicalIdentity}`);
+          assertExistingDatabaseIdentity(
+            pathname,
+            `file:${receivedIdentity.physicalIdentity}`,
+            receivedIdentity.birthtime,
+          );
           if (
             expectedIdentity &&
             receivedIdentity.physicalIdentity !== expectedIdentity.physicalIdentity
@@ -255,6 +263,7 @@ export function createAgentDatabaseNativeGeneration(
           acceptFileIdentity({
             kind: "file",
             physicalIdentity: receivedIdentity.physicalIdentity,
+            birthtime: receivedIdentity.birthtime,
             nativeLocation: receivedIdentity.nativeLocation,
           });
           assertCallerCurrent?.();
@@ -288,14 +297,13 @@ export function createAgentDatabaseNativeGeneration(
   const open = (
     source: AgentDatabaseRequestExecutionSource,
     assertCallerCurrent?: () => void,
-    creatingIdentity?: DatabasePathIdentity,
+    createIfMissing = false,
   ): Promise<Store | undefined> => {
     assertCurrent();
     source.assertCurrent();
     assertCallerCurrent?.();
     opening ??= (async () => {
-      input = { ...input, ...(creatingIdentity ? { creatingIdentity } : {}) };
-      const registration = creatingIdentity
+      const registration = createIfMissing
         ? captureOpenClawAgentDatabaseRegistration({
             agentId,
             agentPath: pathname,
@@ -303,13 +311,13 @@ export function createAgentDatabaseNativeGeneration(
             onRegistryChange: source.onRegistryChange,
           })
         : undefined;
-      const openStore = async () => {
-        const store = await openAgentDatabaseSqliteWorkerStore<AgentDatabaseOperations>(
+      const openStore = () =>
+        openAgentDatabaseSqliteWorkerStore<AgentDatabaseOperations>(
           {
             moduleUrl: resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.agentDatabaseExecution),
             databasePath: pathname,
             input,
-            existingOnly: !creatingIdentity,
+            existingOnly: !createIfMissing,
           },
           {
             stateContext: context,
@@ -322,27 +330,26 @@ export function createAgentDatabaseNativeGeneration(
             },
           },
         );
-        if (!store) {
-          return undefined;
-        }
-        openedStore = store;
-        try {
-          assertCurrent();
-          return store;
-        } catch (error) {
-          try {
-            await store.close();
-          } catch (cleanupError) {
-            throw new AggregateError([error, cleanupError], "Agent open and cleanup failed", {
-              cause: cleanupError,
-            });
-          }
-          throw error;
-        }
-      };
-      return registration
+      const store = registration
         ? await settleAgentRegistration(registration, openStore)
         : await openStore();
+      if (!store) {
+        return undefined;
+      }
+      openedStore = store;
+      try {
+        assertCurrent();
+        return store;
+      } catch (error) {
+        try {
+          await store.close();
+        } catch (cleanupError) {
+          throw new AggregateError([error, cleanupError], "Agent open and cleanup failed", {
+            cause: cleanupError,
+          });
+        }
+        throw error;
+      }
     })().catch((error: unknown) => {
       openingFailed = true;
       throw error;
@@ -352,8 +359,8 @@ export function createAgentDatabaseNativeGeneration(
       if (!store && opening === attempt) {
         opening = undefined;
       }
-      if (!store && creatingIdentity) {
-        return open(source, assertCallerCurrent, creatingIdentity);
+      if (!store && createIfMissing) {
+        return open(source, assertCallerCurrent, true);
       }
       return store;
     });
@@ -362,16 +369,13 @@ export function createAgentDatabaseNativeGeneration(
     source: AgentDatabaseRequestExecutionSource,
     operation: (scope: AgentDatabaseExecutionScope) => Promise<T>,
     assertCallerCurrent?: () => void,
-    creatingIdentity?: DatabasePathIdentity,
+    createIfMissing = false,
   ): Promise<T | undefined> {
-    const store = await open(source, assertCallerCurrent, creatingIdentity);
+    const store = await open(source, assertCallerCurrent, createIfMissing);
     assertCurrent();
     assertCallerCurrent?.();
     source.assertCurrent();
     if (!store) {
-      if (creatingIdentity) {
-        throw new Error("Agent creating admission returned no native store");
-      }
       return undefined;
     }
     if (!nativeIdentity) {
@@ -431,8 +435,8 @@ export function createAgentDatabaseNativeGeneration(
   return {
     failed: () =>
       openingFailed || Boolean(openedStore && !isSqliteWorkerStoreAvailable(openedStore)),
-    run: (source, operation, assertCallerCurrent, creatingIdentity) =>
-      run(source, operation, assertCallerCurrent, creatingIdentity),
+    run: (source, operation, assertCallerCurrent, createIfMissing) =>
+      run(source, operation, assertCallerCurrent, createIfMissing),
     close() {
       retiring = true;
       closing ??= (async () => {

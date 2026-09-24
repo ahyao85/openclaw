@@ -309,16 +309,19 @@ it.each([
         }
         return {
           ...execution,
-          async runCreate<T>(
-            source: AgentDatabaseRequestExecutionSource,
-            operation: (worker: AgentDatabaseExecutionScope) => Promise<T>,
-            options?: { retireNativeOnFailure: true },
-          ): Promise<T> {
+          async prepare(source: AgentDatabaseRequestExecutionSource): Promise<void> {
             if (stage === "before-open") {
               entered.resolve();
               await release.promise;
             }
-            return execution.runCreate(
+            await execution.prepare(source);
+          },
+          async runExisting<T>(
+            source: AgentDatabaseRequestExecutionSource,
+            operation: (worker: AgentDatabaseExecutionScope) => Promise<T>,
+            options?: { retireNativeOnFailure: true },
+          ): Promise<T | undefined> {
+            return execution.runExisting(
               source,
               async (worker) => {
                 const result = await operation(worker);
