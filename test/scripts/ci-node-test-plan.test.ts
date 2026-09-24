@@ -837,39 +837,55 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           true,
         );
       }
+      const executionPolicies = (jobs: CompactNodeTestShard[]) =>
+        jobs
+          .flatMap(
+            ({
+              checkName: _checkName,
+              shardName: _shardName,
+              predictedSeconds: _seconds,
+              groups,
+              ...policy
+            }) => groups.map((group) => ({ ...policy, group })),
+          )
+          .toSorted((a, b) => a.group.shard_name.localeCompare(b.group.shard_name));
       expect(
-        runson
-          .filter((job) => job.shardName !== "runson-cron")
-          .map((job) =>
-            Object.assign({}, job, {
-              runner: retainedRunsOnEnvelopes.some(
-                ({ config, owners, runner }) =>
-                  job.runner === runner &&
-                  job.groups.length === owners.length &&
-                  owners.every((files) =>
-                    job.groups.some(
-                      (group) =>
-                        group.configs.length === 1 &&
-                        group.configs[0] === `test/vitest/vitest.${config}.config.ts` &&
-                        files.every((file) => group.includePatterns?.includes(file)),
+        executionPolicies(
+          runson
+            .filter((job) => job.shardName !== "runson-cron")
+            .map((job) =>
+              Object.assign({}, job, {
+                runner: retainedRunsOnEnvelopes.some(
+                  ({ config, owners, runner }) =>
+                    job.runner === runner &&
+                    job.groups.length === owners.length &&
+                    owners.every((files) =>
+                      job.groups.some(
+                        (group) =>
+                          group.configs.length === 1 &&
+                          group.configs[0] === `test/vitest/vitest.${config}.config.ts` &&
+                          files.every((file) => group.includePatterns?.includes(file)),
+                      ),
                     ),
-                  ),
-              )
-                ? EXTRA_LARGE_NODE_TEST_RUNNER
-                : job.runner === "runson-memory-32"
-                  ? "blacksmith-32vcpu-ubuntu-2404"
-                  : job.runner === "runson-general-16"
-                    ? DEFAULT_NODE_TEST_RUNNER
-                    : job.runner,
-            }),
-          ),
+                )
+                  ? EXTRA_LARGE_NODE_TEST_RUNNER
+                  : job.runner === "runson-memory-32"
+                    ? "blacksmith-32vcpu-ubuntu-2404"
+                    : job.runner === "runson-general-16"
+                      ? DEFAULT_NODE_TEST_RUNNER
+                      : job.runner,
+              }),
+            ),
+        ),
       ).toEqual(
-        hybrid
-          .flatMap((job) => {
-            const groups = job.groups.filter((group) => !cronNames.has(group.shard_name));
-            return groups.length ? [{ ...job, groups }] : [];
-          })
-          .toSorted((a, b) => a.checkName.localeCompare(b.checkName)),
+        executionPolicies(
+          hybrid
+            .flatMap((job) => {
+              const groups = job.groups.filter((group) => !cronNames.has(group.shard_name));
+              return groups.length ? [{ ...job, groups }] : [];
+            })
+            .toSorted((a, b) => a.checkName.localeCompare(b.checkName)),
+        ),
       );
       expect(runson.length).toBeLessThanOrEqual(90);
       expect(
@@ -1142,7 +1158,134 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     cliTailJob: CompactNodeTestShard;
     cliChildJobWallSeconds: number[];
     toolingTailJobs: CompactNodeTestShard[];
+    providerTailJobs: CompactNodeTestShard[];
+    aggregateTailJobs: CompactNodeTestShard[];
+    extensionTailGroups: CompactNodeTestShard["groups"];
   };
+
+  function planMeasuredProviderRows(
+    rows: CompactNodeTestShard[],
+    options: { compactMode?: "push" | "pull-request"; compactNodeJobCap?: number } = {},
+  ) {
+    const originalShards = fullSuiteVitestShards.slice();
+    fullSuiteVitestShards.splice(1);
+    const packing = vi.spyOn(measuredCompactPacking, "rebalanceMeasuredHybridJobs");
+    packing.mockReturnValue(rows);
+    try {
+      return createNodeTestShardBundles({
+        compactMode: "pull-request",
+        runnerBackend: "runson",
+        ...options,
+      });
+    } finally {
+      packing.mockRestore();
+      fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...originalShards);
+    }
+  }
+
+  it("separates measured provider tails in the emitted plan without changing child contracts", () => {
+    const before = structuredClone(measuredCompactFixture.providerTailJobs);
+    const after = planMeasuredProviderRows(before);
+    expect(after).toHaveLength(before.length + 2);
+    expect(sortedMeasuredGroups(after)).toEqual(sortedMeasuredGroups(before));
+    for (const original of before) {
+      const successors = after.filter((job) =>
+        job.groups.some((group) => original.groups.includes(group)),
+      );
+      expect(successors.flatMap((job) => job.groups)).toEqual(original.groups);
+      for (const job of successors) {
+        expect(job.env).toEqual(original.env);
+        expect(job.planConcurrency).toBe(1);
+        expect(job.timeoutMinutes).toBe(original.timeoutMinutes);
+        expect(job.pretestBuildMode).toBe(original.pretestBuildMode);
+      }
+      if (original.groups[0]!.configs.includes("test/vitest/vitest.gateway-methods.config.ts")) {
+        expect(successors).toHaveLength(2);
+        const gateway = successors.find((job) => job.groups.includes(original.groups[0]!))!;
+        expect(gateway.groups).toHaveLength(1);
+        expect(gateway.predictedSeconds).toBeGreaterThanOrEqual(472);
+        expect(successors.every((job) => job.runner === "runson-memory-32")).toBe(true);
+        expect(successors.every((job) => job.env?.OPENCLAW_VITEST_MAX_WORKERS === "2")).toBe(true);
+      } else {
+        expect(successors).toHaveLength(1);
+        expect(successors[0]).toMatchObject({
+          runner: EXTRA_LARGE_NODE_TEST_RUNNER,
+          predictedSeconds: 311,
+        });
+      }
+    }
+    const unknown = structuredClone(before[0]!);
+    delete unknown.predictedSeconds;
+    const unknownPlan = planMeasuredProviderRows([unknown]);
+    expect(unknownPlan.find((job) => job.groups.length > 1)?.predictedSeconds).toBeUndefined();
+    expect(() => planMeasuredProviderRows(before, { compactNodeJobCap: before.length })).toThrow(
+      "compact runson node test plan exceeds 3 jobs (5 planned)",
+    );
+  });
+
+  it.each([
+    { index: 0, lengths: [2, 1], runner: "runson-memory-32", predictions: [401, 360] },
+    { index: 1, lengths: [1, 2], runner: EXTRA_LARGE_NODE_TEST_RUNNER, predictions: [360, 405] },
+  ])(
+    "splits a complete measured serial aggregate $index without a large individual child",
+    ({ index, lengths, runner, predictions }) => {
+      const before = structuredClone(measuredCompactFixture.aggregateTailJobs[index]!);
+      const after = planMeasuredProviderRows([before]);
+      expect(after.map((job) => job.groups.length)).toEqual(lengths);
+      expect(after.map((job) => job.predictedSeconds)).toEqual(predictions);
+      expect(after.flatMap((job) => job.groups)).toEqual(before.groups);
+      for (const job of after) {
+        expect(job).toMatchObject({
+          runner,
+          planConcurrency: 1,
+          env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
+        });
+        expect(job.pretestBuildMode).toBe(before.pretestBuildMode);
+        expect(job.requiresDist).toBe(before.requiresDist);
+        expect(job.timeoutMinutes).toBe(before.timeoutMinutes);
+      }
+      const reordered = structuredClone(before);
+      reordered.groups.reverse();
+      expect(planMeasuredProviderRows([reordered])).toHaveLength(1);
+      const partial = structuredClone(before);
+      partial.groups[0]!.includePatterns!.push("src/gateway/unmeasured-aggregate-fixture.test.ts");
+      expect(planMeasuredProviderRows([partial])).toHaveLength(1);
+      const build = { ...before, pretestBuildMode: "runtime" as const };
+      expect(planMeasuredProviderRows([build])).toEqual([build]);
+    },
+  );
+
+  it("expires provider tail prices when the execution contract changes", () => {
+    const sample = measuredCompactFixture.providerTailJobs[0]!;
+    const variants = [
+      (job: CompactNodeTestShard) => {
+        job.groups[0]!.includePatterns!.reverse();
+      },
+      (job: CompactNodeTestShard) => {
+        job.groups[0]!.env = { OPENCLAW_VITEST_MAX_WORKERS: "1" };
+      },
+      (job: CompactNodeTestShard) => {
+        job.env = { OPENCLAW_VITEST_MAX_WORKERS: "1" };
+      },
+      (job: CompactNodeTestShard) => {
+        job.planConcurrency = 2;
+      },
+      (job: CompactNodeTestShard) => {
+        job.runner = DEFAULT_NODE_TEST_RUNNER;
+      },
+    ];
+    for (const change of variants) {
+      const job = structuredClone(sample);
+      change(job);
+      const after = planMeasuredProviderRows([job]);
+      expect(after).toHaveLength(1);
+      expect(after[0]!.groups).toEqual(job.groups);
+      expect(after[0]!.predictedSeconds).toBe(job.predictedSeconds);
+    }
+    expect(
+      planMeasuredProviderRows([structuredClone(sample)], { compactMode: "push" }),
+    ).toHaveLength(1);
+  });
 
   function measuredToolingFixture(): CompactNodeTestShard[] {
     return structuredClone(measuredCompactFixture.toolingJobs);

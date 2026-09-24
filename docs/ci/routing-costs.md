@@ -55,6 +55,34 @@ Numbered compact bins change when membership changes. A matching suffix does not
 
 ## RunsOn qualification
 
+Successful children in failed PR-shaped run `36038423993` provide exact admission
+observations, not green qualification. The two serial Gateway-methods children
+(jobs `107766128467` and `107766128662`) took 390.70 and 372.33 seconds on the
+existing RunsOn memory32 on-demand pool. The planner separates each complete
+child from its trailing siblings after resolving the execution runner. It
+preserves their two-worker job ceilings, ordered selectors, deadlines and
+runtime policy; unmatched siblings retain their original forecast. Prices bind
+the requested runner contract and full child identity, expire when those inputs
+change, and do not transfer AWS timings to Blacksmith or PR timings to main.
+
+The retained Blacksmith32 tooling child in job `107766133218` took 225.96 seconds,
+so its forecast rises from 48 to 311 seconds using measured headroom and the
+existing 60-second setup reserve. Its runner remains unchanged. The two
+Blacksmith8 extension children in job `107766132924` took 287.51 and 208.48 seconds;
+exact selector floors separate them under the existing 300-second envelope.
+Two further complete serial cohorts (jobs `107766128451` and `107766128634`)
+took 507.40 and 522.21 test seconds against 360-second forecasts. Their complete
+ordered observations allow greedy whole-child splits within the same 360-second
+work allowance. Both retain their native provider and two-worker ceiling. The
+latter keeps the Blacksmith32 allocation of its update-CLI envelope; its other
+children have no independent AWS comparison. Neither job declares runtime build
+preparation. Partial or reordered cohorts cannot use these aggregate placements.
+
+The frozen broad-PR replay adds four compact rows and one plugin row: 123 Node
+rows including the cron control, within the existing 130-row cap. Main-shaped
+plans are unchanged. No native wall-time improvement is established by this
+replay; the complete exact-head qualification remains required.
+
 The next candidate diversifies every RunsOn request across five AMD types and
 both AZs exposed by the installed stack. The former 32-class Node rows need at least eight CPUs and
 32 GiB; UI, cron and eligible long tooling rows use 4–8 CPUs and 16 GiB. Existing memory gates and worker limits

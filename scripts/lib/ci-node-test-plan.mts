@@ -56,7 +56,10 @@ import {
   isParallelCommandsGroup,
   estimateCommandWorkerSeconds,
 } from "./ci-command-test-plan.mts";
-import { rebalanceMeasuredHybridJobs } from "./ci-measured-compact-packing.mts";
+import {
+  rebalanceMeasuredHybridJobs,
+  repriceMeasuredSerialJobs,
+} from "./ci-measured-compact-packing.mts";
 import {
   COMPACT_EMBEDDED_BASE_GROUP_NAME,
   canSplitWholeConfigGroup,
@@ -4208,6 +4211,7 @@ function resolveRunsOnRetainedBlacksmithRunner(job: CompactNodeTestShard): strin
 function routeRunsOnJobs(
   jobs: CompactNodeTestShard[],
   compactNodeJobCap: number,
+  compactMode: CompactNodeTestPlanMode,
 ): CompactNodeTestShard[] {
   const cronGroups: NodeTestShardGroup[] = [];
   const cronTimeouts: number[] = [];
@@ -4270,62 +4274,66 @@ function routeRunsOnJobs(
     COMPACT_NODE_TEST_JOB_CAP,
     compactNodeJobCap + routed.filter((job) => job.requiresDist).length,
   );
-  if (routed.length > jobCap) {
+  const placed = routed.map((job) => {
+    // The long tooling tail ran on two CPUs with a two-worker ceiling.
+    // Keep its execution contract; the complete forecast selects on-demand.
+    if (
+      job.runner === DEFAULT_NODE_TEST_RUNNER &&
+      job.predictedSeconds !== undefined &&
+      Number.isFinite(job.predictedSeconds) &&
+      job.predictedSeconds >= 480 &&
+      job.planConcurrency === 1 &&
+      !job.requiresDist &&
+      !job.pretestBuildMode &&
+      (job.env?.OPENCLAW_VITEST_MAX_WORKERS === undefined ||
+        job.env.OPENCLAW_VITEST_MAX_WORKERS === "2") &&
+      job.groups.length > 0 &&
+      job.groups.every(
+        (group) =>
+          group.configs.length === 1 &&
+          group.configs[0] === TOOLING_CONFIG &&
+          group.env?.OPENCLAW_VITEST_MAX_WORKERS === "2" &&
+          !group.requiresDist &&
+          !group.pretestBuildMode,
+      )
+    ) {
+      return Object.assign({}, job, { runner: "runson-general-16" });
+    }
+    const retainedRunner = resolveRunsOnRetainedBlacksmithRunner(job);
+    if (retainedRunner) {
+      return Object.assign({}, job, { runner: retainedRunner });
+    }
+    // The 32-class supplies eight CPUs and 31 GiB. Preserve its memory floor
+    // for overlapping children and the eight-worker isolated Gateway cohort.
+    // Runtime preparation retains Blacksmith until its complete flow qualifies.
+    // The update CLI envelope regressed by 40% on AWS without more CPU work.
+    // Keep its measured Blacksmith worker and memory allocation.
+    if (
+      job.runner !== EXTRA_LARGE_NODE_TEST_RUNNER ||
+      job.requiresDist ||
+      job.pretestBuildMode ||
+      job.groups.some(
+        (group) =>
+          group.requiresDist ||
+          group.pretestBuildMode ||
+          group.includePatterns?.includes("src/cli/update-cli.test.ts"),
+      )
+    ) {
+      return job;
+    }
+    return Object.assign({}, job, { runner: "runson-memory-32" });
+  });
+  const measured = repriceMeasuredSerialJobs(
+    placed,
+    compactMode,
+    COMPACT_PARALLEL_NODE_TEST_JOB_SECONDS,
+  );
+  if (measured.length > jobCap) {
     throw new Error(
-      `compact runson node test plan exceeds ${jobCap} jobs (${routed.length} planned)`,
+      `compact runson node test plan exceeds ${jobCap} jobs (${measured.length} planned)`,
     );
   }
-  return routed
-    .map((job) => {
-      // The long tooling tail ran on two CPUs with a two-worker ceiling.
-      // Keep its execution contract; the complete forecast selects on-demand.
-      if (
-        job.runner === DEFAULT_NODE_TEST_RUNNER &&
-        job.predictedSeconds !== undefined &&
-        Number.isFinite(job.predictedSeconds) &&
-        job.predictedSeconds >= 480 &&
-        job.planConcurrency === 1 &&
-        !job.requiresDist &&
-        !job.pretestBuildMode &&
-        (job.env?.OPENCLAW_VITEST_MAX_WORKERS === undefined ||
-          job.env.OPENCLAW_VITEST_MAX_WORKERS === "2") &&
-        job.groups.length > 0 &&
-        job.groups.every(
-          (group) =>
-            group.configs.length === 1 &&
-            group.configs[0] === TOOLING_CONFIG &&
-            group.env?.OPENCLAW_VITEST_MAX_WORKERS === "2" &&
-            !group.requiresDist &&
-            !group.pretestBuildMode,
-        )
-      ) {
-        return Object.assign({}, job, { runner: "runson-general-16" });
-      }
-      const retainedRunner = resolveRunsOnRetainedBlacksmithRunner(job);
-      if (retainedRunner) {
-        return Object.assign({}, job, { runner: retainedRunner });
-      }
-      // The 32-class supplies eight CPUs and 31 GiB. Preserve its memory floor
-      // for overlapping children and the eight-worker isolated Gateway cohort.
-      // Runtime preparation retains Blacksmith until its complete flow qualifies.
-      // The update CLI envelope regressed by 40% on AWS without more CPU work.
-      // Keep its measured Blacksmith worker and memory allocation.
-      if (
-        job.runner !== EXTRA_LARGE_NODE_TEST_RUNNER ||
-        job.requiresDist ||
-        job.pretestBuildMode ||
-        job.groups.some(
-          (group) =>
-            group.requiresDist ||
-            group.pretestBuildMode ||
-            group.includePatterns?.includes("src/cli/update-cli.test.ts"),
-        )
-      ) {
-        return job;
-      }
-      return Object.assign({}, job, { runner: "runson-memory-32" });
-    })
-    .toSorted((a, b) => a.checkName.localeCompare(b.checkName));
+  return measured.toSorted((a, b) => a.checkName.localeCompare(b.checkName));
 }
 
 function createCompactNodeTestShardBundles(
@@ -4350,6 +4358,7 @@ function createCompactNodeTestShardBundles(
         hostedToolingTailDonation,
       ),
       options.compactNodeJobCap ?? COMPACT_NODE_TEST_JOB_CAP,
+      compactMode,
     );
   }
   const compactNodeJobCap = options.compactNodeJobCap ?? COMPACT_NODE_TEST_JOB_CAP;
