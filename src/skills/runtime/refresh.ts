@@ -128,7 +128,6 @@ function createSkillsPathWatcher(
       void closing.then(() => retiringWatchers.delete(closing!));
       return closing;
     },
-    schedule: (changedPath) => schedule(changedPath),
     watchRoot: target.watchRoot,
     ancestorRoot,
     depth: target.depth,
@@ -162,10 +161,15 @@ function createSkillsPathWatcher(
       // Outward retreat proves the old observation root disappeared. Ordinary
       // inward promotion and depth expansion do not establish observation loss.
       recordPooledObservationLoss(state.watchRoot);
-      // Availability listeners can retire this owner synchronously.
-      if (!isCurrent()) {
-        return true;
-      }
+    }
+    if (changedPath && isCurrent()) {
+      // Retirement can stall or fail. Publish the observed change while its
+      // subscribers still own this watcher, independently of replacement readiness.
+      publishSkillsWatchChanges([{ ...targetChange, changedPath, change: "skills" }]);
+    }
+    // Either publication can retire this owner synchronously.
+    if (!isCurrent()) {
+      return true;
     }
     for (const subscriber of state.subscribers) {
       workspaceWatchTargetCache.delete(subscriber);
@@ -178,9 +182,6 @@ function createSkillsPathWatcher(
     const subscriber = state.subscribers.values().next().value;
     if (subscriber !== undefined) {
       subscribeWorkspaceToPath(subscriber, nextTarget, replaceContent);
-      if (changedPath) {
-        pathWatchers.get(target.path)?.schedule(changedPath);
-      }
     }
     return true;
   };

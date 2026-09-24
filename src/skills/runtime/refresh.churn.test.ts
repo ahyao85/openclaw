@@ -85,12 +85,25 @@ describe("skills watcher churn", () => {
         version: number;
         entries: ReturnType<typeof loadWorkspaceSkills>;
       }> = [];
+      const { pathWatchers } = await import("./refresh-watch-registry.js");
+      const unavailable = new Set(
+        [...pathWatchers].filter(([, state]) => state.unavailable).map(([root]) => root),
+      );
+      const outages: string[][] = [];
       refreshModule.registerSkillsChangeListener((event) => {
         if (event.workspaceDir === workspaceDir && event.reason === "watch") {
           publications.push({
             version: getSkillsSnapshotVersion(workspaceDir),
             entries: loadWorkspaceSkills(workspaceDir, options),
           });
+        } else if (event.workspaceDir === workspaceDir && event.reason === "watch-unavailable") {
+          const lost = [...pathWatchers]
+            .filter(([root, state]) => state.unavailable && !unavailable.has(root))
+            .map(([root]) => root);
+          outages.push(lost);
+          for (const root of lost) {
+            unavailable.add(root);
+          }
         }
       });
       for (const [root, name, description] of [
@@ -107,17 +120,26 @@ describe("skills watcher churn", () => {
       // One physical notification promotes several logical roots for this workspace.
       first.emit("raw", "rename", undefined, { watchedPath: ancestor });
       await vi.advanceTimersByTimeAsync(250);
-      expect(publications).toEqual([]);
+      expect(publications).toHaveLength(1);
+      const publication = publications[0]!;
+      expect(outages.map((lost) => lost.length)).toEqual([1, 1, 1, 1]);
+      expect(outages.flat().toSorted()).toEqual(
+        [firstRoot, secondRoot]
+          .flatMap((root) => [root, path.join(root, "skills")])
+          .map((root) => root.replaceAll("\\", "/"))
+          .toSorted(),
+      );
+      // The observed content publishes before replacement records these distinct
+      // outages. Neither later readiness nor repeated scans may add another revision.
+      const publishedVersion = getSkillsSnapshotVersion(workspaceDir);
       for (const [index, [, watchOptions]] of watchMock.mock.calls.entries()) {
         if (watchOptions.depth === 0) {
           createdWatchers[index]!.emit("ready");
         }
       }
       await vi.advanceTimersByTimeAsync(0);
-      expect(publications).toHaveLength(1);
-      const publication = publications[0]!;
-      const publishedVersion = getSkillsSnapshotVersion(workspaceDir);
-      expect(publishedVersion).toBe(publication.version);
+      expect(publications).toEqual([publication]);
+      expect(getSkillsSnapshotVersion(workspaceDir)).toBe(publishedVersion);
       const verifiers = [firstRoot, secondRoot].map((root) => {
         const observer = watchForSkillRoot(root).watcher;
         observer.emit("ready");

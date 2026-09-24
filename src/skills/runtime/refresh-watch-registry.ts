@@ -12,7 +12,6 @@ export type SkillsWatchChange = "skills" | "supporting";
 export type SkillsPathWatchState = {
   closed: boolean;
   close: () => Promise<Result<void, unknown>>;
-  schedule: (path?: string) => void;
   watchRoot: string;
   ancestorRoot: string;
   depth: number;
