@@ -262,6 +262,7 @@ export function listOpenClawRegisteredAgentDatabases(
 export function prepareOpenClawAgentDatabaseRegistrySnapshotRead(
   inputOptions: AgentDatabaseRegistryListOptions = {},
 ): {
+  assertCurrent: () => void;
   read(): Promise<{
     result: OpenClawAgentDatabaseRegistryReadResult;
     assertCurrent: () => void;
@@ -278,7 +279,9 @@ export function prepareOpenClawAgentDatabaseRegistrySnapshotRead(
     };
     const context = captureOpenClawStateWorkerContext(options);
     const inCapturedScope = AsyncLocalStorage.snapshot();
+    let assertPreparedCurrent = () => context.admission.assertCurrent();
     return {
+      assertCurrent: () => assertPreparedCurrent(),
       async read() {
         context.admission.assertCurrent();
         let memo = activateRegisteredAgentDatabasesMemo(options);
@@ -303,6 +306,8 @@ export function prepareOpenClawAgentDatabaseRegistrySnapshotRead(
           }
           memo = registry.memo;
         };
+        // Install the witness before the first await, including a read that later rejects.
+        assertPreparedCurrent = assertCurrent;
         if (!memo.entries) {
           const reply = await inCapturedScope(() =>
             withStateDatabaseCoordinatorRuntimeDirectory(context.coordinatorRuntime, () =>
@@ -338,6 +343,9 @@ export function prepareOpenClawAgentDatabaseRegistrySnapshotRead(
     };
   } catch (error) {
     return {
+      assertCurrent() {
+        throw error;
+      },
       async read() {
         throw error;
       },

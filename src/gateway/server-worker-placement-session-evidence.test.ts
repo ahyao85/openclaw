@@ -398,7 +398,7 @@ describe("worker placement session evidence", () => {
         }));
         const registry = vi
           .spyOn(registryListing, "prepareOpenClawAgentDatabaseRegistrySnapshotRead")
-          .mockReturnValue({ read });
+          .mockReturnValue({ read, assertCurrent() {} });
         try {
           const requested =
             route === "incognito-only" ? [incognito, missing] : [disk, incognito, missing];
@@ -469,6 +469,7 @@ describe("worker placement session evidence", () => {
       const registry = vi
         .spyOn(registryListing, "prepareOpenClawAgentDatabaseRegistrySnapshotRead")
         .mockReturnValueOnce({
+          assertCurrent() {},
           read: async () => {
             throw new Error("evidence pipeline exploded");
           },
