@@ -285,6 +285,7 @@ export async function admitReplyTurn(
         let admittedSessionEntry: InternalSessionEntry | undefined;
         let recoveryOwnerLease: MainSessionRecoveryOwnerLease | undefined;
         let interruptedBeforeOperation = false;
+        let recoveryClaimStarted = false;
         const admission = storePath
           ? await beginSessionWorkAdmission({
               scope: storePath,
@@ -492,6 +493,9 @@ export async function admitReplyTurn(
             continue;
           }
           if (shouldClaimRecoveryOwner && recoveryOwnerRelease === undefined) {
+            // A claim can durably clear recovery state. Once it starts, a later
+            // preparation change must fail this admission instead of replaying it.
+            recoveryClaimStarted = true;
             const ownerClaim = await claimMainSessionRecoveryOwner({
               lifecycleGeneration: getAgentEventLifecycleGeneration(),
               sessionId,
@@ -505,6 +509,7 @@ export async function admitReplyTurn(
               });
             }
             recoveryOwnerLease = ownerClaim.kind === "claimed" ? ownerClaim.lease : undefined;
+            admittedSessionEntry = ownerClaim.entry;
           }
           if (interruptedBeforeOperation || isAbortSignalAborted(params.upstreamAbortSignal)) {
             rejectLifecycleInvalidatedWork({
@@ -515,6 +520,13 @@ export async function admitReplyTurn(
           }
           assertDatabaseOwnerCurrent();
           if (rotationObservation?.changed()) {
+            if (recoveryClaimStarted) {
+              rejectLifecycleInvalidatedWork({
+                kind: params.kind,
+                message: `Session "${params.sessionKey}" changed while starting work. Retry.`,
+                transientSessionChange: true,
+              });
+            }
             // A predecessor can rotate after the final row read but before this handoff.
             // Reacquire the full admission; its session ID alone grants no authority.
             throw new ReplyOperationChangedDuringAdmissionError();
