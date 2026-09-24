@@ -74,6 +74,8 @@ type ProviderModelRouteAuthDecision =
       message: string;
       source?: ProviderModelAuthProfileSource;
       route?: ProviderModelRouteCandidate;
+      /** Credential modes cannot serve this route, independently of readiness. */
+      authModeIncompatible?: true;
     };
 
 export type ProviderModelRouteMaterializationAuthMode = "api_key" | "aws-sdk" | "oauth" | "token";
@@ -233,15 +235,19 @@ export function selectProviderModelAuthSources(params: {
 function reject(
   reason: Extract<ProviderModelRouteAuthDecision, { kind: "rejected" }>["reason"],
   message: string,
-  source?: ProviderModelAuthProfileSource,
-  route?: ProviderModelRouteCandidate,
+  facts: {
+    source?: ProviderModelAuthProfileSource;
+    route?: ProviderModelRouteCandidate;
+    authModeIncompatible?: boolean;
+  } = {},
 ): ProviderModelRouteAuthDecision {
   return {
     kind: "rejected",
     reason,
     message,
-    ...(source ? { source } : {}),
-    ...(route ? { route } : {}),
+    ...(facts.source ? { source: facts.source } : {}),
+    ...(facts.route ? { route: facts.route } : {}),
+    ...(facts.authModeIncompatible ? { authModeIncompatible: true } : {}),
   };
 }
 
@@ -316,6 +322,7 @@ export function selectProviderModelRouteAuth(params: {
     return reject(
       "configured-auth",
       `Configured ${params.provider} authentication is not compatible with the selected model route.`,
+      { authModeIncompatible: true },
     );
   }
 
@@ -346,13 +353,23 @@ export function selectProviderModelRouteAuth(params: {
     provider: params.provider,
     plan: effectiveSourcePlan,
   });
+  const onlyIncompatibleProfiles =
+    params.sourcePlan.kind === "automatic" &&
+    params.sourcePlan.orderedProfiles.length > 0 &&
+    params.sourcePlan.orderedProfiles.every((profile) => {
+      const requirement = resolveProviderModelRouteAuthRequirement(profile.mode);
+      return (
+        requirement !== undefined &&
+        (!routeForMode(params.resolution, profile.mode) ||
+          (configuredRequirement !== undefined && requirement !== configuredRequirement))
+      );
+    });
   if (sourceDecision.kind === "rejected") {
-    return reject(
-      sourceDecision.reason,
-      sourceDecision.message,
-      sourceDecision.source,
-      configuredRoute,
-    );
+    return reject(sourceDecision.reason, sourceDecision.message, {
+      source: sourceDecision.source,
+      route: configuredRoute,
+      authModeIncompatible: onlyIncompatibleProfiles,
+    });
   }
 
   const logicalProfiles = sourceDecision.attempts.flatMap((attempt) =>
@@ -392,7 +409,11 @@ export function selectProviderModelRouteAuth(params: {
     return reject(
       "required-profile",
       `Auth profile "${requiredProfile.profileId}" is not compatible with ${params.provider}; the selected model route requires ${accepted} authentication.`,
-      requiredProfile,
+      {
+        source: requiredProfile,
+        authModeIncompatible:
+          resolveProviderModelRouteAuthRequirement(requiredProfile.mode) !== undefined,
+      },
     );
   }
   if (
@@ -404,6 +425,7 @@ export function selectProviderModelRouteAuth(params: {
     return reject(
       "explicit-order",
       `Explicit auth order has no route-compatible profiles for ${params.provider}.`,
+      { authModeIncompatible: onlyIncompatibleProfiles },
     );
   }
 
@@ -424,6 +446,10 @@ export function selectProviderModelRouteAuth(params: {
     return reject(
       "configured-auth",
       `Configured ${params.provider} authentication is not compatible with the selected model route.`,
+      {
+        authModeIncompatible:
+          resolveProviderModelRouteAuthRequirement(directSource.mode) !== undefined,
+      },
     );
   }
   let rejectedProfile: ProviderModelAuthProfileSource | undefined;
@@ -467,8 +493,11 @@ export function selectProviderModelRouteAuth(params: {
       configuredRoute
         ? `Configured ${params.provider} authentication has no compatible credential source for the selected model route.`
         : `No route-compatible authentication source is configured for ${params.provider}.`,
-      rejectedProfile,
-      configuredRoute,
+      {
+        source: rejectedProfile,
+        route: configuredRoute,
+        authModeIncompatible: onlyIncompatibleProfiles,
+      },
     );
   }
   const selectedRoute = winner?.route ?? directRoute;

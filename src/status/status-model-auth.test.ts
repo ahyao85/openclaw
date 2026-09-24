@@ -4,7 +4,7 @@ import * as authProfiles from "../agents/auth-profiles.js";
 import type { AuthProfileStore } from "../agents/auth-profiles/types.js";
 import { dualRoutes } from "../agents/model-auth-availability.test-support.js";
 import * as openaiRoutes from "../agents/openai-model-routes.js";
-import { setPreparedModelRuntimeAuthStore } from "../agents/prepared-model-runtime-auth.js";
+import { bindPreparedModelRuntimeAuth } from "../agents/prepared-model-runtime-auth.js";
 import type { PreparedModelRuntimeSnapshot } from "../agents/prepared-model-runtime.types.js";
 import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -80,7 +80,7 @@ function statusAuth(
       throw new Error("Status must not execute a model");
     },
   };
-  setPreparedModelRuntimeAuthStore(owner, { version: 1, profiles: options.profiles ?? {} });
+  bindPreparedModelRuntimeAuth(owner, { store: { version: 1, profiles: options.profiles ?? {} } });
   return createStatusModelResolver({
     cfg: config,
     agentId: "main",
