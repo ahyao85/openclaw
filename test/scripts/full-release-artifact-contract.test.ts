@@ -33,6 +33,10 @@ import {
 } from "../../scripts/full-release-validation-policy.mjs";
 import { tryReadReleaseDecisionArtifact } from "../../scripts/release-ci-summary.mjs";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import {
+  loadManifestWriter,
+  manifestWriterEnvironment,
+} from "./full-release-manifest-writer.test-support.js";
 
 const SHA = "a".repeat(40);
 
@@ -218,10 +222,7 @@ describe("retained publication admission", () => {
         release_profile: releaseProfile,
       });
       expect(plan.evidenceReuse.requested).toBe(false);
-      const workflow = parse(readFileSync(".github/workflows/full-release-validation.yml", "utf8"));
-      const writer = workflow.jobs.summary.steps.find(
-        (step: { name: string }) => step.name === "Write release validation manifest",
-      );
+      const writer = loadManifestWriter();
       const directory = directories.make("publication-fresh-manifest-");
       const planPath = join(directory, "plan.json");
       const drainPath = join(directory, "drain.json");
@@ -261,7 +262,7 @@ describe("retained publication admission", () => {
         env: {
           ...Object.fromEntries(Object.keys(writer.env).map((key) => [key, ""])),
           ...selectedEnv,
-          PATH: process.env.PATH,
+          ...manifestWriterEnvironment(directory, context.targetRef, context.workflowSha),
           RUNNER_TEMP: directory,
           GITHUB_RUN_ID: context.runId,
           GITHUB_RUN_ATTEMPT: context.runAttempt,
@@ -285,10 +286,10 @@ describe("retained publication admission", () => {
       );
       expect(manifest.releaseProfile).toBe(releaseProfile);
       expect(manifest.controls).toMatchObject({
-        performanceBlocking: releaseProfile !== "beta",
+        performanceBlocking: false,
         performanceReportPublication: "artifact-only",
       });
-      expect(manifest.childRuns.productPerformance.blocking).toBe(releaseProfile !== "beta");
+      expect(manifest.childRuns.productPerformance.blocking).toBe(false);
       expect(manifest.validationInputs).toMatchObject({
         npmTelegramPackageSpec: "openclaw@2026.9.9",
         npmTelegramProviderMode: "live-frontier",
@@ -297,6 +298,8 @@ describe("retained publication admission", () => {
         allowUnreleasedChangelog: "true",
       });
       expect(manifest.publicationAdmission).toEqual(plan.publicationAdmission);
+      expect(manifest.publishInputs.targetSha).toBe(context.targetRef);
+      expect(manifest.publishInputs.npmDecisions[0].decision).toBe("plan");
     },
   );
 
@@ -633,10 +636,7 @@ describe("retained publication admission", () => {
         sourceManifest,
       },
     };
-    const workflow = parse(readFileSync(".github/workflows/full-release-validation.yml", "utf8"));
-    const writer = workflow.jobs.summary.steps.find(
-      (step: { name: string }) => step.name === "Write release validation manifest",
-    );
+    const writer = loadManifestWriter();
     const directory = directories.make("publication-retained-root-");
     const planPath = join(directory, "plan.json");
     const drainPath = join(directory, "drain.json");
@@ -646,7 +646,7 @@ describe("retained publication admission", () => {
       encoding: "utf8",
       env: {
         ...Object.fromEntries(Object.keys(writer.env).map((key) => [key, ""])),
-        PATH: process.env.PATH,
+        ...manifestWriterEnvironment(directory, context.targetRef, context.workflowSha),
         RUNNER_TEMP: directory,
         GITHUB_RUN_ID: context.runId,
         GITHUB_RUN_ATTEMPT: context.runAttempt,
@@ -1119,10 +1119,7 @@ describe("full release artifact contract", () => {
   ])(
     "writes all matrix evidence with reuse=$reuse source=$source without argv size limits",
     ({ reuse, source }) => {
-      const workflow = parse(readFileSync(".github/workflows/full-release-validation.yml", "utf8"));
-      const writer = workflow.jobs.summary.steps.find(
-        (entry: { name: string }) => entry.name === "Write release validation manifest",
-      );
+      const writer = loadManifestWriter();
       const children = fullMatrixChildren();
       const drain = fullMatrixDecision(children);
       const expectedChildren = Object.fromEntries(
@@ -1199,6 +1196,7 @@ describe("full release artifact contract", () => {
       );
       const trustedWorkflow = { fullRef: "refs/heads/main", ref: "main", sha: "d".repeat(40) };
       const sourceManifest = {
+        workflowName: "Full Release Validation",
         ...(source
           ? { sourceAdmissionContract: "1", sourceAdmission: oldSource, trustedWorkflow }
           : {}),
@@ -1249,7 +1247,7 @@ describe("full release artifact contract", () => {
         env: {
           ...Object.fromEntries(Object.keys(writer.env).map((key) => [key, ""])),
           EXTENSION_TEST_EXCLUDE_PATTERNS_JSON: "[]",
-          PATH: process.env.PATH,
+          ...manifestWriterEnvironment(dir, SHA, "d".repeat(40)),
           RUNNER_TEMP: dir,
           GITHUB_RUN_ID: "124",
           GITHUB_RUN_ATTEMPT: "2",
@@ -1280,6 +1278,7 @@ describe("full release artifact contract", () => {
       expect(Buffer.byteLength(bytes)).toBeLessThan(MAX_RELEASE_ARTIFACT_BYTES);
       const manifest = JSON.parse(bytes);
       if (source) {
+        expect(manifest.publishInputs.targetSha).toBe(SHA);
         expect(
           validatePublicationSourceBinding(manifest, { sourceAdmissionContract: "1" }),
         ).toEqual(sourceAdmission);
