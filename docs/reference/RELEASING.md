@@ -642,8 +642,11 @@ response`, `PR context and evidence`, `Labeler`, the `CodeQL` workflows,
   observed run per workflow and PR identity, falling back to head repository and
   branch when no single PR is identified. Unknown identities stay separate. Manual
   dispatches cannot supersede PR checks, and already-restored cancellation records
-  do not replay successful or active attempts. Run it after the release seals; deferred
-  PR work is never re-dispatched automatically. Not yet proven live: GitHub
+  do not replay successful or active attempts. Before each rerun, restoration checks
+  the exact attempt and eligibility, then refreshes the branch inventory after job
+  reads; changed, superseded, or ambiguous runs are not dispatched. These fresh
+  reads narrow the race but are not atomic with GitHub's rerun request. Run it after
+  the release seals; deferred PR work is never re-dispatched automatically. Not yet proven live: GitHub
   re-evaluating the `vars` gate on `gh run rerun`.
 - Publish children run on hosted `ubuntu-latest`; Blacksmith testbox runs are
   a separate pool and do not compete. When the hosted pool is saturated, cancel
