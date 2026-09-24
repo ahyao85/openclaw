@@ -2486,7 +2486,6 @@ platform :ios do
     output_directory = File.join(ios_root, "fastlane", "screenshots")
     result_bundle_path = File.join(output_directory, "test_output", "en-US", "OpenClawUITests.xcresult")
     result_bundle_archive_directory = File.join(ios_root, "build", "SnapshotTestResults")
-    # The evidence collector admits only the attempt ledger and xcresult bundles.
     log_directory = File.join(ios_root, "build", "SnapshotLogs")
     capture_attempts_path = File.join(result_bundle_archive_directory, "capture-attempts.json")
     derived_data_path = File.join(ios_root, "build", "SnapshotDerivedData")
