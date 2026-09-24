@@ -675,7 +675,6 @@ extensions/memory-core/src/cli.ts	1
 extensions/memory-core/src/concept-vocabulary.ts	1
 extensions/memory-core/src/dreaming-phases.ts	1
 extensions/memory-core/src/dreaming.ts	1
-extensions/memory-core/src/memory/embeddings.ts	2
 extensions/memory-core/src/memory/hybrid.ts	1
 extensions/memory-core/src/memory/manager-db.ts	2
 extensions/memory-core/src/memory/manager-embedding-errors.ts	2
@@ -2247,7 +2246,7 @@ src/commands/doctor-session-transcript-headers.ts	5
 src/commands/doctor-session-transcript-labels.ts	4
 src/commands/doctor-session-transcripts.ts	1
 src/commands/doctor-skills.ts	1
-src/commands/doctor-sqlite-compact.ts	3
+src/commands/doctor-sqlite-compact.ts	1
 src/commands/doctor-sqlite-maintenance-lock.ts	2
 src/commands/doctor-state-integrity.ts	1
 src/commands/doctor-state-sqlite-compact.ts	1
@@ -2958,7 +2957,6 @@ src/meeting-bot/session-runtime.ts	4
 src/meeting-bot/session-speech-readiness.ts	1
 src/meeting-bot/session-transcript-store.ts	1
 src/meeting-bot/voice-call-gateway.ts	1
-src/memory-host-sdk/dreaming.ts	3
 src/memory-host-sdk/event-store.ts	2
 src/memory-host-sdk/events.ts	1
 src/model-catalog/bundled-catalog-stamp.ts	1
