@@ -4,7 +4,7 @@ import type {
   EnvironmentSummary,
 } from "@openclaw/gateway-protocol";
 import type { ControlUiFocusBuildTarget } from "@openclaw/session-url-contract";
-import { nothing } from "lit";
+import { html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { t } from "../../i18n/index.ts";
@@ -17,6 +17,8 @@ import {
   type DesktopPanelToggleDetail,
 } from "../panel-toggle-contract.ts";
 import { DesktopAppLauncher } from "./desktop-app-launcher.ts";
+import { renderDesktopAudioControl, renderDesktopAudioNotice } from "./desktop-audio-view.ts";
+import { DesktopAudio } from "./desktop-audio.ts";
 import * as desktopTransport from "./desktop-client.ts";
 import { DesktopMobileKeyboard } from "./desktop-mobile-keyboard.ts";
 import {
@@ -83,6 +85,12 @@ class OpenClawDesktopPanel extends OpenClawLitElement {
   @state() private canResize = false;
 
   private readonly connection = new DesktopConnectionHandoff();
+  private readonly audio = new DesktopAudio(() => this.requestUpdate());
+  private readonly onVisibilityChange = () => {
+    if (this.ownerDocument.hidden) {
+      this.audio.retire();
+    }
+  };
   private readonly launcher = new DesktopAppLauncher(this, () => ({
     client: this.client,
     source: this.source,
@@ -158,6 +166,7 @@ class OpenClawDesktopPanel extends OpenClawLitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    this.ownerDocument.addEventListener("visibilitychange", this.onVisibilityChange);
     if (!this.embedded) {
       window.addEventListener(DESKTOP_PANEL_TOGGLE_EVENT, this.onToggleRequest);
     }
@@ -172,6 +181,7 @@ class OpenClawDesktopPanel extends OpenClawLitElement {
   }
 
   override disconnectedCallback(): void {
+    this.ownerDocument.removeEventListener("visibilitychange", this.onVisibilityChange);
     window.removeEventListener(DESKTOP_PANEL_TOGGLE_EVENT, this.onToggleRequest);
     if (this.documentMode && this.usesAutomaticSource) {
       this.returnToPicker("pending");
@@ -223,6 +233,9 @@ class OpenClawDesktopPanel extends OpenClawLitElement {
     ) {
       this.pictureInPicture.close();
       this.mobileKeyboard.reset();
+      if (!this.presented) {
+        this.audio.retire();
+      }
       if (
         this.connection.setPresented(this.presented, () => this.returnToPicker("pending")) &&
         this.refreshOnPresentation
@@ -320,6 +333,7 @@ class OpenClawDesktopPanel extends OpenClawLitElement {
   }
 
   private disconnectConnection(retainViewer = false): void {
+    this.audio.close();
     this.pictureInPicture.close();
     this.operationId += 1;
     this.pendingConnection = null;
@@ -509,6 +523,13 @@ class OpenClawDesktopPanel extends OpenClawLitElement {
       if (!target) {
         throw new Error("Desktop render target is unavailable");
       }
+      if (!this.ownerDocument.hidden && (!this.embedded || this.presented)) {
+        this.audio.connect(pending.observed.audio, client.gatewayUrl);
+      } else {
+        // Observation can finish after visibility retirement, before audio was
+        // advertised. Keep explicit recovery without attaching a hidden socket.
+        this.audio.retire(pending.observed.audio !== undefined);
+      }
       const connection = await this.desktopClientFactory().connect({
         background: getComputedStyle(target).backgroundColor,
         isCurrent: () => pending.operationId === this.operationId,
@@ -680,7 +701,7 @@ class OpenClawDesktopPanel extends OpenClawLitElement {
         (this.sessionKey !== null || this.requestedSource !== null)
           ? "connecting"
           : this.state,
-      notice,
+      notice: html`${notice}${renderDesktopAudioNotice(this.audio.state)}`,
       picker,
       credentials,
       recovery,
@@ -705,6 +726,24 @@ class OpenClawDesktopPanel extends OpenClawLitElement {
       sizing,
       mobileKeyboard: this.mobileKeyboard,
       pictureInPictureControl: this.pictureInPicture.renderButton(),
+      audioControl: renderDesktopAudioControl({
+        state: this.audio.state,
+        connected: this.state === "connected",
+        documentMode: this.documentMode,
+        onToggle: () => {
+          if (this.audio.state === "playing" || this.audio.state === "starting") {
+            this.audio.mute();
+          } else if (this.audio.state === "retired") {
+            void this.connectEnvironment(this.environmentId, this.controlling);
+          } else if (
+            this.state === "connected" &&
+            (!this.embedded || this.presented) &&
+            !this.ownerDocument.hidden
+          ) {
+            this.audio.unmute();
+          }
+        },
+      }),
       dockLayout: this.dockLayout,
       fullscreenMode: this.fullscreenMode,
       onControlToggle: () => void this.connectEnvironment(this.environmentId, !this.controlling),

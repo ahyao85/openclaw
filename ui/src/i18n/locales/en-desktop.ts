@@ -41,6 +41,18 @@ const enDesktop = {
     control: "Control",
     agentInputPaused:
       "You control this desktop. Agent input is paused until you switch to view only.",
+    audio: {
+      unavailable: "Audio unavailable",
+      reconnect: "Reconnect desktop for audio",
+      connecting: "Connecting desktop audio…",
+      unmute: "Unmute desktop audio",
+      mute: "Mute desktop audio",
+      blocked:
+        "Audio playback was blocked. Allow sound for this site, then click Unmute desktop audio again.",
+      unsupported:
+        "Desktop audio requires a browser with Web Audio support. Try a current browser.",
+      failed: "Desktop audio disconnected or could not start. Reconnect the desktop to try again.",
+    },
     keyboard: "Keyboard",
     keyboardInput: "Remote desktop keyboard input",
     touchControls: "Remote desktop controls",

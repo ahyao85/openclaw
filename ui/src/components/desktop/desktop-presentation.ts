@@ -25,6 +25,7 @@ type DesktopPresentation = {
   sizing: DesktopSizingOptions;
   mobileKeyboard: DesktopMobileKeyboard;
   pictureInPictureControl: TemplateResult;
+  audioControl?: TemplateResult;
   dockLayout: DockLayoutController<"bottom" | "right">;
   fullscreenMode: DesktopPanelFullscreenController;
   onControlToggle: () => void;
@@ -95,6 +96,7 @@ export function renderDesktopPresentation(view: DesktopPresentation) {
         desktopSourceForEnvironment({ id: focus.source }).kind === "environment",
       sizing: view.sizing,
       pictureInPictureControl: view.pictureInPictureControl,
+      audioControl: view.audioControl,
       onLaunch: view.onLaunch,
       onTakeControl: view.onTakeControl,
       onControlToggle: view.onControlToggle,
