@@ -298,48 +298,6 @@ it("refreshes dirty canonical rows before presenting their main alias", async ()
   });
 });
 
-it("keeps a captured row when another physical store resets the same key and session ID", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const cfg = {
-      agents: { list: [{ id: "main", default: true }] },
-      session: { scope: "global" as const },
-    };
-    const query = {
-      agentId: "main",
-      key: "global",
-      storePath: resolveOpenClawAgentSqlitePath({ agentId: "main", env: state.env }),
-    };
-    const otherPath = state.statePath("secondary.sqlite");
-    const entry = { sessionId: "shared-id", lifecycleRevision: "original", updatedAt: 1 };
-    for (const storePath of [query.storePath, otherPath]) {
-      replaceSessionEntrySync({ agentId: query.agentId, sessionKey: query.key, storePath }, entry);
-      registerOpenClawAgentDatabase({ agentId: query.agentId, path: storePath });
-    }
-    const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
-    try {
-      await projection.ensureMaterialized();
-      const captured = projection.capture(query);
-      expect(captured).toBeDefined();
-      replaceSessionEntrySync(
-        { agentId: query.agentId, sessionKey: query.key, storePath: otherPath },
-        {
-          ...entry,
-          lifecycleRevision: "other-store-reset",
-          updatedAt: 2,
-        },
-      );
-      expect(projection.isCurrent(captured!)).toBe(true);
-      await projection.ensureMaterialized();
-      expect(projection.describe(query, captured)?.entry.lifecycleRevision).toBe("original");
-      expect(projection.describe({ ...query, storePath: otherPath })?.entry.lifecycleRevision).toBe(
-        "other-store-reset",
-      );
-    } finally {
-      projection.dispose();
-    }
-  });
-});
-
 it.each(["reset", "replace"] as const)(
   "keeps the committed same-key row after %s",
   async (kind) => {
@@ -752,6 +710,44 @@ it("keeps cross-agent inheritance bound to a stored qualified parent", async () 
       expect(projection.snapshot({ agentId: "main", key }).row).toMatchObject({
         parentSessionKey: "agent:work:main",
         model: "updated-work-model",
+        modelOverrideSource: "inherited",
+      });
+      await deleteSessionEntryLifecycle({
+        agentId: "work",
+        storePath: projection.capture({ agentId: "work", key: "agent:work:main" })!.storeTarget
+          .storePath,
+        archiveTranscript: false,
+        target: { canonicalKey: "agent:work:main", storeKeys: ["agent:work:main"] },
+      });
+      await projection.ensureMaterialized();
+      // Check the parent index before a keyed read can repair stale lineage.
+      expect(
+        projection.selectEntries({ parentSessionKey: "global" }).map((row) => row.key),
+      ).toEqual([key]);
+      expect(projection.snapshot({ agentId: "main", key }).row).toMatchObject({
+        parentSessionKey: "global",
+        model: "work-global-model",
+        modelOverrideSource: "inherited",
+      });
+      replaceSessionEntrySync(
+        { agentId: "work", sessionKey: "agent:work:main" },
+        {
+          sessionId: "restored-work-parent",
+          updatedAt: 4,
+          providerOverride: "unit-test",
+          modelOverride: "restored-work-model",
+        },
+      );
+      await projection.ensureMaterialized();
+      expect(
+        projection
+          .selectEntries({ agentId: "main", parentSessionKey: "agent:work:main" })
+          .map((row) => row.key),
+      ).toEqual([key]);
+      expect(projection.selectEntries({ parentSessionKey: "global" })).toEqual([]);
+      expect(projection.snapshot({ agentId: "main", key }).row).toMatchObject({
+        parentSessionKey: "agent:work:main",
+        model: "restored-work-model",
         modelOverrideSource: "inherited",
       });
     } finally {

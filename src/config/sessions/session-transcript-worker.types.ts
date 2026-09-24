@@ -305,6 +305,7 @@ export type SessionExactEntriesWorkerInput = {
   lifecycleSessionKey?: string;
   projection?: "full" | "backing" | "sharing" | "replacement" | "creation";
   includeMembers?: boolean;
+  includeParticipantRecords?: boolean;
   includeAuthorization?: boolean;
   replacementSelection?: SessionEntryReplacementSelection;
   continuation?: CanonicalSessionReaderContinuation;
@@ -321,6 +322,10 @@ export type SessionExactEntriesWorkerResult = {
     birthtime?: string;
   };
   members?: Record<string, SessionMember[]>;
+  participantRecords?: Record<
+    string,
+    import("./session-accessor.sqlite-participant-projection.js").SessionParticipantRecord[]
+  >;
   replacement?: SessionEntryReplacementState & { databaseIdentity: string };
   creation?: import("./session-accessor.sqlite-creation-read.js").SessionCreationSnapshot & {
     databaseIdentity: string;
