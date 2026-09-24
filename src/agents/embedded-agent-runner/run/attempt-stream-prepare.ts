@@ -32,6 +32,7 @@ import {
 } from "../../run-termination.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import type { ToolSearchCatalogToolExecutor } from "../../tool-search.js";
+import { isRunnerAbortError } from "../abort.js";
 import { log } from "../logger.js";
 import {
   ACTIVE_EMBEDDED_RUN_REGISTRATIONS,
@@ -319,11 +320,19 @@ function prepareStream(
       if (deferredLifecycleOwner) {
         return;
       }
-      const requiresTaskWait = await requiresCompletionRequiredAsyncTaskWait({
-        sessionKey: attempt.sessionKey,
-        toolMetas: toolMetasForTerminal,
-        abortSignal: input.runAbortController.signal,
-      });
+      let requiresTaskWait = false;
+      try {
+        requiresTaskWait = await requiresCompletionRequiredAsyncTaskWait({
+          sessionKey: attempt.sessionKey,
+          toolMetas: toolMetasForTerminal,
+          abortSignal: input.runAbortController.signal,
+        });
+      } catch (error) {
+        if (!input.runAbortController.signal.aborted || !isRunnerAbortError(error)) {
+          throw error;
+        }
+        // Cancelling this observation must not defer cleanup past the terminal event.
+      }
       if (deferredLifecycleOwner || requiresTaskWait) {
         return;
       }
