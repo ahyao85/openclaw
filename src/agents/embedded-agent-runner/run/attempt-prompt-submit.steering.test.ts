@@ -30,7 +30,10 @@ import {
   releasePendingAgentSteeringItems,
   settleRequesterAfterSessionSpawns,
 } from "../../subagents/registry/subagent-registry.js";
-import { writeSubagentSessionEntry } from "../../subagents/registry/subagent-registry.persistence.test-support.js";
+import {
+  settleSubagentRegistryPersistenceWork,
+  writeSubagentSessionEntry,
+} from "../../subagents/registry/subagent-registry.persistence.test-support.js";
 import { createSessionsYieldTool } from "../../tools/sessions-yield-tool.js";
 import {
   clearEmbeddedSessionPromptStates,
@@ -255,6 +258,8 @@ it("does not replay a consumed baseline or block the next child after requester 
   });
   expect(child.delivery?.status).toBe("delivered");
   expect(input.onSteeringAcknowledged).toHaveBeenCalledOnce();
+  // Acknowledgment starts worker-backed cleanup; join that owner before reading settlement.
+  await settleSubagentRegistryPersistenceWork();
   expect(hasDescendantRunAwaitingSettle(requesterSessionKey, ci.runId)).toBe(false);
   expect(
     await leasePendingAgentSteeringItems({ requesterSessionKey, leaseId: "next-requester-turn" }),
@@ -272,10 +277,9 @@ it("does not replay a consumed baseline or block the next child after requester 
       terminalReply: { disposition: "visible", text: "New CI report." },
     },
   });
-  await vi.waitFor(() => {
-    expect(subagentRuns.get(ci.runId)?.delivery?.status).toBe("delivered");
-    expect(subagentRuns.get(ci.runId)?.requesterSettleWake).toBeUndefined();
-  });
+  await settleSubagentRegistryPersistenceWork();
+  expect(subagentRuns.get(ci.runId)?.delivery?.status).toBe("delivered");
+  expect(subagentRuns.get(ci.runId)?.requesterSettleWake).toBeUndefined();
   expect(requesterCalls).toHaveLength(1);
   expect(requesterCalls[0]?.inputProvenance?.sourceTool).toBe("subagent_settle");
   expect(requesterCalls[0]?.message).toContain("New CI report.");
