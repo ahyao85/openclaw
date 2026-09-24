@@ -92,24 +92,9 @@ function assertOpenClawStateDatabaseFreshOpenAllowed(
 
 const deferredStateDatabases = new WeakSet<DatabaseSync>();
 
-export function repairOpenClawStateDatabaseSchema(options: OpenClawStateDatabaseOptions = {}): {
-  changes: string[];
-  warnings: string[];
-} {
-  const env = options.env ?? process.env;
-  const pathname = resolveDatabasePath(options);
-  assertOpenClawStateSchemaRepairAllowed(pathname);
-  if (!existsSync(pathname)) {
-    return { changes: [], warnings: [] };
-  }
-  return withStateDatabaseSchemaMaintenance({ databasePath: pathname }, () =>
-    repairStateSchema(pathname, env, "doctor"),
-  );
-}
-
-/** Make exact legacy catalog damage readable before Doctor loads config-dependent state. */
-export function repairOpenClawStateDatabaseReadabilityForDoctor(
-  options: OpenClawStateDatabaseOptions = {},
+function repairDoctorStateDatabase(
+  options: OpenClawStateDatabaseOptions,
+  scope: "doctor" | "indexes" | "readability",
 ): { changes: string[]; warnings: string[] } {
   const env = options.env ?? process.env;
   const pathname = resolveDatabasePath(options);
@@ -117,11 +102,34 @@ export function repairOpenClawStateDatabaseReadabilityForDoctor(
   if (!existsSync(pathname)) {
     return { changes: [], warnings: [] };
   }
-  // A writer close can checkpoint WAL and invalidate a generation-bound corruption refusal.
-  assertOpenClawStateDatabaseFreshOpenAllowed(options);
+  if (scope === "readability") {
+    // A writer close can checkpoint WAL and invalidate a generation-bound corruption refusal.
+    assertOpenClawStateDatabaseFreshOpenAllowed(options);
+  }
   return withStateDatabaseSchemaMaintenance({ databasePath: pathname }, () =>
-    repairStateSchema(pathname, env, "readability"),
+    repairStateSchema(pathname, env, scope),
   );
+}
+
+export function repairOpenClawStateDatabaseSchema(options: OpenClawStateDatabaseOptions = {}): {
+  changes: string[];
+  warnings: string[];
+} {
+  return repairDoctorStateDatabase(options, "doctor");
+}
+
+/** Explicit Doctor maintenance before config readers encounter a quarantined index. */
+export function repairOpenClawStateDatabaseIndexesForDoctor(
+  options: OpenClawStateDatabaseOptions = {},
+): { changes: string[]; warnings: string[] } {
+  return repairDoctorStateDatabase(options, "indexes");
+}
+
+/** Make exact legacy catalog damage readable before Doctor loads config-dependent state. */
+export function repairOpenClawStateDatabaseReadabilityForDoctor(
+  options: OpenClawStateDatabaseOptions = {},
+): { changes: string[]; warnings: string[] } {
+  return repairDoctorStateDatabase(options, "readability");
 }
 
 /** Prepare schema and retire resources only when the admitted operation actually repairs it. */
