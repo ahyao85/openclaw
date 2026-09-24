@@ -155,6 +155,10 @@ export class DraftPlaceBrowser {
       : null;
   }
 
+  get defaultRemoteProjectProfileId(): string {
+    return this.projectCatalog?.snapshot.result?.defaultRepository?.profileId ?? "";
+  }
+
   get projectId(): string {
     return this.projectSelection?.kind === "local" ? this.projectSelection.id : "";
   }

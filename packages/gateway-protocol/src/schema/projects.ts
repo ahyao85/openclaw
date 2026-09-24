@@ -94,6 +94,7 @@ export const ProjectDefaultRepositorySchema = closedObject({
   identity: Type.String({ minLength: 1, maxLength: 200 }),
   url: Type.String({ minLength: 1, maxLength: 2048 }),
   ref: Type.Optional(Type.String({ minLength: 1, maxLength: 255 })),
+  profileId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
 });
 export const ProjectsListResultSchema = closedObject({
   projects: Type.Array(ProjectRecordSchema),

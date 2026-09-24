@@ -86,6 +86,7 @@ describe("project protocol schemas", () => {
           identity: "bic/lobster",
           url: "https://microsoft.ghe.com/bic/lobster.git",
           ref: "main",
+          profileId: "teamclaw-azure",
         },
         recents: [
           { kind: "project", projectId: "openclaw", displayName: "OpenClaw" },

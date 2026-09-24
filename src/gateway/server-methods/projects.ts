@@ -65,10 +65,22 @@ function configuredDefaultRepository(env: NodeJS.ProcessEnv = process.env) {
   const identity = normalizeOptionalString(env.OPENCLAW_PROJECTS_DEFAULT_REPOSITORY_IDENTITY);
   const parsed = parseProjectGitUrl(env.OPENCLAW_PROJECTS_DEFAULT_REPOSITORY_URL ?? "");
   const ref = normalizeOptionalString(env.OPENCLAW_PROJECTS_DEFAULT_REPOSITORY_REF);
-  if (!identity || identity.length > 200 || !parsed || (ref?.length ?? 0) > 255) {
+  const profileId = normalizeOptionalString(env.OPENCLAW_PROJECTS_DEFAULT_REPOSITORY_PROFILE_ID);
+  if (
+    !identity ||
+    identity.length > 200 ||
+    !parsed ||
+    (ref?.length ?? 0) > 255 ||
+    (profileId?.length ?? 0) > 128
+  ) {
     return undefined;
   }
-  return { identity, url: parsed.url, ...(ref ? { ref } : {}) };
+  return {
+    identity,
+    url: parsed.url,
+    ...(ref ? { ref } : {}),
+    ...(profileId ? { profileId } : {}),
+  };
 }
 
 type ProjectCandidate = {

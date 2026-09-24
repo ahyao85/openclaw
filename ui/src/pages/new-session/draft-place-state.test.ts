@@ -107,6 +107,7 @@ describe("DraftPlaceState repository selection", () => {
       cloneUrl: "https://microsoft.ghe.com/bic/lobster.git",
       defaultBranch: "main",
     });
+    vi.spyOn(configured.browser, "defaultRemoteProjectProfileId", "get").mockReturnValue("aws");
     configured.state.adoptAgentDefaults();
     configured.state.restorePreferenceSelections();
     expect(configured.browser.remoteProject).toEqual({
@@ -115,6 +116,20 @@ describe("DraftPlaceState repository selection", () => {
       defaultBranch: "main",
     });
     expect(configured.state.baseRef).toBe("main");
+    expect(configured.state.cloudProfileId).toBe("aws");
+    expect(configured.state.remoteRepository).toEqual({
+      url: "https://microsoft.ghe.com/bic/lobster.git",
+      ref: "main",
+    });
+    expect(
+      buildSelectedSessionCreateParams(configured.state, {
+        message: "Inspect the issue",
+        visibility: "normal",
+      }),
+    ).toMatchObject({
+      message: "",
+      repository: { url: "https://microsoft.ghe.com/bic/lobster.git", ref: "main" },
+    });
     expect(configured.state.placementPreferenceReady).toBe(true);
 
     configured.persistPreference.mockClear();
@@ -124,6 +139,27 @@ describe("DraftPlaceState repository selection", () => {
       "/workspace",
       expect.objectContaining({ defaultRepositoryOptOut: true, remoteProject: null }),
     );
+  });
+
+  it("does not clone a configured worker repository onto the Gateway", () => {
+    const configured = createRepositoryFixture();
+    configured.readPreference.mockReturnValue({ folder: "/workspace" });
+    vi.spyOn(configured.browser, "projectsReady", "get").mockReturnValue(true);
+    vi.spyOn(configured.browser, "defaultRemoteProject", "get").mockReturnValue({
+      identity: "bic/lobster",
+      cloneUrl: "https://microsoft.ghe.com/bic/lobster.git",
+      defaultBranch: "main",
+    });
+    vi.spyOn(configured.browser, "defaultRemoteProjectProfileId", "get").mockReturnValue(
+      "missing-worker-profile",
+    );
+
+    configured.state.adoptAgentDefaults();
+    configured.state.restorePreferenceSelections();
+
+    expect(configured.browser.remoteProject).toBeNull();
+    expect(configured.state.remoteRepository).toBeUndefined();
+    expect(configured.state.cloudProfileId).toBe("");
   });
 
   it("remembers a remote project and restores its default branch", () => {

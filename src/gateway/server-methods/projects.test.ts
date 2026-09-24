@@ -82,6 +82,7 @@ test("projects.list exposes a normalized configured default repository", async (
     "https://microsoft.ghe.com/BIC/Lobster.git",
   );
   vi.stubEnv("OPENCLAW_PROJECTS_DEFAULT_REPOSITORY_REF", "main");
+  vi.stubEnv("OPENCLAW_PROJECTS_DEFAULT_REPOSITORY_PROFILE_ID", "teamclaw-azure");
 
   expect(await invokeProjectMethod("projects.list", {})).toMatchObject({
     ok: true,
@@ -90,6 +91,7 @@ test("projects.list exposes a normalized configured default repository", async (
         identity: "bic/lobster",
         url: "https://microsoft.ghe.com/bic/lobster.git",
         ref: "main",
+        profileId: "teamclaw-azure",
       },
     },
   });

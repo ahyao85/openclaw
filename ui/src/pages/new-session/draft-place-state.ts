@@ -750,19 +750,38 @@ export class DraftPlaceState {
     let changed = false;
     const preferredWhere = this.whereSelectedByUser ? null : this.preferredWhereRestore;
     const preferredProject = this.projectSelectedByUser ? "" : this.preferredProjectRestore;
+    const configuredProfileId = this.browser.defaultRemoteProjectProfileId;
+    const configuredProfile = configuredProfileId
+      ? this.gateway.cloudProfiles.find((profile) => profile.id === configuredProfileId)
+      : undefined;
+    const configuredDefaultReady =
+      this.configuredDefaultRepositoryPending &&
+      this.browser.projectsReady &&
+      (!configuredProfileId || this.gateway.cloudProfilesReady);
+    const configuredDefaultAllowed = Boolean(
+      configuredDefaultReady &&
+      (!configuredProfileId ||
+        (this.isAdmin() &&
+          configuredProfile &&
+          !this.modelControl.cloudRuntimeUnsupportedReason(configuredProfile))),
+    );
     const preferredRemoteProject = this.projectSelectedByUser
       ? null
       : (this.preferredRemoteProjectRestore ??
-        (this.configuredDefaultRepositoryPending && this.browser.projectsReady
-          ? this.browser.defaultRemoteProject
-          : null));
+        (configuredDefaultAllowed ? this.browser.defaultRemoteProject : null));
 
-    if (this.configuredDefaultRepositoryPending && this.browser.projectsReady) {
+    if (configuredDefaultReady) {
       this.configuredDefaultRepositoryPending = false;
       changed = true;
     }
 
     if (preferredRemoteProject) {
+      if (configuredProfileId && configuredDefaultAllowed && !preferredWhere) {
+        this.deviceIdValue = "";
+        this.autoDeviceValue = false;
+        this.cloudProfileIdValue = configuredProfileId;
+        this.repositoryState.forceWorktree(true);
+      }
       this.browser.selectProject({ kind: "remote", project: preferredRemoteProject });
       this.freshWorkspaceValue = false;
       this.folderSelectedByUser = false;
