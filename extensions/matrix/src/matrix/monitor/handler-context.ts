@@ -114,9 +114,9 @@ export async function resolveMatrixInboundContext(config: {
       kind,
       senderAllowed: isRoomContextSenderAllowed(contextSenderId),
     }).include;
-  let threadContext = threadRootId
-    ? await resolveThreadContext({ roomId, threadRootId })
-    : undefined;
+  let threadContext =
+    ingress.threadContext ??
+    (threadRootId ? await resolveThreadContext({ roomId, threadRootId }) : undefined);
   if (
     threadContext?.senderId &&
     !shouldIncludeRoomContextSender("thread", threadContext.senderId)

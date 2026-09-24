@@ -82,6 +82,8 @@ export function createTelegramInboundProcessing({
   params: {
     cfg,
     accountId,
+    ownerAgentId,
+    telegramDeps,
     bot,
     opts,
     runtime,
@@ -108,6 +110,8 @@ export function createTelegramInboundProcessing({
   const { handleMediaGroup, resolveUnaddressedGroupMediaDisposition } = createTelegramInboundMedia({
     params: {
       accountId,
+      ownerAgentId,
+      telegramDeps,
       bot,
       opts,
       runtime,

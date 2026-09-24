@@ -118,6 +118,7 @@ const DiscordThreadSchema = z
 
 const DiscordGuildChannelSchema = buildGroupEntrySchema(
   {
+    requireMentionInBotThreads: z.boolean().optional(),
     ignoreOtherMentions: z.boolean().optional(),
     users: DiscordIdListSchema.optional(),
     roles: DiscordIdListSchema.optional(),
@@ -141,6 +142,7 @@ const DiscordGuildChannelSchema = buildGroupEntrySchema(
 
 const DiscordGuildSchema = buildGroupEntrySchema(
   {
+    requireMentionInBotThreads: z.boolean().optional(),
     slug: z.string().optional(),
     ignoreOtherMentions: z.boolean().optional(),
     ...buildChannelReactionShape({

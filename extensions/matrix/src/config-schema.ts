@@ -57,6 +57,7 @@ const botLoopProtectionSchema = z
   .optional();
 
 export const matrixRoomSchema = buildGroupEntrySchema({
+  requireMentionInBotThreads: z.boolean().optional(),
   account: z.string().optional(),
   allowBots: z.union([z.boolean(), z.literal("mentions")]).optional(),
   botLoopProtection: botLoopProtectionSchema,
@@ -141,6 +142,7 @@ export const MatrixConfigSchema = z.object({
       z
         .object({
           joinIntro: z.boolean().optional(),
+          requireMentionInBotThreads: z.boolean().optional(),
           accessToken: buildSecretInputSchema().optional(),
           password: buildSecretInputSchema().optional(),
         })
@@ -168,6 +170,7 @@ export const MatrixConfigSchema = z.object({
   allowBots: z.union([z.boolean(), z.literal("mentions")]).optional(),
   botLoopProtection: botLoopProtectionSchema,
   groupPolicy: GroupPolicySchema.optional(),
+  requireMentionInBotThreads: z.boolean().optional(),
   mentionPatterns: MentionPatternsPolicySchema.optional(),
   contextVisibility: ContextVisibilityModeSchema.optional(),
   streaming: matrixStreamingSchema.optional(),

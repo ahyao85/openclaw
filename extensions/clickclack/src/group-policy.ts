@@ -9,13 +9,22 @@ import { mergePairLoopGuardConfig } from "openclaw/plugin-sdk/pair-loop-guard-ru
 
 type ClickClackGroupPolicy = {
   requireMention: boolean;
+  requireMentionInBotThreads?: boolean;
   mentionPatterns: string[];
 };
 
 type ClickClackAccountGroupPolicyParams = {
   requireMention?: boolean;
+  requireMentionInBotThreads?: boolean;
   mentionPatterns?: string[];
-  groups?: Record<string, { requireMention?: boolean; mentionPatterns?: string[] }>;
+  groups?: Record<
+    string,
+    {
+      requireMention?: boolean;
+      requireMentionInBotThreads?: boolean;
+      mentionPatterns?: string[];
+    }
+  >;
 };
 
 type ClickClackBotPolicy = {
@@ -92,6 +101,10 @@ export function resolveClickClackGroupPolicy(params: {
   return {
     requireMention:
       exact?.requireMention ?? wildcard?.requireMention ?? accountPolicy.requireMention,
+    requireMentionInBotThreads:
+      exact?.requireMentionInBotThreads ??
+      wildcard?.requireMentionInBotThreads ??
+      account.requireMentionInBotThreads,
     mentionPatterns:
       exact?.mentionPatterns ?? wildcard?.mentionPatterns ?? accountPolicy.mentionPatterns,
   };

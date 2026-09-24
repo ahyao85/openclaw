@@ -74,6 +74,7 @@ export type TelegramPromptContextMessageSelection = ReadonlyMap<string, "include
 
 export type TelegramSessionState = {
   agentId: string;
+  bindingMode: ReturnType<typeof resolveTelegramConversationRoute>["bindingMode"];
   sessionEntry: SessionEntry | undefined;
   sessionKey: string;
   storePath: string;
@@ -199,7 +200,7 @@ export function createTelegramMessageSessionRuntime({
       topicThreadId,
       params.runtimeCfg,
     );
-    const { route } = resolveTelegramConversationRoute({
+    const { route, bindingMode } = resolveTelegramConversationRoute({
       cfg: params.runtimeCfg,
       accountId,
       chatId: params.chatId,
@@ -234,6 +235,7 @@ export function createTelegramMessageSessionRuntime({
     if (storedOverride) {
       return {
         agentId: route.agentId,
+        bindingMode,
         sessionEntry: entry,
         sessionKey,
         storePath,
@@ -247,6 +249,7 @@ export function createTelegramMessageSessionRuntime({
     if (provider && model) {
       return {
         agentId: route.agentId,
+        bindingMode,
         sessionEntry: entry,
         sessionKey,
         storePath,
@@ -256,6 +259,7 @@ export function createTelegramMessageSessionRuntime({
     const modelCfg = params.runtimeCfg.agents?.defaults?.model;
     return {
       agentId: route.agentId,
+      bindingMode,
       sessionEntry: entry,
       sessionKey,
       storePath,

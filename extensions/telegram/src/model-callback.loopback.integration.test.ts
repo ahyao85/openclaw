@@ -200,6 +200,7 @@ describe("Telegram model callback loopback", () => {
         },
         resolveTelegramSessionState: () => ({
           agentId: "main",
+          bindingMode: { kind: "none" },
           sessionEntry: undefined,
           sessionKey: "agent:main:telegram:direct:1234",
           storePath,

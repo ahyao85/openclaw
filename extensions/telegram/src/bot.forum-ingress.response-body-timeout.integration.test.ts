@@ -159,6 +159,7 @@ describe("Telegram supergroup ingress with a stalled Bot API response body", () 
       }),
       resolveTelegramSessionState: () => ({
         agentId: "integration",
+        bindingMode: { kind: "none" as const },
         sessionEntry: undefined,
         sessionKey: "integration",
         storePath: "integration",

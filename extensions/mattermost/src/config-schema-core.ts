@@ -13,7 +13,9 @@ import {
 import { z } from "zod";
 import { buildSecretInputSchema } from "./secret-input.js";
 
-const MattermostGroupSchema = buildGroupEntrySchema().omit({
+const MattermostGroupSchema = buildGroupEntrySchema({
+  requireMentionInBotThreads: z.boolean().optional(),
+}).omit({
   tools: true,
   toolsBySender: true,
   skills: true,
@@ -143,6 +145,7 @@ export const MattermostAccountSchemaBase = z
     chatmode: z.enum(["oncall", "onmessage", "onchar"]).optional(),
     oncharPrefixes: z.array(z.string()).optional(),
     requireMention: z.boolean().optional(),
+    requireMentionInBotThreads: z.boolean().optional(),
     implicitMentions: ChannelImplicitMentionsSchema.optional(),
     dmPolicy: DmPolicySchema.optional().default("pairing"),
     allowFrom: z.array(z.union([z.string(), z.number()])).optional(),

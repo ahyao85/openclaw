@@ -71,7 +71,11 @@ export function createMatrixThreadContextResolver(params: {
         );
         return null;
       });
-    if (!rootEvent) {
+    if (
+      !rootEvent ||
+      rootEvent.event_id !== input.threadRootId ||
+      (rootEvent.room_id && rootEvent.room_id !== input.roomId)
+    ) {
       return {
         threadStarterBody: `Matrix thread root ${input.threadRootId}`,
       };

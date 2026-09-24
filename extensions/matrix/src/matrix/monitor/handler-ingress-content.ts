@@ -1,4 +1,5 @@
 import { resolveInboundMentionDecision } from "openclaw/plugin-sdk/channel-inbound";
+import { resolveBotThreadMentionPolicy } from "openclaw/plugin-sdk/channel-mention-gating";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { formatAudioTranscriptForAgent } from "openclaw/plugin-sdk/media-understanding-runtime";
 import { buildInboundHistoryFromEntries } from "openclaw/plugin-sdk/reply-history";
@@ -29,6 +30,7 @@ import {
 import { createRoomHistoryTracker, type HistoryEntry } from "./room-history.js";
 import { resolveMatrixInboundRoute } from "./route.js";
 import { logInboundDrop } from "./runtime-api.js";
+import type { createMatrixThreadContextResolver } from "./thread-context.js";
 import type { MatrixRawEvent } from "./types.js";
 
 export async function resolveMatrixIngressContent(config: {
@@ -42,6 +44,7 @@ export async function resolveMatrixIngressContent(config: {
   eventTs?: number;
   senderId: string;
   roomHistoryTracker: ReturnType<typeof createRoomHistoryTracker>;
+  resolveThreadContext: ReturnType<typeof createMatrixThreadContextResolver>;
   commitInboundEventIfClaimed: () => Promise<void>;
 }) {
   const {
@@ -55,6 +58,7 @@ export async function resolveMatrixIngressContent(config: {
     eventTs,
     senderId,
     roomHistoryTracker,
+    resolveThreadContext,
     commitInboundEventIfClaimed,
   } = config;
   const {
@@ -288,7 +292,7 @@ export async function resolveMatrixIngressContent(config: {
     await commitInboundEventIfClaimedAndDiscardReserved();
     return undefined;
   }
-  const shouldRequireMention = isRoom
+  const configuredRequireMention = isRoom
     ? roomConfig?.autoReply === true
       ? false
       : roomConfig?.autoReply === false
@@ -297,6 +301,17 @@ export async function resolveMatrixIngressContent(config: {
           ? roomConfig?.requireMention
           : true
     : false;
+  const requireMentionInBotThreads =
+    roomConfig?.requireMentionInBotThreads ?? accountConfig?.requireMentionInBotThreads;
+  const threadContext =
+    isRoom && threadRootId && requireMentionInBotThreads !== undefined
+      ? await resolveThreadContext({ roomId, threadRootId })
+      : undefined;
+  const { requireMention: shouldRequireMention } = resolveBotThreadMentionPolicy({
+    isBotOwnedThread: threadContext?.senderId === selfUserId,
+    requireMentionInBotThreads,
+    requireMention: configuredRequireMention,
+  });
   const mentionDecision = resolveInboundMentionDecision({
     facts: {
       // Matrix native mention metadata lets us reliably decide absence even
@@ -493,6 +508,7 @@ export async function resolveMatrixIngressContent(config: {
     messageId,
     triggerSnapshot,
     threadRootId,
+    threadContext,
     thread,
     botLoopProtection,
     effectiveGroupAllowFrom,
