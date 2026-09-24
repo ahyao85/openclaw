@@ -142,6 +142,30 @@ Use the completed-evidence preparation path above. Neither command deletes the
 prior outcome or bypasses review and merge admission. Queue cancellation is not
 supported by this path.
 
+For an **uncertain, unaccepted auto request with no observed auto request**, keep
+the original PR and use a draft barrier instead of pretending cancellation occurred:
+
+```bash
+scripts/pr merge-recover <PR> <OUTCOME_OID> --confirmed-operator-recovery --suspend-auto
+```
+
+Read back the current outcome OID. Only confirmed draft suspension permits head
+repair. Keep the PR draft, refresh review and completed-evidence preparation,
+and complete exact-head CI. The existing `scripts/pr ci-dispatch <PR>` can run
+its exact-SHA release-gate workflow on a same-repository draft; skipped draft
+checks and `github_pending` do not count as completed proof. A completed
+ClawSweeper review must name the exact release head. Do not manually mark ready.
+
+Explicit `merge-recover` with the suspension OID and `--replacement-head <SHA>`
+validates that evidence and records a new `ready` outcome **before** one ready
+request. It does not submit a merge. Read the new OID and explicitly recover it
+for ordinary immediate admission. A lost draft/ready response is never blindly
+repeated. Reconcile any concurrent auto request or merge instead of dispatching.
+The old uncertainty and capture remain retained: draft is a no-merge barrier,
+not proof of non-execution or a generation fence against late auto enablement.
+Release can therefore result in the already-reviewed, CI-proven candidate merging;
+the replacement-bound receipt verifies that result without another merge request.
+
 A failed operation can retain a lock. Verify no owned child tools remain, then
 recover only with the exact token and command the wrapper printed. Never remove
 locks by hand or start competing retries. After throttling, inspect quota before

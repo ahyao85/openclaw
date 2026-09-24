@@ -1,9 +1,331 @@
+import { readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { expect, it } from "vitest";
 import { createMergeOutcomeFixtureHarness } from "./pr-merge-outcome.test-support.js";
 
 const { fixture, outcomeRef, describePosix } = createMergeOutcomeFixtureHarness();
 
-describePosix("native accepted auto-merge recovery", () => {
+describePosix("native auto-merge recovery", () => {
+  it("suspends unknown auto dispatch until reviewed replacement release and explicit immediate recovery", () => {
+    const f = fixture();
+    f.save({
+      ...f.state(),
+      mode: "unapplied",
+      pr: { ...f.state().pr, mergeStateStatus: "BLOCKED" },
+    });
+    const first = f.run(true);
+    expect(first.status, first.output).toBe(1);
+    expect(f.state().mutations, first.output).toBe(1);
+    const original = f.git(["rev-parse", outcomeRef]);
+    const originalRecord = f.record();
+    const captures = f.captures();
+    f.recover();
+    const result = f.suspend(original);
+    expect(result.status, result.output).toBe(0);
+    expect(f.record()).toMatchObject({
+      phase: "intent",
+      accepted: false,
+      route: "auto",
+      landed: null,
+      suspension: { outcome: original, actor: "fixture-operator", state: "confirmed" },
+    });
+    expect(f.record()).not.toHaveProperty("cancellation");
+    expect(f.state()).toMatchObject({ mutations: 1, cancellations: 0, posts: 0 });
+    const retired = f.git(["rev-parse", outcomeRef]);
+    for (const [name, contents] of captures) {
+      expect(f.git(["rev-parse", retired + ":suspension-captures/" + name])).toBe(
+        f.git(["hash-object", "--stdin"], contents),
+      );
+    }
+    expect(JSON.parse(f.git(["show", original + ":outcome.json"]))).toEqual(originalRecord);
+    // An on-disk successor must not skip the recorded ready transition.
+    const invalid = {
+      ...originalRecord,
+      route: "immediate",
+      recovery: {
+        outcome: retired,
+        attempt: originalRecord.attempt,
+        actor: "fixture-operator",
+        reason: "explicit-operator-recovery",
+      },
+    };
+    const blob = f.git(["hash-object", "-w", "--stdin"], JSON.stringify(invalid));
+    const tree = f.git(["mktree"], `100644 blob ${blob}\toutcome.json\n`);
+    const forged = f.commit(tree, [f.head, f.base, retired], "Invalid fixture successor\n");
+    f.git(["update-ref", outcomeRef, forged, retired]);
+    const refused = f.run();
+    expect(refused.status, refused.output).toBe(1);
+    expect(refused.output).toContain("invalid or unretained operator recovery provenance");
+    f.recover();
+    f.git(["update-ref", outcomeRef, retired, forged]);
+    expect(f.run().status).toBe(1); // Routine reconciliation never dispatches.
+    f.recover();
+    const replacement = f.replacePreparedHead();
+    f.save({
+      ...f.state(),
+      mode: "success",
+      readyResponse: "lost",
+      requiredCheckName: "openclaw/ci-gate",
+      staleDraftSkip: true,
+      pr: { ...f.state().pr, mergeStateStatus: "CLEAN" },
+    });
+    const released = f.run(false, f.repo, "squash", retired, replacement);
+    expect(released.status, released.output).toBe(0);
+    expect(f.record()).toMatchObject({ phase: "ready", head: replacement, accepted: false });
+    expect(f.state()).toMatchObject({ mutations: 1, draftTransitions: 1, readyTransitions: 1 });
+    const ready = f.git(["rev-parse", outcomeRef]);
+    const readyState = f.state();
+    f.save({ ...readyState, writerPermission: "read" });
+    expect(f.run(false, f.repo, "squash", ready).status).toBe(1);
+    expect(f.git(["rev-parse", outcomeRef])).toBe(ready);
+    f.recover();
+    f.save(readyState);
+    const recovered = f.run(false, f.repo, "squash", ready);
+    expect(recovered.status, recovered.output).toBe(0);
+    expect(f.record()).toMatchObject({
+      phase: "complete",
+      head: replacement,
+      route: "immediate",
+      recovery: { outcome: ready },
+    });
+    expect(f.state()).toMatchObject({ mutations: 2, cancellations: 0, posts: 1 });
+    f.git(["merge-base", "--is-ancestor", original, outcomeRef]);
+    expect(f.suspend(original).status).toBe(1);
+    expect(f.state().mutations).toBe(2);
+  });
+  it("keeps absent-request suspension fail-closed across identity, authority, state and capture faults", () => {
+    const f = fixture();
+    f.save({
+      ...f.state(),
+      mode: "unapplied",
+      pr: { ...f.state().pr, mergeStateStatus: "BLOCKED" },
+    });
+    expect(f.run(true).status).toBe(1);
+    const original = f.git(["rev-parse", outcomeRef]);
+    f.recover();
+    const baseline = f.state();
+    const capture = join(f.worktree, ".local", f.captures()[0]![0]);
+    const bytes = readFileSync(capture);
+    for (const fault of [
+      "stale",
+      "head",
+      "repo",
+      "base",
+      "queued",
+      "queue-policy",
+      "auto",
+      "writer",
+      "revoked",
+      "reread",
+      "capture",
+    ]) {
+      const next = structuredClone(baseline);
+      if (fault === "head") {
+        next.pr.headRefOid = f.base;
+      }
+      if (fault === "repo") {
+        next.repoAuthority.node_id = "other-repo";
+      }
+      if (fault === "base") {
+        next.pr.baseRefName = "other";
+      }
+      if (fault === "queued") {
+        next.pr.isInMergeQueue = true;
+      }
+      if (fault === "queue-policy") {
+        next.pr.isMergeQueueEnabled = true;
+      }
+      if (fault === "auto") {
+        next.pr.autoMergeRequest = { mergeMethod: "SQUASH" };
+      }
+      if (fault === "writer") {
+        next.writerPermission = "read";
+      }
+      if (fault === "revoked") {
+        next.revokePermissionAt = 2;
+      }
+      if (fault === "reread") {
+        next.observations = [{}, { pr: { headRefOid: f.base } }];
+      }
+      if (fault === "capture") {
+        rmSync(capture);
+        symlinkSync(join(f.root, "missing-capture"), capture);
+      }
+      f.save(next);
+      const refused = f.suspend(fault === "stale" ? f.base : original);
+      expect(refused.status, fault + ": " + refused.output).toBe(1);
+      expect(f.state()).toMatchObject({ mutations: 1, draftTransitions: 0, readyTransitions: 0 });
+      expect(f.git(["rev-parse", outcomeRef])).toBe(original);
+      f.recover();
+      if (fault === "capture") {
+        rmSync(capture);
+        writeFileSync(capture, bytes);
+      }
+    }
+  });
+
+  it("never repeats uncertain draft or ready writes, even when their responses are lost", () => {
+    const f = fixture();
+    f.save({
+      ...f.state(),
+      mode: "unapplied",
+      draftResponse: "rejected",
+      pr: { ...f.state().pr, mergeStateStatus: "BLOCKED" },
+    });
+    expect(f.run(true).status).toBe(1);
+    f.recover();
+    const first = f.suspend(f.git(["rev-parse", outcomeRef]));
+    expect(first.status, first.output).toBe(1);
+    expect(f.record().suspension.state).toBe("requested");
+    f.recover();
+    const requested = f.git(["rev-parse", outcomeRef]);
+    expect(f.suspend(requested).status).toBe(1);
+    expect(f.state().draftTransitions).toBe(1);
+    f.recover();
+    f.save({ ...f.state(), pr: { ...f.state().pr, isDraft: true } });
+    expect(f.suspend(requested).status).toBe(0);
+    const suspended = f.git(["rev-parse", outcomeRef]);
+    const replacement = f.replacePreparedHead();
+    f.save({
+      ...f.state(),
+      readyResponse: "rejected",
+      pr: { ...f.state().pr, mergeStateStatus: "CLEAN" },
+    });
+    const release = f.run(false, f.repo, "squash", suspended, replacement);
+    expect(release.status, release.output).toBe(1);
+    const ready = f.git(["rev-parse", outcomeRef]);
+    expect(f.record().phase).toBe("ready");
+    f.recover();
+    expect(f.run(false, f.repo, "squash", ready).status).toBe(1);
+    expect(f.state()).toMatchObject({ mutations: 1, draftTransitions: 1, readyTransitions: 1 });
+    f.recover();
+    f.save({ ...f.state(), mode: "success", pr: { ...f.state().pr, isDraft: false } });
+    const result = f.run(false, f.repo, "squash", ready);
+    expect(result.status, result.output).toBe(0);
+    expect(f.state()).toMatchObject({ mutations: 2, draftTransitions: 1, readyTransitions: 1 });
+  });
+
+  it("retains the draft barrier until exact-head review, completed CI and current authority pass", () => {
+    const f = fixture();
+    f.save({
+      ...f.state(),
+      mode: "unapplied",
+      draftResponse: "lost",
+      pr: { ...f.state().pr, mergeStateStatus: "BLOCKED" },
+    });
+    expect(f.run(true).status).toBe(1);
+    f.recover();
+    expect(f.suspend(f.git(["rev-parse", outcomeRef])).status).toBe(0);
+    const suspended = f.git(["rev-parse", outcomeRef]);
+    const replacement = f.replacePreparedHead();
+    const baseline = f.state();
+    const gatesPath = join(f.worktree, ".local/gates.env");
+    const gates = readFileSync(gatesPath, "utf8");
+    for (const fault of [
+      "ci",
+      "pending",
+      "failed",
+      "review",
+      "writer",
+      "revoked",
+      "released-externally",
+      "pending-stamp",
+      "artifact",
+      "local-head",
+      "no-net-change",
+    ]) {
+      const next = structuredClone(baseline);
+      if (fault === "no-net-change") {
+        f.advance("reviewed replacement\n", "stable\n");
+      }
+      if (fault === "ci") {
+        next.ciExit = 15;
+      }
+      if (fault === "pending") {
+        next.gates = "pending";
+      }
+      if (fault === "failed") {
+        next.gates = "fail";
+      }
+      if (fault === "review") {
+        next.issueComments[0]!.body = next.issueComments[0]!.body.replace(replacement, f.head);
+      }
+      if (fault === "writer") {
+        next.writerPermission = "read";
+      }
+      if (fault === "revoked") {
+        next.revokePermissionAt = next.permissionReads + 2;
+      }
+      if (fault === "released-externally") {
+        next.pr.isDraft = false;
+      }
+      if (fault === "pending-stamp") {
+        writeFileSync(gatesPath, gates.replace("GATES_MODE=full", "GATES_MODE=github_pending"));
+      }
+      if (fault === "artifact") {
+        next.duringChecks = { artifact: "gates.env" };
+      }
+      if (fault === "local-head") {
+        next.duringChecks = { preparedHead: f.head };
+      }
+      f.save(next);
+      const result = f.run(false, f.repo, "squash", suspended, replacement);
+      expect(result.status, fault + ": " + result.output).toBe(1);
+      expect(f.state()).toMatchObject({ mutations: 1, readyTransitions: 0 });
+      expect(f.git(["rev-parse", outcomeRef])).toBe(suspended);
+      f.recover();
+      writeFileSync(gatesPath, gates);
+      if (fault === "local-head") {
+        f.git(["-C", f.worktree, "checkout", "-B", "pr-123-prep", replacement]);
+      }
+    }
+  });
+
+  it.each(["draft", "ready"])(
+    "reconciles a concurrent merge at the %s transition without a second merge",
+    (stage) => {
+      const f = fixture();
+      f.save({
+        ...f.state(),
+        mode: "unapplied",
+        draftResponse: stage === "draft" ? "merged" : "success",
+        pr: { ...f.state().pr, mergeStateStatus: "BLOCKED" },
+      });
+      expect(f.run(true).status).toBe(1);
+      f.recover();
+      const suspended = f.suspend(f.git(["rev-parse", outcomeRef]));
+      expect(suspended.status, suspended.output).toBe(0);
+      if (stage === "ready") {
+        const original = f.git(["rev-parse", outcomeRef]);
+        const replacement = f.replacePreparedHead();
+        f.save({
+          ...f.state(),
+          readyResponse: "merged",
+          pr: { ...f.state().pr, mergeStateStatus: "CLEAN" },
+        });
+        const released = f.run(false, f.repo, "squash", original, replacement);
+        expect(released.status, released.output).toBe(0);
+      }
+      expect(f.record().phase).toBe("merged");
+      expect(f.state()).toMatchObject({ mutations: 1, posts: 0 });
+    },
+  );
+
+  it.each([false, true])("does not suspend a known accepted intent (auto=%s)", (auto) => {
+    const f = fixture();
+    f.save({
+      ...f.state(),
+      mode: "pending",
+      pr: { ...f.state().pr, mergeStateStatus: auto ? "BLOCKED" : "CLEAN" },
+    });
+    expect(f.run(auto).status).toBe(0);
+    const accepted = f.git(["rev-parse", outcomeRef]);
+    const result = f.suspend(accepted);
+    expect(result.status, result.output).toBe(1);
+    expect(f.state()).toMatchObject({ mutations: 1, draftTransitions: 0 });
+    expect(f.git(["rev-parse", outcomeRef])).toBe(accepted);
+  });
+
   it.each(["success", "lost"])(
     "cancels accepted auto with %s response before recovering a reviewed replacement",
     (cancellation) => {
