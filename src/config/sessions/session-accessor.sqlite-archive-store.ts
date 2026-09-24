@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
+import { createSqliteLifecycleAggregateError } from "../../infra/sqlite-coordinator.js";
 import {
   isOpenClawAgentDatabasePathCurrent,
   readOpenClawAgentDatabaseIdentity,
@@ -17,13 +18,16 @@ import {
   transcriptArchiveIdentityKey,
   uniqueTranscriptArchives,
 } from "./session-accessor.sqlite-archive-store-kernel.js";
+import type {
+  TranscriptArchivePublishPlan,
+  TranscriptArchivePublishResult,
+} from "./session-accessor.sqlite-archive-types.js";
 import {
   readPendingSqliteTranscriptArchivesInWorker,
   runSqliteTranscriptArchivePublishWorker,
 } from "./session-accessor.sqlite-archive.js";
 import type { SessionLifecycleArchivedTranscript } from "./session-accessor.sqlite-contract.js";
 import { emitArchivedTranscriptUpdates } from "./session-accessor.sqlite-events.js";
-import type { ReclamationDatabaseOptions } from "./session-accessor.sqlite-lifecycle-types.js";
 import {
   resolveSessionReclamationDatabaseOptions,
   runSqliteSessionReclamation,
@@ -37,11 +41,22 @@ import {
 } from "./session-accessor.sqlite-scope.js";
 import { withSqliteMutationWorkerLifetime } from "./session-accessor.sqlite-worker-request.js";
 
+type SessionArchivePublicationStorage = {
+  prepare(
+    requested: readonly SessionLifecycleArchivedTranscript[],
+  ): Promise<TranscriptArchivePublishPlan[]>;
+  record(results: readonly TranscriptArchivePublishResult[]): Promise<void>;
+};
+
 /** Publishes derived archive files after their canonical rows and deletions commit. */
 export async function publishSessionStateArchives(
   scope: Pick<ResolvedSqliteReadScope, "agentId" | "env" | "path">,
   requested: readonly SessionLifecycleArchivedTranscript[],
+  storage?: SessionArchivePublicationStorage,
 ): Promise<SessionLifecycleArchivedTranscript[]> {
+  if (storage) {
+    return publishPreparedSessionStateArchives(requested, storage);
+  }
   const databaseOptions = resolveSessionReclamationDatabaseOptions(toDatabaseOptions(scope));
   return withSqliteMutationWorkerLifetime(databaseOptions, ({ assertCurrent, signal }) =>
     withSqliteTranscriptArchiveSession(databaseOptions, async () => {
@@ -76,6 +91,9 @@ export async function publishSessionStateArchives(
           return source;
         },
         "session.archive.publish-prepare",
+        undefined,
+        "foreground",
+        signal,
       );
       const { database, claim } = retained;
       const assertOwnerCurrent = () => {
@@ -85,32 +103,77 @@ export async function publishSessionStateArchives(
           throw new Error("SQLite archive publication database was replaced");
         }
       };
+      let result: SessionLifecycleArchivedTranscript[];
       try {
         const identity = readOpenClawAgentDatabaseIdentity(database).identity;
-        return await publishRetainedSessionStateArchives({
-          scope,
-          databaseOptions,
-          databaseIdentity: typeof identity === "string" ? identity : undefined,
-          assertCurrent: assertOwnerCurrent,
-          signal,
+        result = await publishPreparedSessionStateArchives(
           requested,
-        });
-      } finally {
-        claim.release();
+          {
+            async prepare(requestedForPass) {
+              assertOwnerCurrent();
+              const prepared = await runSqliteSessionReclamation({
+                assertCommitAllowed: assertOwnerCurrent,
+                forceInProcess: false,
+                plan: {
+                  kind: "archive-publish-prepare",
+                  databaseOptions,
+                  materializedPlans: [],
+                  archiveDirectory: resolveSqliteTranscriptArchiveDirectory(scope),
+                  requested: requestedForPass,
+                },
+              });
+              if (prepared.kind !== "archive-publish-prepare") {
+                throw new Error("SQLite archive preparation returned another operation's result");
+              }
+              assertOwnerCurrent();
+              for (const plan of prepared.value) {
+                plan.databaseIdentity = typeof identity === "string" ? identity : undefined;
+              }
+              return prepared.value;
+            },
+            async record(results) {
+              assertOwnerCurrent();
+              const recorded = await runSqliteSessionReclamation({
+                assertCommitAllowed: assertOwnerCurrent,
+                forceInProcess: false,
+                plan: {
+                  kind: "archive-publish-record",
+                  databaseOptions,
+                  materializedPlans: [],
+                  results,
+                  nowMs: Date.now(),
+                },
+              });
+              if (recorded.kind !== "archive-publish-record") {
+                throw new Error("SQLite archive recording returned another operation's result");
+              }
+            },
+          },
+          signal,
+        );
+      } catch (operationError) {
+        try {
+          claim.release();
+        } catch (releaseError) {
+          throw createSqliteLifecycleAggregateError(
+            [operationError, releaseError],
+            "SQLite archive publication and retained claim release both failed",
+            operationError,
+          );
+        }
+        throw operationError;
       }
+      claim.release();
+      return result;
     }),
   );
 }
 
-async function publishRetainedSessionStateArchives(params: {
-  scope: Pick<ResolvedSqliteReadScope, "agentId" | "env" | "path">;
-  databaseOptions: ReclamationDatabaseOptions;
-  databaseIdentity: string | undefined;
-  assertCurrent: () => void;
-  signal: AbortSignal;
-  requested: readonly SessionLifecycleArchivedTranscript[];
-}): Promise<SessionLifecycleArchivedTranscript[]> {
-  const { scope, databaseOptions, assertCurrent, requested } = params;
+async function publishPreparedSessionStateArchives(
+  requested: readonly SessionLifecycleArchivedTranscript[],
+  storage: SessionArchivePublicationStorage,
+  signal?: AbortSignal,
+): Promise<SessionLifecycleArchivedTranscript[]> {
   const requestedArchives = uniqueTranscriptArchives(requested);
   const requestedIdentitySet = new Set(
     requestedArchives.map((archive) =>
@@ -119,47 +182,15 @@ async function publishRetainedSessionStateArchives(params: {
   );
   let includeRequested = true;
   while (true) {
-    assertCurrent();
-    const prepared = await runSqliteSessionReclamation({
-      assertCommitAllowed: assertCurrent,
-      forceInProcess: false,
-      plan: {
-        kind: "archive-publish-prepare",
-        databaseOptions,
-        materializedPlans: [],
-        archiveDirectory: resolveSqliteTranscriptArchiveDirectory(scope),
-        requested: includeRequested ? requestedArchives : [],
-      },
-    });
-    if (prepared.kind !== "archive-publish-prepare") {
-      throw new Error("SQLite archive preparation returned another operation's result");
-    }
-    assertCurrent();
-    const plans = prepared.value;
-    for (const plan of plans) {
-      plan.databaseIdentity = params.databaseIdentity;
-    }
+    const requestedForPass = includeRequested ? requestedArchives : [];
+    const plans = await storage.prepare(requestedForPass);
     includeRequested = false;
     if (plans.length === 0) {
       break;
     }
 
-    const results = await runSqliteTranscriptArchivePublishWorker(plans, params.signal);
-    assertCurrent();
-    const recorded = await runSqliteSessionReclamation({
-      assertCommitAllowed: assertCurrent,
-      forceInProcess: false,
-      plan: {
-        kind: "archive-publish-record",
-        databaseOptions,
-        materializedPlans: [],
-        results,
-        nowMs: Date.now(),
-      },
-    });
-    if (recorded.kind !== "archive-publish-record") {
-      throw new Error("SQLite archive recording returned another operation's result");
-    }
+    const results = await runSqliteTranscriptArchivePublishWorker(plans, signal);
+    await storage.record(results);
 
     const planByIdentity = new Map(
       plans.map((plan) => [transcriptArchiveIdentityKey(plan.sessionId, plan.generation), plan]),

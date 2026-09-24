@@ -5,14 +5,17 @@ import type { Worker } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
+import * as readonlyDatabase from "../../state/openclaw-agent-db-readonly.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
   closeOpenClawAgentDatabasesAsync,
   openOpenClawAgentDatabase,
   getOpenClawAgentDatabaseIfOpen,
 } from "../../state/openclaw-agent-db.js";
+import * as writeAdmission from "../../state/openclaw-agent-write-admission.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
+import { claimOpenClawStateOwnership } from "../../state/openclaw-state-ownership-operations.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -272,6 +275,8 @@ describe("SQLite transcript archive sessions", () => {
   );
 
   it("retires competing archive scopes and publishes with the originally captured environment", async () => {
+    testState.envVars.OPENCLAW_SUPERVISOR_MODE = " ExTeRnAl ";
+    testState.applyEnv();
     const first = {
       sessionId: "competing-first",
       sessionKey: "agent:main:competing-first",
@@ -306,6 +311,22 @@ describe("SQLite transcript archive sessions", () => {
         [...observedWorkers].filter((observed) => observed.threadId !== -1).length,
       );
     });
+    const publicationWorkers = new Set<reclamationWorker.SqliteReclamationWorker>();
+    const withWorker = reclamationWorker.withSqliteReclamationWorker;
+    const reclamationObserver = vi
+      .spyOn(reclamationWorker, "withSqliteReclamationWorker")
+      .mockImplementation((options, claim, run, assertCurrent, signal) =>
+        withWorker(
+          options,
+          claim,
+          (worker) => {
+            publicationWorkers.add(worker);
+            return run(worker);
+          },
+          assertCurrent,
+          signal,
+        ),
+      );
     const deleteScope = (scope: typeof first) =>
       deleteSessionEntryLifecycle({
         archiveTranscript: true,
@@ -331,7 +352,15 @@ describe("SQLite transcript archive sessions", () => {
         JSON.stringify(events[1]),
       ]);
 
+      // Require fresh publication admission after the earlier deletion work has settled.
+      for (const worker of publicationWorkers) {
+        await worker.close();
+      }
+      claimOpenClawStateOwnership("archive-publication-supervisor", {
+        env: { OPENCLAW_STATE_DIR: tempDir, OPENCLAW_SUPERVISOR_MODE: "external" },
+      });
       vi.stubEnv("OPENCLAW_STATE_DIR", successorRoot);
+      vi.stubEnv("OPENCLAW_SUPERVISOR_MODE", undefined);
       releasePublication.resolve();
       const firstResult = await firstDeletion;
       expect(readArchiveLines(firstResult.archivedTranscripts[0]?.archivedPath)).toEqual([
@@ -353,6 +382,7 @@ describe("SQLite transcript archive sessions", () => {
       releasePublication.resolve();
       await Promise.allSettled([firstDeletion, secondDeletion]);
       archiveWorkers.stop();
+      reclamationObserver.mockRestore();
       vi.unstubAllEnvs();
     }
     expect(loadSessionEntry(first)).toBeUndefined();
@@ -463,13 +493,15 @@ describe("SQLite transcript archive sessions", () => {
 
   it.each([
     { phase: "pending", owner: "agent" },
+    { phase: "pending writer", owner: "agent" },
+    { phase: "pending writer", owner: "state" },
     { phase: "file", owner: "agent" },
     { phase: "prepare", owner: "agent" },
     { phase: "record", owner: "agent" },
     { phase: "prepare", owner: "state" },
     { phase: "record", owner: "state" },
   ] as const)(
-    "cancels queued $phase publication at $owner close without waiting on another archive owner",
+    "cancels queued $phase publication at $owner close without waiting on another queue owner",
     async ({ phase, owner }) => {
       const sessionId = "queued-publication";
       const sessionKey = "agent:main:queued-publication";
@@ -480,7 +512,8 @@ describe("SQLite transcript archive sessions", () => {
       await waitForSessionTranscriptIndexReconcilesInStateDir(tempDir);
       const database = openLifecycleTestDatabase(storePath);
       const options = { agentId: "main", path: database.path, env: testState.env };
-      if (phase === "pending") {
+      const probesPending = phase === "pending" || phase === "pending writer";
+      if (probesPending) {
         await closeOpenClawAgentDatabaseByPathAsync(database.path);
       }
       const queued = createDeferred();
@@ -492,6 +525,33 @@ describe("SQLite transcript archive sessions", () => {
         queued.resolve();
         return pending;
       };
+      const writerEntered = createDeferred();
+      let pendingReadEntered = false;
+      const admit = writeAdmission.runOpenClawAgentWriteAdmission;
+      const writerObserver = vi
+        .spyOn(writeAdmission, "runOpenClawAgentWriteAdmission")
+        .mockImplementation((...args) => {
+          if (phase !== "pending writer" || args[0].path !== database.path || blocker) {
+            return admit(...args);
+          }
+          const [writerOptions, run, reentrant, timing, signal] = args;
+          blocker = admit(writerOptions, () => {
+            writerEntered.resolve();
+            return release.promise;
+          });
+          const pending = admit(
+            writerOptions,
+            () => {
+              pendingReadEntered = true;
+              return run();
+            },
+            reentrant,
+            timing,
+            signal,
+          );
+          queued.resolve();
+          return pending;
+        });
       const probe = archiveWorker.readPendingSqliteTranscriptArchivesInWorker;
       const publish = archiveWorker.runSqliteTranscriptArchivePublishWorker;
       const probeObserver = vi
@@ -518,14 +578,13 @@ describe("SQLite transcript archive sessions", () => {
             ? blockBefore(() => withWorker(...args))
             : withWorker(...args),
         );
-      const publication =
-        phase === "pending"
-          ? publishSessionStateArchives(options, [])
-          : deleteSessionEntryLifecycle({
-              archiveTranscript: true,
-              storePath,
-              target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
-            });
+      const publication = probesPending
+        ? publishSessionStateArchives(options, [])
+        : deleteSessionEntryLifecycle({
+            archiveTranscript: true,
+            storePath,
+            target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
+          });
       const observed = publication.then(
         () => undefined,
         (error: unknown) => error,
@@ -538,11 +597,15 @@ describe("SQLite transcript archive sessions", () => {
             throw new Error("Publication skipped its queue");
           }),
         ]);
+        if (phase === "pending writer") {
+          await writerEntered.promise;
+          expect(pendingReadEntered).toBe(false);
+        }
         close =
           owner === "agent"
             ? closeOpenClawAgentDatabaseByPathAsync(database.path)
             : closeOpenClawStateDatabaseByPathAsync(resolveOpenClawStateSqlitePath(testState.env));
-        await withTestTimeout(close, 5_000, "close waited on an unrelated archive FIFO owner");
+        await withTestTimeout(close, 5_000, "close waited on an unrelated queue owner");
         expect(await observed).toMatchObject({ message: expect.stringMatching(/revok/i) });
       } finally {
         release.resolve();
@@ -551,6 +614,10 @@ describe("SQLite transcript archive sessions", () => {
         publishObserver.mockRestore();
         metadataObserver.mockRestore();
         metadataQueueObserver.mockRestore();
+        writerObserver.mockRestore();
+      }
+      if (phase === "pending writer") {
+        expect(pendingReadEntered).toBe(false);
       }
     },
   );
@@ -658,6 +725,68 @@ describe("SQLite transcript archive sessions", () => {
       } finally {
         successor.close();
       }
+    },
+  );
+
+  it.each(["publication fails", "publication succeeds"] as const)(
+    "preserves retained claim release failures when %s",
+    async (outcome) => {
+      const database = openLifecycleTestDatabase(storePath);
+      const options = { agentId: "main", path: database.path, env: testState.env };
+      const releaseFailure = new Error("synthetic retained archive claim release failure");
+      const retain = readonlyDatabase.retainOpenClawAgentDatabaseReadOnly;
+      let releaseInstalled = false;
+      let releases = 0;
+      const retainObserver = vi
+        .spyOn(readonlyDatabase, "retainOpenClawAgentDatabaseReadOnly")
+        .mockImplementation((...args) => {
+          const retained = retain(...args);
+          if (retained.found && !releaseInstalled) {
+            releaseInstalled = true;
+            const releaseClaim = retained.claim.release;
+            retained.claim.release = () => {
+              releaseClaim();
+              releases += 1;
+              throw releaseFailure;
+            };
+          }
+          return retained;
+        });
+      try {
+        const requested =
+          outcome === "publication fails"
+            ? [
+                {
+                  sessionId: "missing-canonical-archive",
+                  generation: "missing-generation",
+                  sourcePath: path.join(tempDir, "missing-source.jsonl"),
+                  archivedPath: path.join(tempDir, "missing-archive.jsonl"),
+                },
+              ]
+            : [];
+        const caught = await publishSessionStateArchives(options, requested).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        expect(releases).toBe(1);
+        if (outcome === "publication fails") {
+          expect(caught).toBeInstanceOf(AggregateError);
+          if (!(caught instanceof AggregateError)) {
+            throw new Error("Expected publication and claim release failures to be preserved");
+          }
+          expect(caught.errors).toHaveLength(2);
+          expect(caught.errors[0]).toMatchObject({
+            message: expect.stringContaining("transcript archive file export(s) remain pending"),
+          });
+          expect(caught.cause).toBe(caught.errors[0]);
+          expect(caught.errors[1]).toBe(releaseFailure);
+        } else {
+          expect(caught).toBe(releaseFailure);
+        }
+      } finally {
+        retainObserver.mockRestore();
+      }
+      await expect(publishSessionStateArchives(options, [])).resolves.toEqual([]);
     },
   );
 

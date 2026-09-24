@@ -37,16 +37,16 @@ describe("completed requester delivery replay fence", () => {
   let deliveries: ReturnType<typeof captureTaskDeliveryWork> | undefined;
   const settle = () => settleSubagentRegistryPersistenceWork(deliveries);
   beforeEach(() => {
-    // A failed drain retains its stores; the next case must not replace their owner.
-    if (tempDirs.dirs.size > 0) {
+    // Failed resource cleanup retains the capture; retired directories only need removal retry.
+    if (deliveries) {
       throw new Error("Previous completion replay fixture cleanup is incomplete");
     }
+    deliveries = captureTaskDeliveryWork();
     setTestEnvValue(
       "OPENCLAW_STATE_DIR",
       tempDirs.make("openclaw-completion-replay-", resolvePreferredOpenClawTmpDir()),
     );
     resumeSubagentRun.mockClear();
-    deliveries = captureTaskDeliveryWork();
   });
 
   afterEach(async () => {
@@ -66,7 +66,12 @@ describe("completed requester delivery replay fence", () => {
         subagentRuns.clear();
         resetTaskRegistryForTests({ persist: false });
         closeOpenClawStateDatabaseForTest();
-        tempDirs.cleanup();
+        // Keep failed removals tracked without retaining the retired fixture's environment.
+        try {
+          tempDirs.cleanup();
+        } catch (error) {
+          failures.push(error);
+        }
         env.restore();
         deliveries?.[Symbol.dispose]();
         deliveries = undefined;
@@ -120,7 +125,7 @@ describe("completed requester delivery replay fence", () => {
     driver.controller.options.runSubagentAnnounceFlow = vi.fn<
       typeof driver.controller.options.runSubagentAnnounceFlow
     >(async (params) => {
-      params.onDeliveryResult?.({
+      await params.onDeliveryResult?.({
         delivered: false,
         path: "direct",
         reason: "message_tool_delivery_missing",
@@ -221,7 +226,7 @@ describe("completed requester delivery replay fence", () => {
     driver.controller.options.runSubagentAnnounceFlow = vi.fn<
       typeof driver.controller.options.runSubagentAnnounceFlow
     >(async (params) => {
-      params.onDeliveryResult?.({
+      await params.onDeliveryResult?.({
         delivered: false,
         path: "direct",
         reason: "message_tool_delivery_missing",
