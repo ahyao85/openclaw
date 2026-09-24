@@ -1609,7 +1609,7 @@ describe("CI changed Node test plan", () => {
     ["ui/src/pages/chat/chat-gateway.test.ts", false],
     ["packages/gateway-client/src/index.ts", true],
     ["pnpm-lock.yaml", true],
-    ["patches/@awesome.me__webawesome@3.12.0.patch", true],
+    ["patches/@awesome.me__webawesome@3.13.0.patch", true],
     [".npmrc", true],
     ["scripts/check-control-ui-performance-base.mts", true],
     ["scripts/lib/control-ui-i18n-config.ts", true],

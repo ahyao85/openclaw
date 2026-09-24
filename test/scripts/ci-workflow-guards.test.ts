@@ -7028,7 +7028,7 @@ server.listen(0, "127.0.0.1", () => {
     expect(steps[5]).toEqual({
       name: "Run Codex docs agent",
       if: "steps.gate.outputs.run_agent == 'true'",
-      uses: "openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56",
+      uses: "openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e",
       env: {
         DOCS_AGENT_BASE_SHA: "${{ steps.gate.outputs.review_base_sha }}",
         DOCS_AGENT_HEAD_SHA: "${{ steps.gate.outputs.review_head_sha }}",
@@ -7041,7 +7041,6 @@ server.listen(0, "127.0.0.1", () => {
         effort: "medium",
         sandbox: "workspace-write",
         "safety-strategy": "drop-sudo",
-        "codex-args": '["--full-auto"]',
       },
     });
     const gate = expectDefined(steps[2]?.run, "gate policy");
