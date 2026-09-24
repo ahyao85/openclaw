@@ -102,7 +102,6 @@ private final class GatewayHTTPFixture {
     }
 }
 
-@Suite(.serialized)
 struct GatewayTLSRequestTests {
     private static func session(allowsRedirects: Bool = false) -> GatewayTLSPinningSession {
         GatewayTLSPinningSession(
