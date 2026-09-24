@@ -5644,7 +5644,12 @@ describe("runCodexAppServerAttempt", () => {
       params.verboseLevel = verboseLevel;
       const harness = createStartedThreadHarness();
       const run = runCodexAppServerAttempt(params);
-      await harness.waitForMethod("turn/start");
+      await Promise.race([
+        harness.waitForMethod("turn/start", 5_000),
+        run.then(() => {
+          throw new Error("Attempt ended before starting its turn");
+        }),
+      ]);
       const commentary = {
         type: "agentMessage",
         id: "slack-read-progress",
