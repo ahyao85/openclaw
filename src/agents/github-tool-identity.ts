@@ -17,6 +17,7 @@ import { hasErrnoCode } from "../infra/errno.js";
 import { readSecretFile } from "../infra/fs-safe-advanced.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { resolveAgentConfig, resolveAgentWorkspaceDir } from "./agent-scope.js";
+import { resolveGitHubApiBaseUrl, resolveGitHubHost } from "./github-host.js";
 import { verifyGitHubCredential } from "./github-oauth-client.js";
 import { inspectGitHubOAuthRecord } from "./github-oauth-records.js";
 import {
@@ -517,6 +518,7 @@ async function prepareSharedGitHubIdentity(
     GH_PROMPT_DISABLED: "1",
   });
   const env = currentEnvironment();
+  const apiBaseUrl = resolveGitHubApiBaseUrl(env);
   const readToken = () =>
     managed
       ? readManagedGitHubToken(identity.profileDir)
@@ -530,7 +532,10 @@ async function prepareSharedGitHubIdentity(
       throw new GitHubIdentityError("unavailable");
     }, params);
   }
-  const probe = await startGitHubIdentityOperation(() => verifyGitHubCredential(token), params);
+  const probe = await startGitHubIdentityOperation(
+    () => verifyGitHubCredential(token, { apiBaseUrl }),
+    params,
+  );
   return startGitHubIdentityOperation(() => {
     if (probe.status !== "available") {
       throw new GitHubIdentityError(probe.status);
