@@ -35,6 +35,9 @@ import type { WorkerPlacementExecutionMode } from "./placement-record.js";
 import { createWorkerSessionPlacementStore } from "./placement-store.js";
 import type { WorkerProviderPreparedIntent } from "./preparation-identity.js";
 import { createPreparedWorkerPool } from "./prepared-pool.js";
+import { createWorkerProviderIntent } from "./provider-intent.js";
+import * as repositoryAdmission from "./repository-project-admission.js";
+import { requireWorkerProfile } from "./service-validation.js";
 import * as support from "./service.test-support.js";
 import {
   readSessionRepositoryArtifacts,
@@ -75,7 +78,7 @@ function preparedHarness(
     seeded?: {
       intent: WorkerProviderPreparedIntent;
       ready: WorkerEnvironmentRecord[];
-      candidates: () => WorkerEnvironmentRecord[];
+      candidates: (intent: WorkerProviderPreparedIntent) => WorkerEnvironmentRecord[];
     };
   } = {},
 ) {
@@ -196,10 +199,10 @@ function preparedHarness(
     (id) => workerService.get(id) ?? ordinaryGet(id),
   );
   vi.mocked(harness.environments.prepareProjectIntent).mockResolvedValue(intent);
-  vi.mocked(harness.environments.getPreparedCandidates).mockImplementation(() =>
+  vi.mocked(harness.environments.getPreparedCandidates).mockImplementation((requestedIntent) =>
     options.seeded
       ? options.seeded
-          .candidates()
+          .candidates(requestedIntent)
           .map((candidate) => workerService.get(candidate.environmentId))
           .filter((candidate) => candidate !== undefined)
       : reserve
@@ -336,7 +339,11 @@ function preparedHarness(
 describe("prepared worker dispatch", () => {
   support.setupWorkerEnvironmentServiceSuite();
 
-  it("claims a presence-prepared Codex repository reserve before cold create and refills to three", async () => {
+  it("claims a presence-prepared Codex repository reserve with browser defaults before cold create", async () => {
+    vi.stubEnv("OPENCLAW_STATE_DIR", support.testState.root);
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
     const repositoryStore = getSessionRepositoryWorkspaceStore();
     const repository = repositoryStore.create({
       agentId: REQUEST.agentId,
@@ -359,31 +366,53 @@ describe("prepared worker dispatch", () => {
         },
       },
     };
-    const intent: WorkerProviderPreparedIntent = {
-      providerId: "fake",
-      preparationKey: PREPARATION_KEY,
-      profileSnapshot: {
-        settings: { region: "test" },
-        executionMode: "remote-exec",
-        project: {
-          ...repositoryProject,
-          preparation: {
-            key: PREPARATION_KEY,
-            cacheKey: "a".repeat(64),
-            contractVersion: 1,
-            target: { machineClass: "standard", platform: "linux", arch: "x64" },
-            artifacts: {
-              nodeBootstrapSha256: "f".repeat(64),
-              enabledPluginIds: [],
-              workerBundleHash: support.BUNDLE_HASH,
-              workerArchiveSha256: "b".repeat(64),
-              openclawVersion: support.BOOTSTRAP_RECEIPT.openclawVersion,
-              protocolFeatures: FEATURES,
-            },
-          },
-        },
+    const admission = vi
+      .spyOn(repositoryAdmission, "prepareRepositoryWorkerProjectSource")
+      .mockResolvedValue({
+        project: repositoryProject,
+        setupRecipe: undefined,
+        assertCurrent: () => {},
+        revalidate: async () => {},
+      });
+    onTestFinished(() => admission.mockRestore());
+    const provider = support.createProvider({
+      requiresNodeEnrollment: true,
+      supportsProjectPreparation: () => true,
+      resolvePreparationTarget: (_profile, machineClass, os) => ({
+        machineClass: machineClass ?? "small",
+        platform: os ?? "linux",
+      }),
+    });
+    const serviceError = (_code: string, message: string) => new Error(message);
+    const intentOwner = createWorkerProviderIntent({
+      store: support.testState.store,
+      getConfig: () => support.testState.config,
+      projectNamespace: "gateway-test",
+      providerFor: () => provider,
+      requireWorkerProfile: (value) => requireWorkerProfile(value, serviceError),
+      isStopping: () => false,
+      inState: (record, ...states) => states.includes(record.state),
+      withLock: async (_id, task) => task(),
+      serviceError,
+      resumeProvision: async () => {
+        throw new Error("Unexpected cold provider create");
       },
-    };
+      prepareNodeArtifacts: async () => ({
+        artifacts: {
+          nodeBootstrapSha256: "f".repeat(64),
+          enabledPluginIds: [],
+          workerBundleHash: support.BUNDLE_HASH,
+          workerArchiveSha256: "b".repeat(64),
+          openclawVersion: support.BOOTSTRAP_RECEIPT.openclawVersion,
+          protocolFeatures: FEATURES,
+        },
+        assertCurrent: () => {},
+      }),
+    });
+    const intent = await intentOwner.prepareIntent(REQUEST.profileId, {
+      executionMode: "remote-exec",
+      repository: { agentId: REQUEST.agentId, url: repository.url, ref: "main" },
+    });
     support.getDevelopmentProfile().readyWorkers = 3;
     support.testState.config.cloudWorkers!.preparedPool = { maxTotal: 3 };
     const abort = new AbortController();
@@ -395,11 +424,8 @@ describe("prepared worker dispatch", () => {
       store: support.testState.store,
       getConfig: () => support.testState.config,
       resolveProvider: () => support.createProvider(),
-      prepareIntent: vi.fn(async (_profileId, options) => {
-        expect(options.executionMode).toBe("remote-exec");
-        return intent;
-      }),
-      assertIntentCurrent: () => {},
+      prepareIntent: intentOwner.prepareIntent,
+      assertIntentCurrent: intentOwner.assertPreparedIntentCurrent,
       prepareRetention: async () => ({ assertCurrent: () => {} }),
       reconcile: async () => {},
       now: () => support.testState.nowMs,
@@ -458,8 +484,14 @@ describe("prepared worker dispatch", () => {
       executionMode: "remote-exec",
       repository,
       boundWorkspace,
-      seeded: { intent, ready, candidates: () => pool.candidates(intent) },
+      seeded: { intent, ready, candidates: pool.candidates },
     });
+    vi.mocked(prepared.harness.environments.prepareProjectIntent).mockImplementation(
+      intentOwner.prepareIntent,
+    );
+    vi.mocked(prepared.harness.environments.assertPreparedIntentCurrent).mockImplementation(
+      intentOwner.assertPreparedIntentCurrent,
+    );
     const wrongMode = {
       sessionId: "wrong-mode",
       sessionKey: "agent:main:dashboard:wrong-mode",
@@ -475,7 +507,7 @@ describe("prepared worker dispatch", () => {
         ownerEpoch: ready[0]!.ownerEpoch,
         providerId: intent.providerId,
         profileId: REQUEST.profileId,
-        preparationKey: PREPARATION_KEY,
+        preparationKey: intent.preparationKey!,
         nodeDeviceId: ready[0]!.nodeDeviceId!,
         leaseId: ready[0]!.leaseId!,
         bundleHash: ready[0]!.bootstrapReceipt!.bundleHash,
@@ -505,7 +537,19 @@ describe("prepared worker dispatch", () => {
       };
     });
 
-    const active = await prepared.harness.service.dispatch(prepared.request);
+    const active = await prepared.harness.service.dispatch({
+      ...prepared.request,
+      os: "linux",
+      machineClass: "small",
+      runSetupScript: false,
+    });
+    const selectedIntent = await vi.mocked(prepared.harness.environments.prepareProjectIntent).mock
+      .results[0]!.value;
+    expect(selectedIntent.profileSnapshot.executionMode).toBe("remote-exec");
+    expect(selectedIntent.preparationKey).toBe(intent.preparationKey);
+    expect(ready.every((record) => record.preparation?.key === selectedIntent.preparationKey)).toBe(
+      true,
+    );
 
     expect(active).toMatchObject({
       state: "active",
