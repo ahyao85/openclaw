@@ -177,8 +177,6 @@ it.for([
       const values: unknown[] = [];
       let lateWriteBlocked = false;
       let disposalCalls = 0;
-      let resumedAt = 0;
-      let disposalLatency = 0;
       let physicalDisposals = 0;
       let workSignal: AbortSignal | undefined;
       let backendSignal: AbortSignal | undefined;
@@ -282,7 +280,6 @@ it.for([
                 : pending;
             },
             async dispose() {
-              disposalLatency = performance.now() - resumedAt;
               disposalCalls++;
               disposalEntered.resolve();
               const capturedSignal =
@@ -325,6 +322,7 @@ it.for([
               event.task.taskKind === CONTEXT_ENGINE_TURN_MAINTENANCE_TASK_KIND &&
               isTerminalTaskStatus(event.task.status)
             ) {
+              expect.soft(disposalCalls).toBe(0);
               taskSettled.resolve(event.task.status);
             }
           })
@@ -350,11 +348,14 @@ it.for([
         pending = completion;
         if (deferred) {
           await completion;
-          await withTestTimeout(
-            entered.promise,
-            5_000,
-            "Deferred factory never entered maintenance",
+          const maintenanceResult = await racePromiseWithAbortSignal(
+            Promise.race([
+              entered.promise.then(() => "started"),
+              waitForDeferredTurnMaintenanceForSession(target.sessionKey).then(() => "settled"),
+            ]),
+            signal,
           );
+          expect(maintenanceResult).toBe("started");
         } else {
           await Promise.race([
             entered.promise,
@@ -396,7 +397,6 @@ it.for([
         if (factory === "none") {
           expect.soft(workSignal?.aborted ?? false).toBe(false);
         }
-        resumedAt = performance.now();
         resume.resolve();
         if (deferred) {
           // Worker bookkeeping publishes before engine disposal can start.
@@ -406,9 +406,6 @@ it.for([
           await Promise.allSettled(work.slice(0, 1));
         }
         await racePromiseWithAbortSignal(disposalEntered.promise, signal);
-        if (deferred) {
-          expect.soft(disposalLatency).toBeLessThan(50);
-        }
         await withTestTimeout(
           cleanupTailEntered.promise,
           1_000,
