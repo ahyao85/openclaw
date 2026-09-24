@@ -1,6 +1,5 @@
 import { JSDOM } from "jsdom";
 import { it } from "vitest";
-import { prepareJsdomWindow } from "../../../test/jsdom-compat.mts";
 
 type ResponseFrame = {
   type: "res";
@@ -35,11 +34,7 @@ export function flushMockTimers(): Promise<void> {
 
 export const mockGatewayTest = it.extend<{ gatewayPage: MockGatewayPage }>({
   gatewayPage: async ({ task }, use) => {
-    const dom = new JSDOM("", {
-      url: "http://mock-control-ui/",
-      runScripts: "outside-only",
-      beforeParse: prepareJsdomWindow,
-    });
+    const dom = new JSDOM("", { url: "http://mock-control-ui/", runScripts: "outside-only" });
     const responses: ResponseFrame[] = [];
     try {
       await use({

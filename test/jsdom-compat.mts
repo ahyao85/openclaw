@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import type { ConstructorOptions, DOMWindow } from "jsdom";
+import type { DOMWindow } from "jsdom";
 import type { Environment } from "vitest/runtime";
 
 const require = createRequire(import.meta.url);
@@ -15,6 +15,13 @@ function bindings() {
   } = require("jsdom/lib/generated/idl/utils.js");
   const eventTarget: {
     interfaceDescriptor: object;
+    setup(
+      this: void,
+      wrapper: object,
+      globalObject: DOMWindow,
+      constructorArgs?: unknown[],
+      privateData?: object,
+    ): object;
   } = require("jsdom/lib/generated/idl/EventTarget.js");
   const blob: {
     is(value: unknown): value is Blob;
@@ -42,22 +49,32 @@ export function jsdomCustomElementDefinitions(registry: object) {
     : undefined;
 }
 
-export function prepareJsdomWindow(window: DOMWindow): void {
+function installJsdomWindowAdapter(): void {
   const { utils, eventTarget } = bindings();
-  // Bun exposes a distinct proxy for DONT_CONTEXTIFY. Both aliases represent
-  // the same Window; register that alias without relaxing interface branding.
-  if (utils.implForWrapper(window) === null) {
-    utils.registerWrapper(
-      window,
-      utils.implForWrapper(window._globalObject),
-      eventTarget.interfaceDescriptor,
-    );
+  if (Object.hasOwn(eventTarget, adapterInstalled)) {
+    return;
   }
+  Object.defineProperty(eventTarget, adapterInstalled, { value: true });
+  const setup = eventTarget.setup;
+  eventTarget.setup = (wrapper, window, ...args) => {
+    const result = setup(wrapper, window, ...args);
+    // Window initializes its EventTarget with itself as the global object.
+    // Register Bun's distinct proxy here so iframe windows receive the same repair.
+    if (wrapper === window && utils.implForWrapper(window._globalProxy) === null) {
+      utils.registerWrapper(
+        window._globalProxy,
+        utils.implForWrapper(window),
+        eventTarget.interfaceDescriptor,
+      );
+    }
+    return result;
+  };
 }
 
 export function installJsdomEnvironmentAdapter(environment: Environment): void {
   if (Object.hasOwn(environment, adapterInstalled)) return;
   Object.defineProperty(environment, adapterInstalled, { value: true });
+  installJsdomWindowAdapter();
   const NativeBlob = globalThis.Blob;
   const NativeFile = globalThis.File;
   const NativeURL = globalThis.URL;
@@ -65,21 +82,6 @@ export function installJsdomEnvironmentAdapter(environment: Environment): void {
   const NativeFormData = globalThis.FormData;
   const setup = environment.setup;
   const setupVM = environment.setupVM;
-
-  function optionsWithCompatibility(options: Parameters<Environment["setup"]>[1]) {
-    const jsdomOptions: ConstructorOptions = options.jsdom ?? {};
-    const beforeParse = jsdomOptions.beforeParse;
-    return {
-      ...options,
-      jsdom: {
-        ...jsdomOptions,
-        beforeParse(window: DOMWindow) {
-          prepareJsdomWindow(window);
-          beforeParse?.(window);
-        },
-      },
-    };
-  }
 
   function installWebApis(target: object, window: DOMWindow) {
     const { blob, formData } = bindings();
@@ -134,7 +136,7 @@ export function installJsdomEnvironmentAdapter(environment: Environment): void {
     const originals = new Map(
       ["URL", "Request"].map((key) => [key, Object.getOwnPropertyDescriptor(global, key)]),
     );
-    const result = await setup(global, optionsWithCompatibility(options));
+    const result = await setup(global, options);
     installWebApis(global, global.jsdom.window);
     return {
       async teardown(target) {
@@ -151,7 +153,7 @@ export function installJsdomEnvironmentAdapter(environment: Environment): void {
   };
   if (setupVM) {
     environment.setupVM = async (options) => {
-      const result = await setupVM(optionsWithCompatibility(options));
+      const result = await setupVM(options);
       const context = result.getVmContext();
       installWebApis(context, context.jsdom.window);
       return result;

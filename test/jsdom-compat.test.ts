@@ -4,18 +4,33 @@ import { describe, expect, it } from "vitest";
 import { builtinEnvironments } from "vitest/runtime";
 
 describe("jsdom native API boundary", () => {
-  it("keeps window event identity and rejects invalid receivers", () => {
+  it.each([0, 1, 2])("keeps window event identity across %i iframe levels", (depth) => {
+    let target: Window = window;
+    let outerFrame: HTMLIFrameElement | undefined;
+    for (let level = 0; level < depth; level++) {
+      const frame = target.document.createElement("iframe");
+      target.document.body.append(frame);
+      outerFrame ??= frame;
+      if (!frame.contentWindow) {
+        throw new Error("Missing iframe window");
+      }
+      target = frame.contentWindow;
+    }
     const received: Event[] = [];
     const listener = (event: Event) => received.push(event);
     const event = new Event("openclaw-jsdom-probe");
-    window.addEventListener(event.type, listener);
-    window.dispatchEvent(event);
-    window.removeEventListener(event.type, listener);
-    window.dispatchEvent(event);
-    expect(received).toEqual([event]);
-    expect(() => EventTarget.prototype.addEventListener.call({}, event.type, listener)).toThrow(
-      /not a valid instance of EventTarget/,
-    );
+    try {
+      target.addEventListener(event.type, listener);
+      target.dispatchEvent(event);
+      target.removeEventListener(event.type, listener);
+      target.dispatchEvent(event);
+      expect(received).toEqual([event]);
+      expect(() => EventTarget.prototype.addEventListener.call({}, event.type, listener)).toThrow(
+        /not a valid instance of EventTarget/,
+      );
+    } finally {
+      outerFrame?.remove();
+    }
   });
 
   it("preserves Blob bytes through object URLs and revocation", async () => {
