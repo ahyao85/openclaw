@@ -18,9 +18,11 @@ import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
-import { resolveQuarantineStorePath } from "../state/openclaw-quarantine-store.js";
 import { closeOpenClawStateDatabase } from "../state/openclaw-state-db.js";
-import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import {
+  resolveOpenClawStateSqlitePath,
+  resolveQuarantineStorePath,
+} from "../state/openclaw-state-db.paths.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { requireNodeSqlite } from "./node-sqlite.js";
 import * as sqliteSnapshot from "./sqlite-snapshot.js";
@@ -186,6 +188,11 @@ describe("backup SQLite ownership", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "backup-late-agent-owner-", scenario: "minimal" },
       async (state) => {
+        // This registry snapshot fixture must not inspect another backup's scratch.
+        const scratchRoot = state.path("scratch");
+        await fs.mkdir(scratchRoot);
+        Object.assign(state.envVars, { TMPDIR: scratchRoot, TMP: scratchRoot, TEMP: scratchRoot });
+        state.applyEnv();
         const agentPath = state.path("external-agent", "openclaw-agent.sqlite");
         const registration = { agentId: "main", path: agentPath, env: state.env };
         const agent = openOpenClawAgentDatabase(registration);
