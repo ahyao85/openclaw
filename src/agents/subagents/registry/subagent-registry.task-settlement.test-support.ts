@@ -278,7 +278,7 @@ export function registerReplacedGenerationTaskSettlementTest({
       setActivePluginRegistry(spawning);
       const childEnded = createDeferred<{ status: "ok"; startedAt: number; endedAt: number }>();
       mockGatewayMethods(mocks.callGateway, { "agent.wait": () => childEnded.promise });
-      const settled = createDeferred<void>();
+      const settled = createDeferred();
       // The task registry publishes the terminal write; await it instead of polling.
       const stopObserving = onTaskRegistryChange(() => {
         if (findTaskByRunIdForStatus(runId)?.status === "succeeded") {

@@ -57,8 +57,8 @@ describe("createAgentToolResultMiddlewareRunner", () => {
   });
 
   it("skips a later middleware whose plugin is removed while an earlier one runs", async () => {
-    const earlierEntered = createDeferred<void>();
-    const releaseEarlier = createDeferred<void>();
+    const earlierEntered = createDeferred();
+    const releaseEarlier = createDeferred();
     const earlier: AgentToolResultMiddleware = async (event) => {
       earlierEntered.resolve();
       await releaseEarlier.promise;
