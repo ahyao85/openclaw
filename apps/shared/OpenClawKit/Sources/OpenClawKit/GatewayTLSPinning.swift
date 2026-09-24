@@ -885,6 +885,17 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
         return WebSocketTaskBox(task: task)
     }
 
+    /// Read headers without buffering a response body, while retaining the route's TLS policy.
+    public func response(for request: URLRequest) async throws -> URLResponse {
+        self.registerExpectedAuthority(url: request.url)
+        try Task.checkCancellation()
+        // AsyncBytes needs the task delegate to retain certificate and redirect policy.
+        let (bytes, response) = try await self.session.bytes(for: request, delegate: self)
+        defer { bytes.task.cancel() }
+        try Task.checkCancellation()
+        return response
+    }
+
     public func data(
         for request: URLRequest,
         maximumBytes: Int,
