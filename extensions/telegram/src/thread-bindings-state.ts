@@ -17,6 +17,13 @@ type TelegramThreadBindingsState = {
   bindingsByAccountConversation: Map<string, TelegramThreadBindingRecord>;
 };
 
+// Source plugin reloads can retain the registry created before queued mutations existed.
+type TelegramThreadBindingsReloadState = Pick<
+  TelegramThreadBindingsState,
+  "managersByAccountId" | "bindingsByAccountConversation"
+> &
+  Partial<Pick<TelegramThreadBindingsState, "queues" | "pendingMutations">>;
+
 /**
  * Keep Telegram thread binding state shared across bundled chunks so routing,
  * binding lookups, and binding mutations all observe the same live registry.
@@ -25,18 +32,25 @@ const TELEGRAM_THREAD_BINDINGS_STATE_KEY = Symbol.for("openclaw.telegramThreadBi
 let threadBindingsState: TelegramThreadBindingsState | undefined;
 
 export function getThreadBindingsState(): TelegramThreadBindingsState {
-  return (threadBindingsState ??= resolveGlobalSingleton(
+  if (threadBindingsState) {
+    return threadBindingsState;
+  }
+  const state = resolveGlobalSingleton<TelegramThreadBindingsReloadState>(
     TELEGRAM_THREAD_BINDINGS_STATE_KEY,
     () => ({
       managersByAccountId: new Map<string, TelegramThreadBindingManager>(),
-      queues: new Map<string, StoreWriterQueue>(),
-      pendingMutations: new WeakMap<
+      bindingsByAccountConversation: new Map<string, TelegramThreadBindingRecord>(),
+    }),
+  );
+  return (threadBindingsState = Object.assign(state, {
+    queues: state.queues ?? new Map<string, StoreWriterQueue>(),
+    pendingMutations:
+      state.pendingMutations ??
+      new WeakMap<
         TelegramThreadBindingManager,
         Map<string, { preparedValueJson?: string | null }>
       >(),
-      bindingsByAccountConversation: new Map<string, TelegramThreadBindingRecord>(),
-    }),
-  ));
+  }));
 }
 
 export function finishBindingMutationScope(manager: TelegramThreadBindingManager) {

@@ -25,6 +25,10 @@ vi.mock("openclaw/plugin-sdk/acp-runtime", async () => {
   };
 });
 
+import type {
+  TelegramThreadBindingManager,
+  TelegramThreadBindingRecord,
+} from "./thread-bindings-store.js";
 import {
   getTelegramThreadBindingManager,
   setTelegramThreadBindingIdleTimeoutBySessionKey as setLegacyIdleTimeout,
@@ -85,6 +89,8 @@ describe("telegram thread bindings", () => {
   });
 
   it("drains accepted mutations in order before restart and rejects retired writes", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-03-06T10:00:00.000Z"));
     const params = { accountId: "drain", persist: true, enableSweeper: false };
     const manager = await createTelegramThreadBindingManager(params);
     const entered = createDeferred<void>();
@@ -112,7 +118,8 @@ describe("telegram thread bindings", () => {
     metadata.label = "changed after admission";
     metadata.payload.value = "changed";
     metadata.values.push("changed");
-    const clock = vi.spyOn(Date, "now").mockReturnValueOnce(12345);
+    const requestedActivityAt = Date.now() + 1;
+    const clock = vi.spyOn(Date, "now").mockReturnValueOnce(requestedActivityAt);
     const touch = manager.touchConversation("thread");
     clock.mockRestore();
     const removal = { conversationId: "thread", throwOnPersistError: true };
@@ -130,8 +137,8 @@ describe("telegram thread bindings", () => {
     await expect(replacementBind).resolves.toMatchObject({
       metadata: { label: "requested", payload: { value: "submitted" }, values: ["original"] },
     });
-    await expect(touch).resolves.toMatchObject({ lastActivityAt: 12345 });
-    await expect(remove).resolves.toMatchObject({ lastActivityAt: 12345 });
+    await expect(touch).resolves.toMatchObject({ lastActivityAt: requestedActivityAt });
+    await expect(remove).resolves.toMatchObject({ lastActivityAt: requestedActivityAt });
     await stop;
     const replacement = await restart;
     expect(replacement.listBindings()).toEqual([]);
@@ -250,6 +257,64 @@ describe("telegram thread bindings", () => {
       expect(await storedBindings()).toMatchObject([{ targetSessionKey, lastActivityAt: 43 }]);
     },
   );
+
+  it("preserves a newer synchronous touch while a default async touch is queued", async () => {
+    installThreadBindingStore(fixture.store, true);
+    const manager = await createTelegramThreadBindingManager({
+      accountId: "queued-activity",
+      persist: true,
+      enableSweeper: false,
+    });
+    const service = getSessionBindingService();
+    const conversation = {
+      channel: "telegram",
+      accountId: manager.accountId,
+      conversationId: "thread",
+    };
+    const bound = await service.bind({
+      targetSessionKey: "agent:main:subagent:active",
+      targetKind: "subagent",
+      conversation,
+    });
+    const entered = createDeferred<void>();
+    const release = createDeferred<void>();
+    const register = fixture.store.register.bind(fixture.store);
+    vi.spyOn(fixture.store, "register").mockImplementationOnce(async (...args) => {
+      entered.resolve();
+      await release.promise;
+      await register(...args);
+    });
+    const pending: Promise<unknown>[] = [];
+    try {
+      pending.push(
+        service.bind({
+          targetSessionKey: "agent:main:subagent:queue-blocker",
+          targetKind: "subagent",
+          conversation: { ...conversation, conversationId: "other-thread" },
+        }),
+      );
+      await entered.promise;
+      const capturedAt = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValueOnce(capturedAt);
+      try {
+        pending.push(service.touchAsync(bound.bindingId, undefined, conversation));
+      } finally {
+        clock.mockRestore();
+      }
+      const newerActivityAt = capturedAt + 1;
+      service.touch(bound.bindingId, newerActivityAt, conversation);
+      release.resolve();
+      await Promise.all(pending);
+      expect(manager.getByConversationId("thread")?.lastActivityAt).toBe(newerActivityAt);
+      expect(
+        (await storedBindings()).find((binding) => binding.conversationId === "thread")
+          ?.lastActivityAt,
+      ).toBe(newerActivityAt);
+    } finally {
+      release.resolve();
+      await Promise.allSettled(pending);
+    }
+  });
 
   it("keeps deprecated lifecycle setters immediately visible and durable", async () => {
     installThreadBindingStore(fixture.store, true);
@@ -408,6 +473,64 @@ describe("telegram thread bindings", () => {
     expect(replacement.getByConversationId("replacement-thread")?.targetSessionKey).toBe(
       "agent:main:subagent:replacement",
     );
+  });
+
+  it("initializes queued mutations when source reload retains the old registry shape", async () => {
+    const key = Symbol.for("openclaw.telegramThreadBindingsState");
+    const previous = Object.getOwnPropertyDescriptor(globalThis, key);
+    const legacyState = {
+      managersByAccountId: new Map<string, TelegramThreadBindingManager>(),
+      bindingsByAccountConversation: new Map<string, TelegramThreadBindingRecord>(),
+    };
+    let manager: TelegramThreadBindingManager | undefined;
+    Object.defineProperty(globalThis, key, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: legacyState,
+    });
+    vi.resetModules();
+    try {
+      const reloaded = await importFreshModule<typeof import("./thread-bindings.js")>(
+        import.meta.url,
+        "./thread-bindings.js?scope=legacy-registry-reload",
+      );
+      manager = await reloaded.createTelegramThreadBindingManager({
+        cfg: TELEGRAM_THREAD_BINDINGS_TEST_CFG,
+        accountId: "source-reload",
+        persist: false,
+        enableSweeper: false,
+      });
+      expect(Object.getOwnPropertyDescriptor(globalThis, key)?.value).toBe(legacyState);
+      expect(legacyState.managersByAccountId.get("source-reload")).toBe(manager);
+      await getSessionBindingService().bind({
+        targetSessionKey: "agent:main:subagent:reload",
+        targetKind: "subagent",
+        conversation: {
+          channel: "telegram",
+          accountId: "source-reload",
+          conversationId: "thread",
+        },
+        placement: "current",
+      });
+      expect(legacyState.bindingsByAccountConversation.get("source-reload:thread")).toBe(
+        manager.getByConversationId("thread"),
+      );
+      expect(manager.getByConversationId("thread")?.targetSessionKey).toBe(
+        "agent:main:subagent:reload",
+      );
+    } finally {
+      try {
+        await manager?.stop();
+      } finally {
+        if (previous) {
+          Object.defineProperty(globalThis, key, previous);
+        } else {
+          Reflect.deleteProperty(globalThis, key);
+        }
+        vi.resetModules();
+      }
+    }
   });
 
   it("shares binding state across distinct module instances", async () => {

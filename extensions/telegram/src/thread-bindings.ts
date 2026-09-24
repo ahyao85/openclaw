@@ -195,8 +195,9 @@ async function initializeThreadBindingManager(
       );
     },
     listBindings: () => listBindingsForAccount(accountId),
-    touchConversation: (conversationIdRaw, at = Date.now()) =>
-      mutate(async () => {
+    touchConversation: (conversationIdRaw, at) => {
+      const activityAt = at ?? Date.now();
+      return mutate(async () => {
         const conversationId = normalizeOptionalString(conversationIdRaw);
         if (!conversationId) {
           return null;
@@ -206,9 +207,13 @@ async function initializeThreadBindingManager(
         if (!existingLocal) {
           return null;
         }
+        const requestedActivityAt = normalizeTimestampMs(activityAt);
         const nextRecord: TelegramThreadBindingRecord = {
           ...existingLocal,
-          lastActivityAt: normalizeTimestampMs(at),
+          lastActivityAt:
+            at === undefined
+              ? Math.max(existingLocal.lastActivityAt, requestedActivityAt)
+              : requestedActivityAt,
         };
         mutation.prepare(nextRecord);
         const committed = await persistBindingMutation({
@@ -220,7 +225,8 @@ async function initializeThreadBindingManager(
         });
         mutation.publish(nextRecord, committed);
         return nextRecord;
-      }),
+      });
+    },
     unbindConversation: ({ conversationId: conversationIdRaw, throwOnPersistError }) =>
       mutate(async () => {
         const conversationId = normalizeOptionalString(conversationIdRaw);
