@@ -3,14 +3,12 @@
  */
 
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../infra/agent-run-registry.js";
-import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
-import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { subscribePluginSessionsChanged } from "../plugins/services.test-support.js";
 import {
   normalizeSessionDeliveryState,
@@ -21,6 +19,7 @@ import { flushPendingSessionsChangedEvents } from "./server-methods/session-chan
 import { initializeSessionReadContext } from "./server-methods/sessions-read-cache.test-support.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import type { GatewayModelCatalogSnapshot } from "./server-model-catalog.types.js";
+import { setupPersistentSessionListTestHarness } from "./server.sessions.list-changed.fixture.test-support.js";
 import {
   requireRecord,
   requireArray,
@@ -38,7 +37,6 @@ import {
 } from "./session-row-fixtures.test-support.js";
 import { embeddedRunMock, rpcReq, testState, writeSessionStore } from "./test-helpers.js";
 import {
-  setupGatewaySessionsTestHarness,
   getGatewayConfigModule,
   getSessionsHandlers,
   loadSeededTranscriptEvents,
@@ -49,13 +47,10 @@ import {
 const {
   createConfiguredGlobalAgentSessionStore,
   createSessionStoreDir,
+  createFreshSessionStoreDir,
   openClient,
   resetConfiguredGlobalAgentSessionStore,
-} = setupGatewaySessionsTestHarness();
-
-afterEach(() => {
-  setActivePluginRegistry(createEmptyPluginRegistry());
-});
+} = setupPersistentSessionListTestHarness();
 
 type SessionStoreEntryOptions = Parameters<typeof sessionStoreEntry>[1];
 type MutationMethod = "sessions.patch" | "sessions.compact";
@@ -232,7 +227,7 @@ async function expectListedSessionActiveRun(
 }
 
 test("sessions.list uses persisted usage and selected model fields", async () => {
-  const { storePath } = await createSessionStoreDir();
+  const { storePath } = await createFreshSessionStoreDir();
   testState.agentConfig = {
     models: {
       "anthropic/claude-sonnet-4-6": { params: { context1m: true } },
