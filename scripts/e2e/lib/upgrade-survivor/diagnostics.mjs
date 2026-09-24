@@ -35,6 +35,18 @@ const logNames = [
   "doctor.log",
   "baseline-doctor.log",
   "workshop-doctor-recovery.json",
+  "update-report-recovery.json",
+  "update-report-baseline.json",
+  "update-report-retry.pty.log",
+  "update-report-pending.pty.log",
+  "update-report-retry.gh.jsonl",
+  "update-report-pending.gh.jsonl",
+  "update-report-retry-status.log",
+  "update-report-pending-status.log",
+  "update-report-retry-status.err",
+  "update-report-pending-status.err",
+  "update-report-retry.output.log",
+  "update-report-pending.output.log",
   "workshop-published-refusal.json",
   "workshop-baseline-doctor.json",
   "workshop-recovered-upgrade.json",
@@ -1640,6 +1652,16 @@ function publishedSuccessSummary(artifactRoot, sanitize) {
         "recovery-update.json",
         ...(snapshot.scenario === "workshop-doctor-recovery"
           ? ["workshop-doctor-recovery.json", "baseline-doctor.log", "doctor.log"]
+          : []),
+        ...(snapshot.scenario === "update-report-recovery"
+          ? [
+              "update-report-recovery.json",
+              "update-report-baseline.json",
+              "update-report-retry-status.log",
+              "update-report-pending-status.log",
+              "update-report-retry.gh.jsonl",
+              "update-report-pending.gh.jsonl",
+            ]
           : []),
         ...(snapshot.scenario === "legacy-operator-state" &&
         snapshot.updateRestartMode === "manual" &&
