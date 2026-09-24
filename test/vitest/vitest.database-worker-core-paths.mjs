@@ -1,17 +1,9 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
-  "src/state/agent-deletion-journal.snapshot.test.ts",
-  "src/state/agent-deletion-journal.startup.test.ts",
-  "src/state/agent-deletion-journal.native-startup.test.ts",
-  "src/config/sessions/session-accessor.sqlite-branches.test.ts",
-  "src/config/sessions/session-accessor.sqlite-history-query-plan.test.ts",
-  "src/config/sessions/session-accessor.sqlite-message-cut.test.ts",
-  "src/gateway/server-methods/chat-send-projection-cancellation.test.ts",
-  "src/gateway/session-row-projection.recovery.test.ts",
-  "src/gateway/session-transcript-readers.test.ts",
-  "src/gateway/worker-environments/worker-turn-transcript-footprint.test.ts",
-  "src/plugin-sdk/session-transcript-mirror-runtime.test.ts",
-  "src/plugin-sdk/session-transcript-runtime-visible-delta.test.ts",
+  "src/infra/outbound/bound-delivery-router.test.ts",
+  "src/infra/outbound/current-conversation-bindings.worker.test.ts",
+  "src/auto-reply/reply/dispatch-acp.owner.test.ts",
+  "test/subagent-announce-origin.integration.test.ts",
   "src/agents/tools/pdf-tool.auth-routing.test.ts",
   "src/agents/embedded-agent-runner/run/attempt-system-prompt.test.ts",
   "src/agents/embedded-agent-runner/run/attempt-system-prompt.sandbox-info.test.ts",
@@ -704,12 +696,25 @@ export const databaseWorkerCoreTestFiles = [
   "src/node-host/runner.inventory.test.ts",
   "src/node-host/node-worker-workspace-retention.test.ts",
   "src/node-host/node-worker-prepared-workspace.test.ts",
+  "src/state/agent-deletion-journal.snapshot.test.ts",
+  "src/state/agent-deletion-journal.startup.test.ts",
+  "src/state/agent-deletion-journal.native-startup.test.ts",
+  "src/config/sessions/session-accessor.sqlite-branches.test.ts",
+  "src/config/sessions/session-accessor.sqlite-history-query-plan.test.ts",
+  "src/config/sessions/session-accessor.sqlite-message-cut.test.ts",
+  "src/gateway/server-methods/chat-send-projection-cancellation.test.ts",
+  "src/gateway/session-row-projection.recovery.test.ts",
+  "src/gateway/session-transcript-readers.test.ts",
+  "src/gateway/worker-environments/worker-turn-transcript-footprint.test.ts",
+  "src/plugin-sdk/session-transcript-mirror-runtime.test.ts",
+  "src/plugin-sdk/session-transcript-runtime-visible-delta.test.ts",
 ];
 
 const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);
 
 // Preserve watch admission for consumers previously inferred into fast lanes.
 export const databaseWorkerCoreFormerFastKinds = new Map([
+  ["src/infra/outbound/bound-delivery-router.test.ts", "unitFast"],
   ["src/agents/harness/agent-end-side-effects.no-verbatim-capture.test.ts", "unitFast"],
   ["src/agents/tools/skill-workshop-tool.history.test.ts", "unitFast"],
   ["src/agents/tools/skill-workshop-tool.support-paths.test.ts", "unitFast"],
