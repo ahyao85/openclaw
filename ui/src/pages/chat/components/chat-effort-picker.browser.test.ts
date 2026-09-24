@@ -1,6 +1,7 @@
 import { nothing, render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { userEvent } from "vitest/browser";
+import { icons } from "../../../components/icons.ts";
 import { resolveChatThinkingSelectState } from "../../../lib/chat/thinking.ts";
 import "../../../styles/base.css";
 import "../../../styles/chat/composer.css";
@@ -91,6 +92,18 @@ describe("effort bar colour and flow", () => {
         .closest("[data-chat-auto-steer-row]")
         ?.previousElementSibling?.querySelector("[data-chat-speed-toggle]"),
     ).not.toBeNull();
+    const expectedIcon = document.createElement("span");
+    render(icons.shuffle, expectedIcon);
+    const autoIcon = expectedIcon.querySelector("svg")!.innerHTML;
+    expect(host!.querySelector("[data-chat-auto-steer-row] svg")!.innerHTML).toBe(autoIcon);
+    expect(host!.querySelector("summary .chat-controls__effort-speed svg")!.innerHTML).toBe(
+      autoIcon,
+    );
+    render(icons.zap, expectedIcon);
+    expect(host!.querySelector(".chat-controls__fast-mode-row svg")!.innerHTML).toBe(
+      expectedIcon.querySelector("svg")!.innerHTML,
+    );
+    render(nothing, expectedIcon);
     toggle.focus();
     expect(document.activeElement).toBe(toggle);
     await userEvent.keyboard("{Enter}");

@@ -219,7 +219,9 @@ export function renderChatEffortPicker(params: ChatEffortPickerParams) {
                   }
                 </span>
               `
-            : html`<span class="chat-controls__effort-speed" aria-hidden="true">${icons.zap}</span>`
+            : html`<span class="chat-controls__effort-speed" aria-hidden="true"
+                >${params.autoSteer && !params.fastMode.supported ? icons.shuffle : icons.zap}</span
+              >`
         }
         <span class="chat-controls__inline-select-label">${triggerLabel}</span>
         <span class="chat-controls__inline-select-chevron" aria-hidden="true"
@@ -385,7 +387,7 @@ export function renderChatEffortPicker(params: ChatEffortPickerParams) {
               ? html`
                   <div class="chat-controls__fast-mode-row" data-chat-auto-steer-row>
                     <span class="chat-controls__fast-mode-icon" aria-hidden="true"
-                      >${icons.zap}</span
+                      >${icons.shuffle}</span
                     >
                     <span class="chat-controls__fast-mode-copy">
                       <span class="chat-controls__fast-mode-title"
