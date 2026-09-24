@@ -12,6 +12,7 @@ import {
 } from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import {
   captureStateDatabaseCoordinatorRuntime,
   withStateDatabaseCoordinatorRuntimeDirectory,
@@ -21,6 +22,7 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../state/openclaw-agent-db.js";
 import { getSessionRepositoryWorkspaceStore } from "../state/session-repository-workspaces.js";
 import { ensureProfileForEmail, linkEmail, setUserProfileRole } from "../state/user-profiles.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -73,6 +75,8 @@ afterAll(async () => {
 });
 
 async function createFixture(scope: OperatorScope, useDefaultLoader = false) {
+  const clock = createGatewaySchedulerClock(Date.now());
+  const scheduler = new GatewayScheduler({ clock: clock.clock });
   const fixtureId = ++fixtureSequence;
   const readerEmail = `guest-publication-reader-${fixtureId}@example.test`;
   const profile = ensureProfileForEmail(readerEmail);
@@ -113,6 +117,7 @@ async function createFixture(scope: OperatorScope, useDefaultLoader = false) {
   };
   await seed(sessionKey);
   const connections = createGatewayConnectionState({
+    scheduler,
     bootId: "publication-read",
     cfg,
     getRuntimeConfig,
@@ -141,6 +146,7 @@ async function createFixture(scope: OperatorScope, useDefaultLoader = false) {
   const reader = addReader("guest-publication-reader");
   const load = vi.fn<Load>(async () => snapshot);
   const subscriptions = createControlUiSessionPullRequestSubscriptions({
+    scheduler,
     broadcastToConnIds: connections.broadcastToConnIds,
     isConnectionActive: connections.isConnectionActive,
     prepareRead: (connId, session) => {
@@ -163,6 +169,7 @@ async function createFixture(scope: OperatorScope, useDefaultLoader = false) {
   await initializeSessionReadContext(context);
   return {
     ...reader,
+    clock,
     addReader,
     profile,
     other,
@@ -225,6 +232,7 @@ async function createFixture(scope: OperatorScope, useDefaultLoader = false) {
     },
     async close() {
       await subscriptions.stop();
+      await scheduler.stop();
       connections.clients.clear();
       await disposeSessionReadContexts();
     },
@@ -390,102 +398,90 @@ describe("registered session PR subscriptions", () => {
   ] as const)(
     "keeps a shared load for an unchanged viewer when the other $retired retires (delayed=$delayed)",
     async ({ retired, delayed }) => {
-      if (delayed) {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      }
-      try {
-        await withFixture("operator.read", async (f) => {
-          const entered = createDeferredCore();
-          const held = createDeferredCore<ControlUiSessionPullRequests>();
-          const peer = f.addReader("unchanged-reader");
-          if (delayed) {
-            await f.subscriptions.replace(f.client.connId!, [sessionKey], new Set([sessionKey]));
-            await f.subscribe([sessionKey], peer.client);
-            f.load.mockClear();
-            f.socket.send.mockClear();
-            peer.socket.send.mockClear();
-          }
-          f.load.mockImplementationOnce(async () => {
-            entered.resolve();
-            return await held.promise;
-          });
-          const refreshes: Promise<void>[] = [];
-          try {
-            if (delayed) {
-              for (const client of [f.client, peer.client]) {
-                refreshes.push(
-                  f.subscriptions.replace(client.connId!, [sessionKey], new Set([sessionKey])),
-                );
-              }
-            } else {
-              await f.subscribe();
-              await entered.promise;
-              await f.subscribe([sessionKey], peer.client);
-            }
-            if (retired === "connection") {
-              f.client.invalidated = true;
-            } else {
-              f.access.abort(new Error("Original access retired"));
-            }
-            if (delayed) {
-              await vi.advanceTimersByTimeAsync(10_000);
-              await entered.promise;
-            }
-            held.resolve(snapshot);
-            await Promise.all([f.subscriptions.pollNow(), ...refreshes]);
-            expect(f.load).toHaveBeenCalledTimes(1);
-            expect(frames(f.socket)).toEqual([]);
-            expect(frames(peer.socket)).toEqual([expectedFrame(sessionKey)]);
-            expect(f.load.mock.calls[0]?.[1]?.aborted).toBe(false);
-          } finally {
-            held.resolve(snapshot);
-          }
+      await withFixture("operator.read", async (f) => {
+        const entered = createDeferredCore();
+        const held = createDeferredCore<ControlUiSessionPullRequests>();
+        const peer = f.addReader("unchanged-reader");
+        if (delayed) {
+          await f.subscriptions.replace(f.client.connId!, [sessionKey], new Set([sessionKey]));
+          await f.subscribe([sessionKey], peer.client);
+          f.load.mockClear();
+          f.socket.send.mockClear();
+          peer.socket.send.mockClear();
+        }
+        f.load.mockImplementationOnce(async () => {
+          entered.resolve();
+          return await held.promise;
         });
-      } finally {
-        vi.useRealTimers();
-      }
+        const refreshes: Promise<void>[] = [];
+        try {
+          if (delayed) {
+            for (const client of [f.client, peer.client]) {
+              refreshes.push(
+                f.subscriptions.replace(client.connId!, [sessionKey], new Set([sessionKey])),
+              );
+            }
+          } else {
+            await f.subscribe();
+            await entered.promise;
+            await f.subscribe([sessionKey], peer.client);
+          }
+          if (retired === "connection") {
+            f.client.invalidated = true;
+          } else {
+            f.access.abort(new Error("Original access retired"));
+          }
+          if (delayed) {
+            await f.clock.advanceBy(10_000);
+            await entered.promise;
+          }
+          held.resolve(snapshot);
+          await Promise.all([f.subscriptions.pollNow(), ...refreshes]);
+          expect(f.load).toHaveBeenCalledTimes(1);
+          expect(frames(f.socket)).toEqual([]);
+          expect(frames(peer.socket)).toEqual([expectedFrame(sessionKey)]);
+          expect(f.load.mock.calls[0]?.[1]?.aborted).toBe(false);
+        } finally {
+          held.resolve(snapshot);
+        }
+      });
     },
   );
 
   it("retires cached branch data after canonical replacement and hydrates the new target", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      await withFixture("operator.read", async (f) => {
-        await f.subscribe();
-        await f.subscriptions.replace(f.client.connId!, [sessionKey], new Set([sessionKey]));
-        const retiredRefresh = f.subscriptions.replace(
-          f.client.connId!,
-          [sessionKey],
-          new Set([sessionKey]),
-        );
-        f.socket.send.mockClear();
-        const original = loadGatewaySessionEntryReadOnly(sessionKey, { agentId: "main" });
-        await expect(
-          deleteSessionEntryLifecycle({
-            agentId: "main",
-            storePath: original.storePath,
-            target: { canonicalKey: original.canonicalKey, storeKeys: original.storeKeys },
-            expectedSessionId: f.sessionId,
-            archiveTranscript: false,
-          }),
-        ).resolves.toMatchObject({ deleted: true });
-        await f.seed(sessionKey, f.profile.id, {
-          sessionId: "replacement-publication",
-          updatedAt: 2,
-        });
-        const replacement = { ...snapshot, branch: { ...branch, branch: "replacement-change" } };
-        f.load.mockResolvedValue(replacement);
-        await Promise.all([f.subscriptions.pollNow(), retiredRefresh]);
-        expect(f.load).toHaveBeenCalledTimes(3);
-        expect(frames(f.socket)).toEqual([expectedFrame(sessionKey, replacement)]);
-        const peer = f.addReader("replacement-reader");
-        await f.subscribe([sessionKey], peer.client);
-        await f.subscriptions.pollNow();
-        expect(frames(peer.socket)).toEqual([expectedFrame(sessionKey, replacement)]);
+    await withFixture("operator.read", async (f) => {
+      await f.subscribe();
+      await f.subscriptions.replace(f.client.connId!, [sessionKey], new Set([sessionKey]));
+      const retiredRefresh = f.subscriptions.replace(
+        f.client.connId!,
+        [sessionKey],
+        new Set([sessionKey]),
+      );
+      f.socket.send.mockClear();
+      const original = loadGatewaySessionEntryReadOnly(sessionKey, { agentId: "main" });
+      await expect(
+        deleteSessionEntryLifecycle({
+          agentId: "main",
+          storePath: original.storePath,
+          target: { canonicalKey: original.canonicalKey, storeKeys: original.storeKeys },
+          expectedSessionId: f.sessionId,
+          archiveTranscript: false,
+        }),
+      ).resolves.toMatchObject({ deleted: true });
+      await f.seed(sessionKey, f.profile.id, {
+        sessionId: "replacement-publication",
+        updatedAt: 2,
       });
-    } finally {
-      vi.useRealTimers();
-    }
+      const replacement = { ...snapshot, branch: { ...branch, branch: "replacement-change" } };
+      f.load.mockResolvedValue(replacement);
+      await Promise.all([f.subscriptions.pollNow(), retiredRefresh]);
+      expect(f.load).toHaveBeenCalledTimes(3);
+      expect(frames(f.socket)).toEqual([expectedFrame(sessionKey, replacement)]);
+      const peer = f.addReader("replacement-reader");
+      await f.subscribe([sessionKey], peer.client);
+      await f.subscriptions.pollNow();
+      expect(frames(peer.socket)).toEqual([expectedFrame(sessionKey, replacement)]);
+    });
   });
 });
 
@@ -795,7 +791,6 @@ it.each(["concurrency limit", "earlier refresh", "refresh timer", "publication"]
         const lookedUp: string[] = [];
         const activeLoads = waitingOn === "concurrency limit" ? 4 : 1;
         if (waitingOn === "refresh timer") {
-          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
           release.resolve();
         }
         vi.stubGlobal(
@@ -856,7 +851,7 @@ it.each(["concurrency limit", "earlier refresh", "refresh timer", "publication"]
           release.resolve();
           const settled = Promise.all([f.subscriptions.pollNow(), queuedRefresh]);
           if (waitingOn === "refresh timer") {
-            await vi.advanceTimersByTimeAsync(10_000);
+            await f.clock.advanceBy(10_000);
           }
           await settled;
           await retirement;
@@ -874,7 +869,6 @@ it.each(["concurrency limit", "earlier refresh", "refresh timer", "publication"]
         }
       });
     } finally {
-      vi.useRealTimers();
       vi.unstubAllGlobals();
       vi.unstubAllEnvs();
     }
