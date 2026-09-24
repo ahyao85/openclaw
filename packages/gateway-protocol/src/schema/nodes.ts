@@ -162,7 +162,7 @@ export const NodeInvokeParamsSchema = closedObject({
   params: Type.Optional(Type.Unknown()),
   timeoutMs: Type.Optional(Type.Integer({ minimum: 0 })),
   idempotencyKey: NonEmptyString,
-  // Gateway-only agent ownership metadata. Forwarded beside params, never inside them.
+  // Agent ownership metadata. Forwarded beside params, never inside them.
   sessionKey: Type.Optional(NonEmptyString),
   // Gateway-only approval routing metadata. Node forwarding strips these fields.
   turnSourceChannel: Type.Optional(Type.String()),
@@ -250,6 +250,7 @@ export const NodeInvokeRequestEventSchema = closedObject({
   paramsJSON: Type.Optional(Type.String()),
   timeoutMs: Type.Optional(Type.Integer({ minimum: 0 })),
   idempotencyKey: Type.Optional(NonEmptyString),
+  sessionKey: Type.Optional(NonEmptyString),
 });
 
 /** Ordered input frame sent by the gateway to one long-lived node invoke. */

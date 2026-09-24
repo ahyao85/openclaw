@@ -137,6 +137,42 @@ class SecurePrefs(
     appContext.getSharedPreferences(plainPrefsName, Context.MODE_PRIVATE)
   private val hadPlainPrefsBeforeInit = plainPrefs.all.isNotEmpty()
 
+  init {
+    if (!hadPlainPrefsBeforeInit) {
+      plainPrefs.edit { putStringSet("permissions.unconfiguredFeatures", setOf("Camera", "Location")) }
+    }
+  }
+
+  private val unconfiguredPermissionFeaturesState =
+    MutableStateFlow(plainPrefs.getStringSet("permissions.unconfiguredFeatures", emptySet())!!.toSet())
+  internal val unconfiguredPermissionFeatures: StateFlow<Set<String>> = unconfiguredPermissionFeaturesState
+
+  internal fun canRequestFeatureOnFirstUse(permission: PhonePermission): Boolean = permission.name in unconfiguredPermissionFeaturesState.value
+
+  private fun recordFeatureChoice(permission: PhonePermission) {
+    val pending = unconfiguredPermissionFeaturesState.value - permission.name
+    plainPrefs.edit { putStringSet("permissions.unconfiguredFeatures", pending) }
+    unconfiguredPermissionFeaturesState.value = pending
+  }
+
+  internal fun wasPermissionRequested(permission: String): Boolean = plainPrefs.getStringSet("permissions.requested", emptySet())!!.contains(permission)
+
+  internal fun recordRequestedPermissions(permissions: List<String>) {
+    val requested = plainPrefs.getStringSet("permissions.requested", emptySet())!!
+    plainPrefs.edit { putStringSet("permissions.requested", requested + permissions) }
+  }
+
+  internal fun permissionNotificationShown(key: String): Boolean = plainPrefs.getStringSet("permissions.notified", emptySet())!!.contains(key)
+
+  internal fun recordPermissionNotification(key: String) {
+    val notified = plainPrefs.getStringSet("permissions.notified", emptySet())!!
+    plainPrefs.edit { putStringSet("permissions.notified", notified + key) }
+  }
+
+  internal fun resetPermissionNotifications() {
+    plainPrefs.edit { remove("permissions.notified") }
+  }
+
   // Gateway credentials and arbitrary secret strings are isolated behind EncryptedSharedPreferences.
   private val masterKey by lazy {
     MasterKey
@@ -325,11 +361,13 @@ class SecurePrefs(
   }
 
   fun setCameraEnabled(value: Boolean) {
+    recordFeatureChoice(PhonePermission.Camera)
     plainPrefs.edit { putBoolean(cameraEnabledKey, value) }
     _cameraEnabled.value = value
   }
 
   fun setLocationMode(mode: LocationMode) {
+    recordFeatureChoice(PhonePermission.Location)
     plainPrefs.edit { putString(locationModeKey, mode.rawValue) }
     _locationMode.value = mode
   }

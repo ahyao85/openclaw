@@ -1,6 +1,5 @@
 package ai.openclaw.app.node
 
-import ai.openclaw.app.PermissionRequester
 import android.content.Context
 
 class SmsManager(
@@ -34,11 +33,6 @@ class SmsManager(
     val error: String? = null,
     val payloadJson: String,
   )
-
-  fun attachPermissionRequester(
-    @Suppress("unused") requester: PermissionRequester,
-  ) {
-  }
 
   fun canSendSms(): Boolean = false
 

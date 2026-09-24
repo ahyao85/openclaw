@@ -445,6 +445,20 @@ If an earlier network request is still stopping, the app waits for it before sta
 
 ## Permissions
 
+Setup asks only for notifications. Other permissions are requested when a feature
+first needs them. In the background, OpenClaw posts one permission notification
+instead of opening a dialog; tap it to allow access. Denied requests are not
+repeated on every command. **Settings > Phone Capabilities > Permissions** shows
+**Allow**, **Allowed**, or **Open settings** for access blocked by Android; opening
+this list allows a future permission notification again. Notification listener
+access uses Android settings rather than a runtime dialog.
+
+New installations ask before first camera or location use. Existing choices and
+explicitly disabled capabilities stay disabled. New Android grants can require
+Gateway reapproval: retry the command after the phone reconnects and approval
+completes. If notifications are disabled, the command directs the user to Settings
+instead of claiming a notification was posted.
+
 - Discovery:
   - Android 13+ (`API 33+`): `NEARBY_WIFI_DEVICES`
   - Android 12 and below: `ACCESS_FINE_LOCATION` (required for NSD scanning)

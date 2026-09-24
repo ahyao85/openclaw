@@ -2,21 +2,16 @@ package ai.openclaw.app.ui
 
 import ai.openclaw.app.GatewayConnectionProblem
 import ai.openclaw.app.GatewayNodeCapabilityApproval
-import ai.openclaw.app.LocationMode
 import ai.openclaw.app.MainViewModel
-import ai.openclaw.app.SensitiveFeatureConfig
+import ai.openclaw.app.PhonePermission
 import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.app.gateway.isLocalCleartextGatewayHost
 import ai.openclaw.app.gatewayConnectionStatusForDisplay
-import ai.openclaw.app.hasPhotoReadPermission
 import ai.openclaw.app.i18n.NativeText
 import ai.openclaw.app.i18n.nativeString
 import ai.openclaw.app.i18n.nativeText
 import ai.openclaw.app.i18n.resolveNativeTextResource
 import ai.openclaw.app.i18n.verbatimText
-import ai.openclaw.app.locationModeAfterBackgroundSettings
-import ai.openclaw.app.node.DeviceNotificationListenerService
-import ai.openclaw.app.photoReadPermissionsForRequest
 import ai.openclaw.app.ui.design.ClawDesignTheme
 import ai.openclaw.app.ui.design.ClawPrimaryButton
 import ai.openclaw.app.ui.design.ClawScaffold
@@ -29,12 +24,7 @@ import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.hardware.Sensor
-import android.hardware.SensorManager
-import android.os.Build
-import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -84,8 +74,6 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -93,13 +81,9 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -136,8 +120,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
@@ -525,7 +507,7 @@ fun OnboardingFlow(
         cameraPermissionGranted = granted
       }
 
-    val permissionState = rememberPermissionState(context = context, viewModel = viewModel)
+    val initialNotificationsGranted = rememberSaveable { PhonePermission.Notifications.isGranted(context) }
 
     DisposableEffect(setupBarcodeScanner) {
       onDispose { setupBarcodeScanner.close() }
@@ -1032,11 +1014,10 @@ fun OnboardingFlow(
       OnboardingStep.Permissions -> {
         PermissionSetupScreen(
           modifier = modifier,
-          permissionState = permissionState,
+          onPermissionChange = viewModel::refreshNodePermissionSurface,
           onBack = ::goBack,
           onContinue = {
-            val requiresNodeSurfaceRefresh = permissionState.requiresNodeApprovalAfterApply
-            permissionState.applyToViewModel()
+            val requiresNodeSurfaceRefresh = initialNotificationsGranted != PhonePermission.Notifications.isGranted(context)
             if (
               permissionContinueNeedsNodeApproval(
                 ready = ready,
@@ -2447,7 +2428,7 @@ private fun ApprovalCommandBlock(
 
 @Composable
 private fun PermissionSetupScreen(
-  permissionState: PermissionState,
+  onPermissionChange: () -> Unit,
   onBack: () -> Unit,
   onContinue: () -> Unit,
   modifier: Modifier = Modifier,
@@ -2469,15 +2450,15 @@ private fun PermissionSetupScreen(
         }
         item {
           Text(
-            text = nativeString("Only enable access you are comfortable letting OpenClaw use while this phone is connected. You can change these later in Android Settings."),
+            text = nativeString("Allow notifications so OpenClaw can alert you when it needs access. Other permissions are requested when needed and can be managed in Settings."),
             style = ClawTheme.type.body,
             color = ClawTheme.colors.textMuted,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 12.dp),
           )
         }
-        items(permissionState.rows, key = { it.id.name }) { row ->
-          PermissionRow(row = row)
+        item {
+          PhonePermissionList(permissions = listOf(PhonePermission.Notifications), onPermissionChange = onPermissionChange)
         }
       }
       OnboardingActions {
@@ -2561,59 +2542,6 @@ private fun TogglePill(
 @Composable
 private fun PermissionTopBar(onBack: () -> Unit) {
   OnboardingHeader(title = nativeText("Permissions"), onBack = onBack)
-}
-
-@Composable
-private fun PermissionRow(row: PermissionRowModel) {
-  Surface(
-    onClick = row.onClick,
-    modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp),
-    shape = RoundedCornerShape(ClawTheme.radii.control),
-    color = ClawTheme.colors.surfaceRaised,
-    contentColor = ClawTheme.colors.text,
-    border = BorderStroke(1.dp, ClawTheme.colors.borderStrong),
-  ) {
-    Row(
-      modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-      Surface(
-        modifier = Modifier.size(30.dp),
-        shape = CircleShape,
-        color = ClawTheme.colors.surfacePressed,
-        border = BorderStroke(1.dp, ClawTheme.colors.border),
-      ) {
-        Box(contentAlignment = Alignment.Center) {
-          Icon(imageVector = row.icon, contentDescription = null, modifier = Modifier.size(17.dp), tint = ClawTheme.colors.text)
-        }
-      }
-      Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(
-          text = row.title.resolveNativeTextResource(),
-          style = ClawTheme.type.title.copy(fontSize = 18.sp, lineHeight = 23.sp),
-          color = ClawTheme.colors.text,
-        )
-        Text(
-          text = row.subtitle.resolveNativeTextResource(),
-          style = ClawTheme.type.body,
-          color = ClawTheme.colors.textMuted,
-        )
-      }
-      Icon(
-        imageVector = if (row.granted) Icons.Default.CheckCircle else Icons.Default.Close,
-        contentDescription = row.statusText.resolveNativeTextResource(),
-        modifier = Modifier.size(20.dp),
-        tint = if (row.granted) ClawTheme.colors.success else ClawTheme.colors.danger,
-      )
-      Icon(
-        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-        contentDescription = null,
-        modifier = Modifier.size(17.dp),
-        tint = ClawTheme.colors.text,
-      )
-    }
-  }
 }
 
 internal enum class GatewayRecoveryUiState(
@@ -3057,38 +2985,6 @@ private fun copyGatewayCommand(
   Toast.makeText(context, nativeString("Command copied"), Toast.LENGTH_SHORT).show()
 }
 
-/** One permission row plus launcher callback for onboarding's final setup step. */
-private enum class PermissionRowId {
-  Voice,
-  Camera,
-  Location,
-  Photos,
-  Contacts,
-  Calendar,
-  Notifications,
-  NotificationListener,
-  Motion,
-  Sms,
-  CallLog,
-}
-
-private data class PermissionRowModel(
-  val id: PermissionRowId,
-  val title: NativeText,
-  val subtitle: NativeText,
-  val icon: ImageVector,
-  val granted: Boolean,
-  val statusText: NativeText = permissionRowStatusText(granted),
-  val onClick: () -> Unit,
-)
-
-/** Permission screen model plus a commit hook that persists granted feature toggles. */
-private class PermissionState(
-  val rows: List<PermissionRowModel>,
-  val requiresNodeApprovalAfterApply: Boolean,
-  val applyToViewModel: () -> Unit,
-)
-
 /** Onboarding finishes only after the gateway resolves node capability approval. */
 internal fun canFinishOnboarding(
   isConnected: Boolean,
@@ -3109,286 +3005,9 @@ internal fun canFinishOnboarding(
       -> true
     }
 
-private val requiredContactPermissions = listOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS)
-private val requiredCalendarPermissions = listOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
-
-internal fun initialDeviceCapabilityEnabled(
-  savedCapabilityEnabled: Boolean,
-  androidPermissionGranted: Boolean,
-): Boolean = savedCapabilityEnabled && androidPermissionGranted
-
-internal fun deviceCapabilityRowStatusText(
-  capabilityEnabled: Boolean,
-  androidPermissionGranted: Boolean,
-): NativeText =
-  when {
-    capabilityEnabled -> nativeText("Enabled")
-    androidPermissionGranted -> nativeText("Off")
-    else -> nativeText("Not allowed")
-  }
-
-internal fun deviceCapabilityAfterRowTap(
-  currentCapabilityEnabled: Boolean,
-  androidPermissionGranted: Boolean,
-): Boolean? = if (androidPermissionGranted) !currentCapabilityEnabled else null
-
-private fun permissionRowStatusText(granted: Boolean): NativeText = if (granted) nativeText("Granted") else nativeText("Not granted")
-
-internal fun permissionChangesRequireNodeApproval(
-  currentCameraEnabled: Boolean,
-  requestedCameraEnabled: Boolean,
-  currentLocationMode: LocationMode,
-  requestedLocationMode: LocationMode,
-  currentSmsGranted: Boolean,
-  requestedSmsGranted: Boolean,
-): Boolean =
-  currentCameraEnabled != requestedCameraEnabled ||
-    currentLocationMode != requestedLocationMode ||
-    currentSmsGranted != requestedSmsGranted
-
-/** Builds permission rows and applies granted feature toggles after onboarding. */
-@Composable
-private fun rememberPermissionState(
-  context: Context,
-  viewModel: MainViewModel,
-): PermissionState {
-  val currentCameraEnabled by viewModel.cameraEnabled.collectAsState()
-  val currentLocationMode by viewModel.locationMode.collectAsState()
-  var microphoneGranted by rememberSaveable { mutableStateOf(hasPermission(context, Manifest.permission.RECORD_AUDIO)) }
-  val cameraPermissionGranted = hasPermission(context, Manifest.permission.CAMERA)
-  var cameraGranted by rememberSaveable { mutableStateOf(initialDeviceCapabilityEnabled(currentCameraEnabled, cameraPermissionGranted)) }
-
-  fun hasLocationPermission(): Boolean =
-    hasPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ||
-      hasPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION)
-
-  val locationPermissionGranted = hasLocationPermission()
-  var locationGranted by rememberSaveable {
-    mutableStateOf(initialDeviceCapabilityEnabled(currentLocationMode != LocationMode.Off, locationPermissionGranted))
-  }
-  val photosPermissions = photoReadPermissionsForRequest()
-  var photosGranted by rememberSaveable { mutableStateOf(hasPhotoReadPermission(context)) }
-  var contactsGranted by rememberSaveable {
-    mutableStateOf(requiredContactPermissions.all { permission -> hasPermission(context, permission) })
-  }
-  var calendarGranted by rememberSaveable {
-    mutableStateOf(requiredCalendarPermissions.all { permission -> hasPermission(context, permission) })
-  }
-  var notificationsGranted by rememberSaveable {
-    mutableStateOf(Build.VERSION.SDK_INT < 33 || hasPermission(context, Manifest.permission.POST_NOTIFICATIONS))
-  }
-  var notificationListenerGranted by rememberSaveable { mutableStateOf(DeviceNotificationListenerService.isAccessEnabled(context)) }
-  val photosAvailable = SensitiveFeatureConfig.photosEnabled
-  val motionAvailable = remember(context) { hasMotionCapabilities(context) }
-  val smsAvailable =
-    remember(context) {
-      SensitiveFeatureConfig.smsEnabled &&
-        context.packageManager?.hasSystemFeature(PackageManager.FEATURE_TELEPHONY) == true
-    }
-  val currentSmsGranted =
-    !smsAvailable ||
-      (
-        hasPermission(context, Manifest.permission.SEND_SMS) &&
-          hasPermission(context, Manifest.permission.READ_SMS)
-      )
-  val callLogAvailable = SensitiveFeatureConfig.callLogEnabled
-  var motionGranted by rememberSaveable { mutableStateOf(!motionAvailable || hasPermission(context, Manifest.permission.ACTIVITY_RECOGNITION)) }
-  var smsGranted by rememberSaveable { mutableStateOf(currentSmsGranted) }
-  var callLogGranted by rememberSaveable { mutableStateOf(!callLogAvailable || hasPermission(context, Manifest.permission.READ_CALL_LOG)) }
-  val lifecycleOwner = LocalLifecycleOwner.current
-
-  DisposableEffect(lifecycleOwner, context) {
-    val observer =
-      LifecycleEventObserver { _, event ->
-        if (event == Lifecycle.Event.ON_RESUME) {
-          notificationListenerGranted = DeviceNotificationListenerService.isAccessEnabled(context)
-        }
-      }
-    lifecycleOwner.lifecycle.addObserver(observer)
-    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-  }
-
-  val permissionLauncher =
-    rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
-      microphoneGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: microphoneGranted
-      cameraGranted = permissions[Manifest.permission.CAMERA] ?: cameraGranted
-      locationGranted =
-        permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-        permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true ||
-        locationGranted
-      photosGranted = hasPhotoReadPermission(context) || photosPermissions.any { permissions[it] == true }
-      contactsGranted =
-        mergedRequiredPermissionGrantState(
-          permissions = permissions,
-          requiredPermissions = requiredContactPermissions,
-          currentlyGranted = { permission -> hasPermission(context, permission) },
-        )
-      calendarGranted =
-        mergedRequiredPermissionGrantState(
-          permissions = permissions,
-          requiredPermissions = requiredCalendarPermissions,
-          currentlyGranted = { permission -> hasPermission(context, permission) },
-        )
-      notificationsGranted =
-        if (Build.VERSION.SDK_INT >= 33) {
-          permissions[Manifest.permission.POST_NOTIFICATIONS] ?: notificationsGranted
-        } else {
-          true
-        }
-      motionGranted = permissions[Manifest.permission.ACTIVITY_RECOGNITION] ?: motionGranted
-      smsGranted =
-        !smsAvailable ||
-        mergedRequiredPermissionGrantState(
-          permissions = permissions,
-          requiredPermissions = listOf(Manifest.permission.SEND_SMS, Manifest.permission.READ_SMS),
-          currentlyGranted = { permission -> hasPermission(context, permission) },
-        )
-      callLogGranted = permissions[Manifest.permission.READ_CALL_LOG] ?: callLogGranted
-    }
-
-  fun request(vararg permissions: String) {
-    permissionLauncher.launch(permissions.filterNot { hasPermission(context, it) }.toTypedArray())
-  }
-
-  fun requestCameraCapability() {
-    val nextCapabilityEnabled =
-      deviceCapabilityAfterRowTap(
-        currentCapabilityEnabled = cameraGranted,
-        androidPermissionGranted = hasPermission(context, Manifest.permission.CAMERA),
-      )
-    if (nextCapabilityEnabled != null) {
-      cameraGranted = nextCapabilityEnabled
-    } else {
-      request(Manifest.permission.CAMERA)
-    }
-  }
-
-  val rows =
-    listOfNotNull(
-      PermissionRowModel(PermissionRowId.Voice, nativeText("Voice"), nativeText("Transcribe voice prompts"), Icons.Default.Mic, microphoneGranted) {
-        request(Manifest.permission.RECORD_AUDIO)
-      },
-      PermissionRowModel(
-        PermissionRowId.Camera,
-        nativeText("Camera"),
-        nativeText("Capture photos and clips from this phone"),
-        Icons.Default.CameraAlt,
-        cameraGranted,
-        deviceCapabilityRowStatusText(
-          capabilityEnabled = cameraGranted,
-          androidPermissionGranted = cameraPermissionGranted,
-        ),
-        ::requestCameraCapability,
-      ),
-      PermissionRowModel(
-        PermissionRowId.Location,
-        nativeText("Location"),
-        nativeText("Read this phone's location"),
-        Icons.Default.LocationOn,
-        locationGranted,
-        deviceCapabilityRowStatusText(locationGranted, locationPermissionGranted),
-      ) {
-        val nextCapabilityEnabled = deviceCapabilityAfterRowTap(locationGranted, hasLocationPermission())
-        if (nextCapabilityEnabled != null) {
-          locationGranted = nextCapabilityEnabled
-        } else {
-          request(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
-        }
-      },
-      if (photosAvailable) {
-        PermissionRowModel(PermissionRowId.Photos, nativeText("Photos"), nativeText("Read recent photos and media"), Icons.Default.Image, photosGranted) {
-          request(*photosPermissions.toTypedArray())
-        }
-      } else {
-        null
-      },
-      PermissionRowModel(PermissionRowId.Contacts, nativeText("Contacts"), nativeText("Find people and contact details"), Icons.Default.Person, contactsGranted) {
-        request(*requiredContactPermissions.toTypedArray())
-      },
-      PermissionRowModel(PermissionRowId.Calendar, nativeText("Calendar"), nativeText("Read and update events"), Icons.Default.CalendarMonth, calendarGranted) {
-        request(*requiredCalendarPermissions.toTypedArray())
-      },
-      PermissionRowModel(PermissionRowId.Notifications, nativeText("Notifications"), nativeText("Show OpenClaw alerts"), Icons.Default.Notifications, notificationsGranted) {
-        if (Build.VERSION.SDK_INT >= 33) request(Manifest.permission.POST_NOTIFICATIONS)
-      },
-      PermissionRowModel(PermissionRowId.NotificationListener, nativeText("Notification listener"), nativeText("Read selected app notifications"), Icons.Default.Sensors, notificationListenerGranted) {
-        context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-      },
-      if (motionAvailable) {
-        PermissionRowModel(PermissionRowId.Motion, nativeText("Motion"), nativeText("Share steps and activity"), Icons.Default.Sensors, motionGranted) {
-          request(Manifest.permission.ACTIVITY_RECOGNITION)
-        }
-      } else {
-        null
-      },
-      if (smsAvailable) {
-        PermissionRowModel(PermissionRowId.Sms, nativeText("SMS"), nativeText("Device access; Gateway opt-in still required"), Icons.Default.Notifications, smsGranted) {
-          request(Manifest.permission.SEND_SMS, Manifest.permission.READ_SMS)
-        }
-      } else {
-        null
-      },
-      if (callLogAvailable) {
-        PermissionRowModel(PermissionRowId.CallLog, nativeText("Call Log"), nativeText("Show recent call history"), Icons.Default.Person, callLogGranted) {
-          request(Manifest.permission.READ_CALL_LOG)
-        }
-      } else {
-        null
-      },
-    )
-
-  val requestedLocationMode =
-    locationModeAfterBackgroundSettings(
-      previousMode = currentLocationMode.takeUnless { it == LocationMode.Off } ?: LocationMode.WhileUsing,
-      foregroundGranted = locationGranted,
-      backgroundGranted =
-        currentLocationMode == LocationMode.Always &&
-          SensitiveFeatureConfig.backgroundLocationEnabled &&
-          hasPermission(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION),
-    )
-
-  return PermissionState(
-    rows = rows,
-    requiresNodeApprovalAfterApply =
-      permissionChangesRequireNodeApproval(
-        currentCameraEnabled = currentCameraEnabled,
-        requestedCameraEnabled = cameraGranted,
-        currentLocationMode = currentLocationMode,
-        requestedLocationMode = requestedLocationMode,
-        currentSmsGranted = currentSmsGranted,
-        requestedSmsGranted = smsGranted,
-      ),
-    applyToViewModel = {
-      viewModel.setCameraEnabled(cameraGranted)
-      viewModel.setLocationMode(requestedLocationMode)
-      viewModel.setNotificationForwardingEnabled(notificationListenerGranted && viewModel.notificationForwardingEnabled.value)
-    },
-  )
-}
-
-/** RequestMultiplePermissions only reports launched permissions, so omitted entries use current system state. */
-internal fun mergedRequiredPermissionGrantState(
-  permissions: Map<String, Boolean>,
-  requiredPermissions: List<String>,
-  currentlyGranted: (String) -> Boolean,
-): Boolean = requiredPermissions.all { permission -> permissions[permission] ?: currentlyGranted(permission) }
-
 internal fun nearbyGatewayManualPort(endpoint: GatewayEndpoint): String = endpoint.port.toString()
 
 internal fun nearbyGatewayManualTls(endpoint: GatewayEndpoint): Boolean =
   endpoint.tlsEnabled ||
     !endpoint.tlsFingerprintSha256.isNullOrBlank() ||
     !isLocalCleartextGatewayHost(endpoint.host)
-
-private fun hasPermission(
-  context: Context,
-  permission: String,
-): Boolean = ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
-
-/** Returns true when Android exposes any motion sensor that can back node motion commands. */
-private fun hasMotionCapabilities(context: Context): Boolean {
-  val sensorManager = context.getSystemService(SensorManager::class.java) ?: return false
-  return sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) != null ||
-    sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) != null ||
-    sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR) != null
-}

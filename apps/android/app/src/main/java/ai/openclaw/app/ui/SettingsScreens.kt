@@ -23,7 +23,9 @@ import ai.openclaw.app.GatewayTalkSetupState
 import ai.openclaw.app.GatewayUsageProviderSummary
 import ai.openclaw.app.LocationMode
 import ai.openclaw.app.MainViewModel
+import ai.openclaw.app.NodeApp
 import ai.openclaw.app.NotificationPackageFilterMode
+import ai.openclaw.app.PhonePermission
 import ai.openclaw.app.SensitiveFeatureConfig
 import ai.openclaw.app.VoiceCaptureMode
 import ai.openclaw.app.appLanguageRowSubtitle
@@ -37,7 +39,6 @@ import ai.openclaw.app.gateway.GatewayRegistryEntryKind
 import ai.openclaw.app.gatewayExecApprovalTextForDisplay
 import ai.openclaw.app.gatewayTalkSetupDescription
 import ai.openclaw.app.gatewayTalkSetupStatusText
-import ai.openclaw.app.hasPhotoReadPermission
 import ai.openclaw.app.i18n.NativeText
 import ai.openclaw.app.i18n.nativeString
 import ai.openclaw.app.i18n.resolveNativeText
@@ -46,7 +47,6 @@ import ai.openclaw.app.isReady
 import ai.openclaw.app.loadAndroidLicenseNotices
 import ai.openclaw.app.locationModeAfterBackgroundSettings
 import ai.openclaw.app.node.DeviceNotificationListenerService
-import ai.openclaw.app.photoReadPermissionsForRequest
 import ai.openclaw.app.reconcileRestoredAction
 import ai.openclaw.app.setAppLanguage
 import ai.openclaw.app.ui.design.ClawAgentAvatar
@@ -83,15 +83,12 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.net.Uri
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -128,7 +125,6 @@ import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -157,6 +153,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -179,6 +176,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
 
@@ -686,6 +685,8 @@ private fun VoiceSettingsScreen(
   onBack: () -> Unit,
 ) {
   val context = LocalContext.current
+  val requester = (context.applicationContext as NodeApp).permissionRequester
+  val scope = rememberCoroutineScope()
   val speakerEnabled by viewModel.speakerEnabled.collectAsState()
   val preferredAudioInputDevice by viewModel.preferredAudioInputDevice.collectAsState()
   val voiceCaptureMode by viewModel.voiceCaptureMode.collectAsState()
@@ -707,20 +708,20 @@ private fun VoiceSettingsScreen(
   val audioInputDevicePending =
     voiceCaptureMode != VoiceCaptureMode.Off && preferredAudioInputDevice != activeAudioInputDevicePreference
 
-  val microphonePermissionLauncher =
-    rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-      viewModel.refreshVoiceWakePermission()
-      if (granted) viewModel.setVoiceWakeEnabled(true)
-    }
-
   fun setVoiceWake(checked: Boolean) {
     if (!checked) {
       viewModel.setVoiceWakeEnabled(false)
-    } else if (hasPermission(context, Manifest.permission.RECORD_AUDIO)) {
-      viewModel.refreshVoiceWakePermission()
-      viewModel.setVoiceWakeEnabled(true)
-    } else {
-      microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+      return
+    }
+    scope.launch {
+      try {
+        val granted = requester.request(PhonePermission.Voice)
+        viewModel.refreshVoiceWakePermission()
+        viewModel.refreshNodePermissionSurface()
+        if (granted) viewModel.setVoiceWakeEnabled(true)
+      } catch (_: TimeoutCancellationException) {
+        Toast.makeText(context, nativeString("Permission request timed out. Tap to try again."), Toast.LENGTH_SHORT).show()
+      }
     }
   }
 
@@ -1060,6 +1061,8 @@ private fun NotificationSettingsScreen(
   onBack: () -> Unit,
 ) {
   val context = LocalContext.current
+  val requester = (context.applicationContext as NodeApp).permissionRequester
+  val scope = rememberCoroutineScope()
   val lifecycleOwner = LocalLifecycleOwner.current
   val enabled by viewModel.notificationForwardingEnabled.collectAsState()
   val mode by viewModel.notificationForwardingMode.collectAsState()
@@ -1095,11 +1098,6 @@ private fun NotificationSettingsScreen(
     onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
   }
 
-  val notificationPermissionLauncher =
-    rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-      viewModel.setNotificationForwardingEnabled(granted && DeviceNotificationListenerService.isAccessEnabled(context))
-    }
-
   fun setForwarding(checked: Boolean) {
     if (!checked) {
       viewModel.setNotificationForwardingEnabled(false)
@@ -1110,10 +1108,14 @@ private fun NotificationSettingsScreen(
       openNotificationListenerSettings(context)
       return
     }
-    if (Build.VERSION.SDK_INT >= 33 && !hasPermission(context, Manifest.permission.POST_NOTIFICATIONS)) {
-      notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-    } else {
-      viewModel.setNotificationForwardingEnabled(true)
+    scope.launch {
+      try {
+        val granted = requester.request(PhonePermission.Notifications)
+        viewModel.setNotificationForwardingEnabled(granted && DeviceNotificationListenerService.isAccessEnabled(context))
+        viewModel.refreshNodePermissionSurface()
+      } catch (_: TimeoutCancellationException) {
+        Toast.makeText(context, nativeString("Permission request timed out. Tap to try again."), Toast.LENGTH_SHORT).show()
+      }
     }
   }
 
@@ -1296,76 +1298,29 @@ private fun PhoneCapabilitiesScreen(
   onBack: () -> Unit,
 ) {
   val context = LocalContext.current
+  val requester = (context.applicationContext as NodeApp).permissionRequester
+  val scope = rememberCoroutineScope()
   val lifecycleOwner = LocalLifecycleOwner.current
+  val firstUseFeatures by (context.applicationContext as NodeApp).prefs.unconfiguredPermissionFeatures.collectAsState()
   val cameraEnabled by viewModel.cameraEnabled.collectAsState()
   val locationMode by viewModel.locationMode.collectAsState()
   val locationPreciseEnabled by viewModel.locationPreciseEnabled.collectAsState()
   val preventSleep by viewModel.preventSleep.collectAsState()
   val installedAppsSharingEnabled by viewModel.installedAppsSharingEnabled.collectAsState()
-  val photosAvailable = remember { SensitiveFeatureConfig.photosEnabled }
   val backgroundLocationAvailable = remember { SensitiveFeatureConfig.backgroundLocationEnabled }
-  val photoPermissions = remember { photoReadPermissionsForRequest() }
-  var photosGranted by remember { mutableStateOf(photosAvailable && hasPhotoReadPermission(context)) }
-  var pendingLocationModeRaw by rememberSaveable { mutableStateOf<String?>(null) }
   var pendingAlwaysPreviousModeRaw by rememberSaveable { mutableStateOf<String?>(null) }
   var awaitingBackgroundSettings by rememberSaveable { mutableStateOf(false) }
   var showBackgroundLocationExplanation by rememberSaveable { mutableStateOf(false) }
   var showInstalledAppsDisclosure by rememberSaveable { mutableStateOf(false) }
-  var pendingPreciseLocation by rememberSaveable { mutableStateOf(false) }
   val platformBackgroundPermissionLabel =
     remember(context) {
       context.packageManager.backgroundPermissionOptionLabel.toString()
     }
   val backgroundPermissionLabel = resolvedBackgroundPermissionLabel(platformBackgroundPermissionLabel)
-  val cameraPermissionLauncher =
-    rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-      viewModel.setCameraEnabled(granted)
-    }
-  val locationPermissionLauncher =
-    rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
-      val foregroundGranted = hasLocationPermission(context)
-      val fineGranted = hasPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
-      if (pendingPreciseLocation) {
-        pendingPreciseLocation = false
-        viewModel.setLocationPreciseEnabled(fineGranted)
-        if (foregroundGranted && locationMode == LocationMode.Off) {
-          viewModel.setLocationMode(LocationMode.WhileUsing)
-        }
-        return@rememberLauncherForActivityResult
-      }
-
-      val requestedMode = LocationMode.fromRawValue(pendingLocationModeRaw)
-      pendingLocationModeRaw = null
-      when (requestedMode) {
-        LocationMode.WhileUsing -> {
-          viewModel.setLocationMode(
-            if (foregroundGranted) LocationMode.WhileUsing else LocationMode.Off,
-          )
-        }
-
-        LocationMode.Always -> {
-          if (foregroundGranted) {
-            viewModel.setLocationMode(LocationMode.WhileUsing)
-            showBackgroundLocationExplanation = true
-          } else {
-            viewModel.setLocationMode(LocationMode.Off)
-            pendingAlwaysPreviousModeRaw = null
-          }
-        }
-
-        LocationMode.Off -> {}
-      }
-      viewModel.setLocationPreciseEnabled(fineGranted)
-    }
-  val photoPermissionLauncher =
-    rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-      photosGranted = photosAvailable && hasPhotoReadPermission(context)
-    }
 
   DisposableEffect(
     lifecycleOwner,
     context,
-    photosAvailable,
     backgroundLocationAvailable,
     locationMode,
     awaitingBackgroundSettings,
@@ -1374,7 +1329,6 @@ private fun PhoneCapabilitiesScreen(
     val observer =
       LifecycleEventObserver { _, event ->
         if (event == Lifecycle.Event.ON_RESUME) {
-          photosGranted = photosAvailable && hasPhotoReadPermission(context)
           val foregroundGranted = hasLocationPermission(context)
           val backgroundGranted = hasBackgroundLocationPermission(context)
           if (awaitingBackgroundSettings && pendingAlwaysPreviousModeRaw != null) {
@@ -1409,51 +1363,48 @@ private fun PhoneCapabilitiesScreen(
       viewModel.setCameraEnabled(false)
       return
     }
-    if (hasPermission(context, Manifest.permission.CAMERA)) {
-      viewModel.setCameraEnabled(true)
-    } else {
-      cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+    scope.launch {
+      try {
+        viewModel.setCameraEnabled(requester.request(PhonePermission.Camera))
+        viewModel.refreshNodePermissionSurface()
+      } catch (_: TimeoutCancellationException) {
+        Toast.makeText(context, nativeString("Permission request timed out. Tap to try again."), Toast.LENGTH_SHORT).show()
+      }
     }
   }
 
   fun setLocationAccess(mode: LocationMode) {
-    when (mode) {
-      LocationMode.Off -> {
-        viewModel.setLocationMode(LocationMode.Off)
-      }
-
-      LocationMode.WhileUsing -> {
-        if (hasLocationPermission(context)) {
-          viewModel.setLocationMode(LocationMode.WhileUsing)
-        } else {
-          pendingLocationModeRaw = mode.rawValue
-          locationPermissionLauncher.launch(
-            arrayOf(
-              Manifest.permission.ACCESS_FINE_LOCATION,
-              Manifest.permission.ACCESS_COARSE_LOCATION,
-            ),
-          )
-        }
-      }
-
-      LocationMode.Always -> {
-        if (!backgroundLocationAvailable) return
-        if (hasLocationPermission(context) && hasBackgroundLocationPermission(context)) {
-          viewModel.setLocationMode(LocationMode.Always)
-          return
-        }
+    if (mode == LocationMode.Off) {
+      viewModel.setLocationMode(LocationMode.Off)
+      return
+    }
+    if (mode == LocationMode.Always && !backgroundLocationAvailable) return
+    if (hasLocationPermission(context)) {
+      if (mode == LocationMode.WhileUsing || hasBackgroundLocationPermission(context)) {
+        viewModel.setLocationMode(mode)
+      } else {
         pendingAlwaysPreviousModeRaw = locationMode.rawValue
-        if (hasLocationPermission(context)) {
-          showBackgroundLocationExplanation = true
-        } else {
-          pendingLocationModeRaw = mode.rawValue
-          locationPermissionLauncher.launch(
-            arrayOf(
-              Manifest.permission.ACCESS_FINE_LOCATION,
-              Manifest.permission.ACCESS_COARSE_LOCATION,
-            ),
-          )
+        showBackgroundLocationExplanation = true
+      }
+      return
+    }
+    if (mode == LocationMode.Always) pendingAlwaysPreviousModeRaw = locationMode.rawValue
+    scope.launch {
+      try {
+        val granted = requester.request(PhonePermission.Location)
+        viewModel.setLocationMode(if (granted) LocationMode.WhileUsing else LocationMode.Off)
+        if (mode == LocationMode.Always) {
+          if (granted) {
+            showBackgroundLocationExplanation = true
+          } else {
+            pendingAlwaysPreviousModeRaw = null
+          }
         }
+        viewModel.setLocationPreciseEnabled(hasPermission(context, Manifest.permission.ACCESS_FINE_LOCATION))
+        viewModel.refreshNodePermissionSurface()
+      } catch (_: TimeoutCancellationException) {
+        pendingAlwaysPreviousModeRaw = null
+        Toast.makeText(context, nativeString("Permission request timed out. Tap to try again."), Toast.LENGTH_SHORT).show()
       }
     }
   }
@@ -1463,27 +1414,17 @@ private fun PhoneCapabilitiesScreen(
       viewModel.setLocationPreciseEnabled(false)
       return
     }
-    if (hasPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)) {
-      viewModel.setLocationPreciseEnabled(true)
-      if (locationMode == LocationMode.Off) {
-        viewModel.setLocationMode(LocationMode.WhileUsing)
+    scope.launch {
+      try {
+        val granted = requester.request(PhonePermission.Location, listOf(Manifest.permission.ACCESS_FINE_LOCATION))
+        viewModel.setLocationPreciseEnabled(granted)
+        if (hasLocationPermission(context) && viewModel.locationMode.value == LocationMode.Off) {
+          viewModel.setLocationMode(LocationMode.WhileUsing)
+        }
+        viewModel.refreshNodePermissionSurface()
+      } catch (_: TimeoutCancellationException) {
+        Toast.makeText(context, nativeString("Permission request timed out. Tap to try again."), Toast.LENGTH_SHORT).show()
       }
-    } else {
-      pendingPreciseLocation = true
-      locationPermissionLauncher.launch(
-        arrayOf(
-          Manifest.permission.ACCESS_FINE_LOCATION,
-          Manifest.permission.ACCESS_COARSE_LOCATION,
-        ),
-      )
-    }
-  }
-
-  fun setPhotoAccess(checked: Boolean) {
-    if (checked && !hasPhotoReadPermission(context)) {
-      photoPermissionLauncher.launch(photoPermissions.toTypedArray())
-    } else {
-      openAppPermissionSettings(context)
     }
   }
 
@@ -1498,20 +1439,9 @@ private fun PhoneCapabilitiesScreen(
   SettingsDetailFrame(title = nativeString("Phone Capabilities"), subtitle = nativeString("Choose what this phone can share."), icon = Icons.AutoMirrored.Filled.ScreenShare, onBack = onBack) {
     SettingsTogglePanel(
       rows =
-        listOfNotNull(
-          SettingsToggleRow(nativeString("Camera"), nativeString("Allow camera tools when requested."), Icons.Default.CameraAlt, cameraEnabled, ::setCameraAccess),
+        listOf(
+          SettingsToggleRow(nativeString("Camera"), nativeString("Allow camera tools when requested."), Icons.Default.CameraAlt, cameraEnabled || PhonePermission.Camera.name in firstUseFeatures, ::setCameraAccess),
           SettingsToggleRow(nativeString("Precise Location"), nativeString("Share precise location while location is enabled."), Icons.Default.LocationOn, locationPreciseEnabled, ::setPreciseLocation),
-          if (photosAvailable) {
-            SettingsToggleRow(
-              nativeString("Photos"),
-              if (photosGranted) nativeString("Selected or full photo access granted.") else nativeString("Allow photo library access."),
-              Icons.Default.Image,
-              photosGranted,
-              ::setPhotoAccess,
-            )
-          } else {
-            null
-          },
           SettingsToggleRow(
             nativeString("Installed Apps"),
             if (installedAppsSharingEnabled) nativeString("OpenClaw can list launcher-visible apps.") else nativeString("App list stays on this phone."),
@@ -1528,10 +1458,12 @@ private fun PhoneCapabilitiesScreen(
     ClawPanel {
       Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(text = nativeString("Location"), style = ClawTheme.type.section, color = ClawTheme.colors.text)
+        val asksOnFirstUse = PhonePermission.Location.name in firstUseFeatures
+        val askWhenNeeded = nativeString("Ask when needed")
         ClawSegmentedControl(
-          options = locationModeLabels(backgroundLocationAvailable),
-          selected = locationMode.displayLabel,
-          onSelect = { selected -> setLocationAccess(locationModeForLabel(selected)) },
+          options = (if (asksOnFirstUse) listOf(askWhenNeeded) else emptyList()) + locationModeLabels(backgroundLocationAvailable),
+          selected = if (asksOnFirstUse) askWhenNeeded else locationMode.displayLabel,
+          onSelect = { selected -> if (selected != askWhenNeeded) setLocationAccess(locationModeForLabel(selected)) },
         )
         if (backgroundLocationAvailable) {
           Text(
@@ -1542,6 +1474,8 @@ private fun PhoneCapabilitiesScreen(
         }
       }
     }
+    Text(text = nativeString("Permissions"), style = ClawTheme.type.section, color = ClawTheme.colors.text)
+    PhonePermissionList(onPermissionChange = viewModel::refreshNodePermissionSurface)
   }
 
   if (showInstalledAppsDisclosure) {

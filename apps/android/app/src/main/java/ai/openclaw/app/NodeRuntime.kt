@@ -1333,9 +1333,9 @@ class NodeRuntime private constructor(
       callLogHandler = callLogHandler,
       mobileUiHandler = mobileUiHandler,
       isForeground = { _isForeground.value },
-      cameraEnabled = { cameraEnabled.value },
-      locationEnabled = { locationMode.value != LocationMode.Off },
-      sendSmsAvailable = { SensitiveFeatureConfig.smsEnabled && sms.canSendSms() },
+      cameraEnabled = { cameraEnabled.value || prefs.canRequestFeatureOnFirstUse(PhonePermission.Camera) },
+      locationEnabled = { locationMode.value != LocationMode.Off || prefs.canRequestFeatureOnFirstUse(PhonePermission.Location) },
+      sendSmsAvailable = { SensitiveFeatureConfig.smsEnabled && sms.hasTelephonyFeature() },
       readSmsAvailable = { SensitiveFeatureConfig.smsEnabled && sms.canReadSms() },
       smsSearchPossible = { SensitiveFeatureConfig.smsEnabled && sms.hasTelephonyFeature() },
       callLogAvailable = { SensitiveFeatureConfig.callLogEnabled },
@@ -1348,6 +1348,20 @@ class NodeRuntime private constructor(
         SensitiveFeatureConfig.accessibilityControlEnabled && mobileUiHandler.isConnected.value
       },
       voiceWakeAvailable = ::isVoiceWakeCapabilityEnabled,
+      requestPermission = { permission, required, sessionKey ->
+        val agentId = resolveAgentIdFromMainSessionKey(sessionKey)
+        val agentName = gatewayAgents.value.firstOrNull { it.id == agentId }?.name ?: agentId ?: nativeString("Your agent")
+        val guidance = (appContext as NodeApp).permissionRequester.requestOnFirstUse(permission, required, agentName)
+        currentCoroutineContext().ensureActive()
+        if (guidance != null) {
+          guidance
+        } else if (!nodeSession.isReady() || connectionManager.buildPermissions() != lastNodePermissions) {
+          refreshNodePermissionSurface()
+          "Permissions changed. Retry after the phone reconnects and any required Gateway approval completes."
+        } else {
+          null
+        }
+      },
     )
 
   private val connectionManager: ConnectionManager =
@@ -2116,7 +2130,7 @@ class NodeRuntime private constructor(
     }
   }
 
-  private val nodeSession =
+  private val nodeSession: GatewaySession =
     GatewaySession(
       scope = scope,
       identityStore = identityStore,
@@ -2160,7 +2174,7 @@ class NodeRuntime private constructor(
       },
       onEvent = ::handleNodeGatewayEvent,
       onInvoke = { req ->
-        invokeDispatcher.handleInvoke(req.command, req.paramsJson)
+        invokeDispatcher.handleInvoke(req.command, req.paramsJson, req.sessionKey)
       },
       onTlsFingerprint = { stableId, fingerprint ->
         prefs.saveGatewayTlsFingerprint(stableId, fingerprint)
@@ -3897,13 +3911,13 @@ class NodeRuntime private constructor(
   }
 
   fun setCameraEnabled(value: Boolean) {
-    if (prefs.cameraEnabled.value == value) return
+    if (prefs.cameraEnabled.value == value && !prefs.canRequestFeatureOnFirstUse(PhonePermission.Camera)) return
     prefs.setCameraEnabled(value)
     refreshAcceptedGatewayConnection()
   }
 
   fun setLocationMode(mode: LocationMode) {
-    if (prefs.locationMode.value == mode) return
+    if (prefs.locationMode.value == mode && !prefs.canRequestFeatureOnFirstUse(PhonePermission.Location)) return
     prefs.setLocationMode(mode)
     refreshAcceptedGatewayConnection()
   }

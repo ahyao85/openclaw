@@ -1,6 +1,5 @@
 package ai.openclaw.app.node
 
-import ai.openclaw.app.PermissionRequester
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -30,8 +29,6 @@ class SmsManager(
   private val context: Context,
 ) {
   private val json = JsonConfig
-
-  @Volatile private var permissionRequester: PermissionRequester? = null
 
   data class SendResult(
     val ok: Boolean,
@@ -595,10 +592,6 @@ class SmsManager(
 
   fun hasTelephonyFeature(): Boolean = context.packageManager?.hasSystemFeature(PackageManager.FEATURE_TELEPHONY) == true
 
-  fun attachPermissionRequester(requester: PermissionRequester) {
-    permissionRequester = requester
-  }
-
   /**
    * Send an SMS message.
    *
@@ -612,7 +605,7 @@ class SmsManager(
       )
     }
 
-    if (!ensureSmsPermission()) {
+    if (!hasSmsPermission()) {
       return errorResult(
         error = "SMS_PERMISSION_REQUIRED: grant SMS permission",
       )
@@ -677,7 +670,7 @@ class SmsManager(
         return@withContext queryError("SMS_UNAVAILABLE: telephony not available")
       }
 
-      if (!ensureReadSmsPermission()) {
+      if (!hasReadSmsPermission()) {
         return@withContext queryError("SMS_PERMISSION_REQUIRED: grant READ_SMS permission")
       }
 
@@ -711,7 +704,7 @@ class SmsManager(
           )
         val phoneNumbers =
           if (!normalizedParams.contactName.isNullOrEmpty()) {
-            if (contactsPermissionGranted || (shouldPromptForContactsPermission && ensureReadContactsPermission())) {
+            if (contactsPermissionGranted) {
               getPhoneNumbersFromContactName(normalizedParams.contactName)
             } else if (shouldPromptForContactsPermission) {
               return@withContext queryError("CONTACTS_PERMISSION_REQUIRED: grant READ_CONTACTS permission")
@@ -749,27 +742,6 @@ class SmsManager(
         queryError("SMS_QUERY_FAILED: ${e.message ?: "unknown error"}")
       }
     }
-
-  private suspend fun ensureSmsPermission(): Boolean {
-    if (hasSmsPermission()) return true
-    val requester = permissionRequester ?: return false
-    val results = requester.requestIfMissing(listOf(Manifest.permission.SEND_SMS))
-    return results[Manifest.permission.SEND_SMS] == true
-  }
-
-  private suspend fun ensureReadSmsPermission(): Boolean {
-    if (hasReadSmsPermission()) return true
-    val requester = permissionRequester ?: return false
-    val results = requester.requestIfMissing(listOf(Manifest.permission.READ_SMS))
-    return results[Manifest.permission.READ_SMS] == true
-  }
-
-  private suspend fun ensureReadContactsPermission(): Boolean {
-    if (hasReadContactsPermission()) return true
-    val requester = permissionRequester ?: return false
-    val results = requester.requestIfMissing(listOf(Manifest.permission.READ_CONTACTS))
-    return results[Manifest.permission.READ_CONTACTS] == true
-  }
 
   private fun okResult(
     to: String,
