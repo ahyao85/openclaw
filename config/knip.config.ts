@@ -135,6 +135,7 @@ const repositoryScriptEntries = [
   // update-restart-auth.sh installs this manager/launch adapter into the fixture bin directory.
   "scripts/e2e/lib/upgrade-survivor/systemd-fixture.mjs!",
   "scripts/e2e/lib/upgrade-survivor/taskflow-restoration.mjs!",
+  "scripts/e2e/lib/upgrade-survivor/update-report-recovery.mjs!",
   "scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs!",
   "scripts/e2e/lib/upgrade-survivor/mobile-pairing-client.mts!",
   "scripts/e2e/lib/upgrade-survivor/watchos-direct-node.mjs!",
