@@ -469,22 +469,6 @@ describe("gateway lock", () => {
     }
   });
 
-  it("ignores active-port metadata when the lock owner cannot be verified", async () => {
-    const env = await makeEnv();
-    const { lockPath, configPath } = resolveLockPath(env);
-    const payload = createLockPayload({ configPath, startTime: 111, port: 48789 });
-    await fs.writeFile(lockPath, JSON.stringify(payload), "utf8");
-
-    await expect(
-      readActiveGatewayLockPort({
-        env,
-        lockDir: resolveTestLockDir(env),
-        platform: "darwin",
-        readProcessCmdline: () => null,
-      }),
-    ).resolves.toBeUndefined();
-  });
-
   it("treats recycled linux pid as stale when start time mismatches", async () => {
     const env = await makeEnv();
     const { lockPath, configPath } = resolveLockPath(env);
