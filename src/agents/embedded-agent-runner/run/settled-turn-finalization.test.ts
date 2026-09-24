@@ -394,7 +394,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     });
   });
 
-  it("delivers the explanation of a recovered heartbeat while retaining its failure diagnostic", async () => {
+  it("keeps a recovered heartbeat quiet while retaining its explanation and failure diagnostic", async () => {
     const attempt = settledFailedAttempt();
     const recovery = buildEmbeddedRunnerAssistant({
       stopReason: "toolUse",
@@ -471,7 +471,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     expect(outcome).toMatchObject({
       kind: "failure",
       reason: "agent-tool-failure",
-      shouldSkipMain: false,
+      shouldSkipMain: true,
       normalized: { text: explanation },
     });
     expect(result.attempt.heartbeatToolResponse).toEqual(attempt.heartbeatToolResponse);
