@@ -1392,6 +1392,7 @@ private fun SettingsShellScreen(
   val gatewayConnectionDisplay by viewModel.gatewayConnectionDisplay.collectAsState()
   val isConnected = gatewayConnectionDisplay.isConnected
   val systemAgentChatState by viewModel.systemAgentChatState.collectAsState()
+  val operatorAdminScopeAvailable by viewModel.operatorAdminScopeAvailable.collectAsState()
   val models by viewModel.providerModelCatalog.collectAsState()
   val providers by viewModel.modelAuthProviders.collectAsState()
   val cameraEnabled by viewModel.cameraEnabled.collectAsState()
@@ -1477,23 +1478,11 @@ private fun SettingsShellScreen(
         }
       }
 
-      item {
-        ProfilePanel(displayName = displayName.ifBlank { "OpenClaw" }, onClick = { onRouteChange(SettingsRoute.Profile) })
-      }
-
       val settingsRows =
         listOf(
           SettingsRow(
-            SettingsRoute.Gateway,
-            verbatimText(gatewaySummary(gatewayConnectionDisplay)),
-            status = gatewayConnectionDisplay.isConnected,
-          ),
-          SettingsRow(SettingsRoute.NodesDevices, verbatimText(nodesDevicesSummaryText(nodesDevicesSummary)), status = nodesDevicesStatus(nodesDevicesSummary)),
-          SettingsRow(SettingsRoute.Channels, channelsState.summaryText(::channelsSummaryText), status = if (channelsState.errorText != null) false else channelsSummary?.let(::channelsStatus)),
-          SettingsRow(SettingsRoute.Agents, if (agents.isEmpty()) nativeText("Load from gateway") else nativeText("\${agents.size} available", agents.size), status = agents.isNotEmpty()),
-          SettingsRow(
             SettingsRoute.SystemAgent,
-            nativeText("Setup, status, and repair"),
+            nativeText("System setup and care"),
             status =
               when (systemAgentChatState.access) {
                 SystemAgentChatAccess.Ready -> true
@@ -1501,6 +1490,25 @@ private fun SettingsShellScreen(
                 else -> false
               },
           ),
+          SettingsRow(SettingsRoute.Profile, verbatimText(displayName.ifBlank { "OpenClaw" })),
+          SettingsRow(
+            SettingsRoute.Appearance,
+            joinedNativeText(
+              separator = " · ",
+              parts = listOf(verbatimText(appearanceThemeSummary(appearanceThemeMode)), verbatimText(appLanguage.displayName)),
+            ),
+          ),
+          SettingsRow(SettingsRoute.Notifications, if (notificationForwardingEnabled) nativeText("Smart delivery") else nativeText("Off")),
+          SettingsRow(SettingsRoute.PhoneCapabilities, if (cameraEnabled) nativeText("Camera enabled") else nativeText("Locked"), status = !cameraEnabled),
+          SettingsRow(
+            SettingsRoute.Gateway,
+            verbatimText(gatewaySummary(gatewayConnectionDisplay)),
+            status = gatewayConnectionDisplay.isConnected,
+          ),
+          SettingsRow(SettingsRoute.Channels, channelsState.summaryText(::channelsSummaryText), status = if (channelsState.errorText != null) false else channelsSummary?.let(::channelsStatus)),
+          SettingsRow(SettingsRoute.Voice, if (speakerEnabled) nativeText("Speaker on") else nativeText("Speaker muted")),
+          SettingsRow(SettingsRoute.NodesDevices, verbatimText(nodesDevicesSummaryText(nodesDevicesSummary)), status = nodesDevicesStatus(nodesDevicesSummary)),
+          SettingsRow(SettingsRoute.Agents, if (agents.isEmpty()) nativeText("Load from gateway") else nativeText("\${agents.size} available", agents.size), status = agents.isNotEmpty()),
           SettingsRow(
             SettingsRoute.ProvidersModels,
             when {
@@ -1516,10 +1524,8 @@ private fun SettingsShellScreen(
                 else -> false
               },
           ),
-          SettingsRow(SettingsRoute.Approvals, verbatimText(approvalsSummary(pendingApprovalsCount)), status = approvalsStatus(pendingApprovalsCount)),
-          SettingsRow(SettingsRoute.CronJobs, verbatimText(cronJobsSummary(cronStatus.jobs)), status = if (cronStatus.jobs > 0) cronStatus.enabled else null),
-          SettingsRow(SettingsRoute.Usage, usageState.summaryText { usageSummaryText(it.providers.size) }, status = if (usageState.errorText != null) false else true.takeIf { usageSummary?.providers?.isNotEmpty() == true }),
           SettingsRow(SettingsRoute.Skills, skillsState.summaryText { skillsSummaryText(it.skills) }, status = if (skillsState.errorText != null) false else skillsSummary?.skills?.let(::skillsStatus)),
+          SettingsRow(SettingsRoute.CronJobs, verbatimText(cronJobsSummary(cronStatus.jobs)), status = if (cronStatus.jobs > 0) cronStatus.enabled else null),
           SettingsRow(
             SettingsRoute.SkillWorkshop,
             verbatimText(skillWorkshopSummaryText(skillWorkshopSummary)),
@@ -1528,23 +1534,18 @@ private fun SettingsShellScreen(
           SettingsRow(SettingsRoute.Dreaming, dreamingState.summaryText(::dreamingSummaryText), status = if (dreamingState.errorText != null) false else dreamingSummary?.let(::dreamingStatus)),
           SettingsRow(SettingsRoute.Terminal, nativeText("Shell in the agent workspace"), status = isConnected),
           SettingsRow(SettingsRoute.Desktop, nativeText("View a machine screen"), status = isConnected),
-          SettingsRow(SettingsRoute.Voice, if (speakerEnabled) nativeText("Speaker on") else nativeText("Speaker muted")),
-          SettingsRow(SettingsRoute.Notifications, if (notificationForwardingEnabled) nativeText("Smart delivery") else nativeText("Off")),
-          SettingsRow(SettingsRoute.PhoneCapabilities, if (cameraEnabled) nativeText("Camera enabled") else nativeText("Locked"), status = !cameraEnabled),
-          SettingsRow(
-            SettingsRoute.Appearance,
-            joinedNativeText(
-              separator = " · ",
-              parts = listOf(verbatimText(appearanceThemeSummary(appearanceThemeMode)), verbatimText(appLanguage.displayName)),
-            ),
-          ),
-          SettingsRow(SettingsRoute.About, nativeText("Version and update")),
+          SettingsRow(SettingsRoute.Usage, usageState.summaryText { usageSummaryText(it.providers.size) }, status = if (usageState.errorText != null) false else true.takeIf { usageSummary?.providers?.isNotEmpty() == true }),
+          SettingsRow(SettingsRoute.Approvals, verbatimText(approvalsSummary(pendingApprovalsCount)), status = approvalsStatus(pendingApprovalsCount)),
           SettingsRow(SettingsRoute.Health, nativeText("Diagnostics"), status = isConnected),
-        ).filter { it.route.isAvailable(desktopObserveAvailable) }
+          SettingsRow(SettingsRoute.About, nativeText("Version and update")),
+          SettingsRow(SettingsRoute.Licenses, verbatimText("")),
+        ).filter { it.route.isAvailable(desktopObserveAvailable, operatorAdminScopeAvailable) }
 
       settingsSections(settingsRows).forEach { section ->
-        item {
-          SettingsSectionTitle(section.title)
+        section.title?.let { title ->
+          item {
+            SettingsSectionTitle(title)
+          }
         }
         item {
           SettingsGroup(rows = section.rows, onOpen = onRouteChange)
@@ -1564,16 +1565,6 @@ private fun SettingsShellScreen(
             onClick = viewModel::returnToGatewaySetup,
           )
         }
-      }
-
-      item {
-        SettingsSectionTitle(nativeText("Licenses"))
-      }
-      item {
-        SettingsGroup(
-          rows = listOf(SettingsRow(SettingsRoute.Licenses, verbatimText(""))),
-          onOpen = onRouteChange,
-        )
       }
 
       item {
@@ -1740,14 +1731,14 @@ internal data class SettingsRow(
 )
 
 internal data class SettingsSection(
-  val title: NativeText,
+  val title: NativeText?,
   val rows: List<SettingsRow>,
 )
 
 internal fun settingsSections(rows: List<SettingsRow>): List<SettingsSection> =
-  SettingsCategory.entries.mapNotNull { category ->
+  (listOf(null) + SettingsCategory.entries).mapNotNull { category ->
     val sectionRows = rows.filter { row -> row.route.category == category }
-    if (sectionRows.isEmpty()) null else SettingsSection(title = category.title, rows = sectionRows)
+    if (sectionRows.isEmpty()) null else SettingsSection(title = category?.title, rows = sectionRows)
   }
 
 @Composable
@@ -1758,51 +1749,6 @@ private fun SettingsSectionTitle(title: NativeText) {
     style = ClawTheme.type.caption,
     color = ClawTheme.colors.textMuted,
   )
-}
-
-@Composable
-private fun ProfilePanel(
-  displayName: String,
-  onClick: () -> Unit,
-) {
-  ClawPanel(contentPadding = PaddingValues(horizontal = ClawTheme.spacing.xs, vertical = ClawTheme.spacing.xxs)) {
-    Row(
-      modifier =
-        Modifier
-          .fillMaxWidth()
-          .clip(RoundedCornerShape(ClawTheme.radii.row))
-          .clickable(onClick = onClick),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs),
-    ) {
-      Surface(
-        modifier = Modifier.size(32.dp),
-        shape = CircleShape,
-        color = ClawTheme.colors.surfacePressed,
-        border = BorderStroke(1.dp, ClawTheme.colors.borderStrong),
-      ) {
-        Box(contentAlignment = Alignment.Center) {
-          Text(
-            text =
-              localizedInitial(displayName, currentAppLanguage().languageTag) ?: "O",
-            style = ClawTheme.type.label,
-            color = ClawTheme.colors.text,
-            textAlign = TextAlign.Center,
-          )
-        }
-      }
-      Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxxs)) {
-        Text(text = displayName, style = ClawTheme.type.section, color = ClawTheme.colors.text, maxLines = 1)
-        Text(text = nativeString("OpenClaw mobile"), style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted, maxLines = 1)
-      }
-      Icon(
-        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-        contentDescription = nativeString("Open profile"),
-        modifier = Modifier.size(15.dp),
-        tint = ClawTheme.colors.text,
-      )
-    }
-  }
 }
 
 @Composable

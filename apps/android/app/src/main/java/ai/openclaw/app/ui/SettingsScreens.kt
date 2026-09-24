@@ -733,7 +733,7 @@ private fun VoiceSettingsScreen(
     onDispose { observer.close() }
   }
 
-  SettingsDetailFrame(title = nativeString("Voice"), subtitle = nativeString("Configure wake words, talk, and playback."), icon = Icons.Default.Mic, onBack = onBack) {
+  SettingsDetailFrame(title = nativeString("Talk"), subtitle = nativeString("Configure wake words, talk, and playback."), icon = Icons.Default.Mic, onBack = onBack) {
     Column(verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs)) {
       Text(text = nativeString("Voice Wake"), style = ClawTheme.type.section, color = ClawTheme.colors.text)
       SettingsTogglePanel(
@@ -1495,7 +1495,7 @@ private fun PhoneCapabilitiesScreen(
     }
   }
 
-  SettingsDetailFrame(title = nativeString("Phone Capabilities"), subtitle = nativeString("Choose what this phone can share."), icon = Icons.AutoMirrored.Filled.ScreenShare, onBack = onBack) {
+  SettingsDetailFrame(title = nativeString("Permissions"), subtitle = nativeString("Choose what this phone can share."), icon = Icons.AutoMirrored.Filled.ScreenShare, onBack = onBack) {
     SettingsTogglePanel(
       rows =
         listOfNotNull(

@@ -812,13 +812,14 @@ class ShellScreenLogicTest {
 
     assertEquals(
       listOf(
-        "Connection" to listOf(SettingsRoute.Gateway, SettingsRoute.NodesDevices),
-        "Agents & automation" to listOf(SettingsRoute.SystemAgent, SettingsRoute.ProvidersModels, SettingsRoute.Approvals, SettingsRoute.CronJobs),
-        "Phone context & privacy" to listOf(SettingsRoute.Voice, SettingsRoute.PhoneCapabilities, SettingsRoute.Notifications),
-        "Profile & device" to listOf(SettingsRoute.Appearance),
-        "Diagnostics" to listOf(SettingsRoute.Health),
+        null to listOf(SettingsRoute.SystemAgent, SettingsRoute.Appearance, SettingsRoute.Notifications),
+        "This device" to listOf(SettingsRoute.PhoneCapabilities),
+        "Connections" to listOf(SettingsRoute.Voice, SettingsRoute.Gateway, SettingsRoute.NodesDevices),
+        "Agents & Tools" to listOf(SettingsRoute.ProvidersModels, SettingsRoute.CronJobs),
+        "Privacy & Security" to listOf(SettingsRoute.Approvals),
+        "System" to listOf(SettingsRoute.Health),
       ),
-      sections.map { section -> section.title.resolveNativeText() to section.rows.map { it.route } },
+      sections.map { section -> section.title?.resolveNativeText() to section.rows.map { it.route } },
     )
   }
 

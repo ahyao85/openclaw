@@ -22,11 +22,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 internal enum class SettingsCategory(
   val title: NativeText,
 ) {
-  Connection(nativeText("Connection")),
-  AgentsAutomation(nativeText("Agents & automation")),
-  PhonePrivacy(nativeText("Phone context & privacy")),
-  ProfileDevice(nativeText("Profile & device")),
-  Diagnostics(nativeText("Diagnostics")),
+  ThisDevice(nativeText("This device")),
+  Connections(nativeText("Connections")),
+  AgentsTools(nativeText("Agents & Tools")),
+  PrivacySecurity(nativeText("Privacy & Security")),
+  System(nativeText("System")),
 }
 
 internal enum class SettingsRoute(
@@ -35,29 +35,37 @@ internal enum class SettingsRoute(
   val category: SettingsCategory?,
 ) {
   Home(nativeText("Settings"), Icons.Outlined.Settings, null),
-  Profile(nativeText("Profile"), Icons.Default.Person, SettingsCategory.ProfileDevice),
-  Voice(nativeText("Voice"), Icons.Default.Mic, SettingsCategory.PhonePrivacy),
-  Agents(nativeText("Agents"), Icons.Default.Person, SettingsCategory.AgentsAutomation),
-  ProvidersModels(nativeText("Providers & Models"), Icons.Outlined.Inventory2, SettingsCategory.AgentsAutomation),
-  Approvals(nativeText("Approvals"), Icons.Default.Lock, SettingsCategory.AgentsAutomation),
-  CronJobs(nativeText("Automations"), Icons.Outlined.AccessTime, SettingsCategory.AgentsAutomation),
-  Usage(nativeText("Usage"), Icons.Default.Storage, SettingsCategory.AgentsAutomation),
-  Skills(nativeText("Skills"), Icons.Default.Settings, SettingsCategory.AgentsAutomation),
-  SkillWorkshop(nativeText("Skill Workshop"), Icons.Default.Settings, SettingsCategory.AgentsAutomation),
-  SystemAgent(nativeText("OpenClaw"), Icons.Default.Bolt, SettingsCategory.AgentsAutomation),
-  NodesDevices(nativeText("Nodes & Devices"), Icons.Default.Cloud, SettingsCategory.Connection),
-  Channels(nativeText("Channels"), Icons.Default.Notifications, SettingsCategory.Connection),
-  Dreaming(nativeText("Dreaming"), Icons.Default.Storage, SettingsCategory.AgentsAutomation),
-  Terminal(nativeText("Terminal"), Icons.Outlined.Terminal, SettingsCategory.AgentsAutomation),
-  Desktop(nativeText("Desktop"), Icons.Outlined.DesktopWindows, SettingsCategory.AgentsAutomation),
-  Notifications(nativeText("Notifications"), Icons.Default.Notifications, SettingsCategory.PhonePrivacy),
-  PhoneCapabilities(nativeText("Phone Capabilities"), Icons.Default.Lock, SettingsCategory.PhonePrivacy),
-  Gateway(nativeText("Gateway"), Icons.Default.Cloud, SettingsCategory.Connection),
-  Appearance(nativeText("Appearance"), Icons.Default.Palette, SettingsCategory.ProfileDevice),
-  Health(nativeText("Health"), Icons.Default.Settings, SettingsCategory.Diagnostics),
-  About(nativeText("About"), Icons.Default.Storage, SettingsCategory.ProfileDevice),
-  Licenses(nativeText("Licenses"), Icons.Default.Storage, SettingsCategory.ProfileDevice),
+  Profile(nativeText("Profile"), Icons.Default.Person, null),
+  Voice(nativeText("Talk"), Icons.Default.Mic, SettingsCategory.Connections),
+  Agents(nativeText("Agents"), Icons.Default.Person, SettingsCategory.AgentsTools),
+  ProvidersModels(nativeText("Models"), Icons.Outlined.Inventory2, SettingsCategory.AgentsTools),
+  Approvals(nativeText("Approvals"), Icons.Default.Lock, SettingsCategory.PrivacySecurity),
+  CronJobs(nativeText("Automations"), Icons.Outlined.AccessTime, SettingsCategory.AgentsTools),
+  Usage(nativeText("Usage"), Icons.Default.Storage, SettingsCategory.AgentsTools),
+  Skills(nativeText("Skills"), Icons.Default.Settings, SettingsCategory.AgentsTools),
+  SkillWorkshop(nativeText("Skill Workshop"), Icons.Default.Settings, SettingsCategory.AgentsTools),
+  SystemAgent(nativeText("OpenClaw"), Icons.Default.Bolt, null),
+  NodesDevices(nativeText("Devices"), Icons.Default.Cloud, SettingsCategory.Connections),
+  Channels(nativeText("Channels"), Icons.Default.Notifications, SettingsCategory.Connections),
+  Dreaming(nativeText("Dreaming"), Icons.Default.Storage, SettingsCategory.AgentsTools),
+  Terminal(nativeText("Terminal"), Icons.Outlined.Terminal, SettingsCategory.AgentsTools),
+  Desktop(nativeText("Desktop"), Icons.Outlined.DesktopWindows, SettingsCategory.AgentsTools),
+  Notifications(nativeText("Notifications"), Icons.Default.Notifications, null),
+  PhoneCapabilities(nativeText("Permissions"), Icons.Default.Lock, SettingsCategory.ThisDevice),
+  Gateway(nativeText("Gateway"), Icons.Default.Cloud, SettingsCategory.Connections),
+  Appearance(nativeText("Appearance"), Icons.Default.Palette, null),
+  Health(nativeText("Health"), Icons.Default.Settings, SettingsCategory.System),
+  About(nativeText("About"), Icons.Default.Storage, SettingsCategory.System),
+  Licenses(nativeText("Licenses"), Icons.Default.Storage, SettingsCategory.System),
   ;
 
-  fun isAvailable(desktopObserveAvailable: Boolean): Boolean = this != Desktop || desktopObserveAvailable
+  fun isAvailable(
+    desktopObserveAvailable: Boolean,
+    operatorAdminScopeAvailable: Boolean,
+  ): Boolean =
+    when (this) {
+      Desktop -> desktopObserveAvailable
+      SystemAgent -> operatorAdminScopeAvailable
+      else -> true
+    }
 }

@@ -132,17 +132,17 @@ class CommandPaletteLogicTest {
   fun settingsCommandsUseTypedDestinationsAndCategoriesWithoutDuplicatingProviders() {
     val providerAction = CommandAction.Settings(SettingsRoute.ProvidersModels)
     val providerSubtitle = "2 providers ready"
-    val quickActions = commandItems(query = "", desktopObserveAvailable = false, providerSubtitle = providerSubtitle)
+    val quickActions = commandItems(query = "", desktopObserveAvailable = false, operatorAdminScopeAvailable = false, providerSubtitle = providerSubtitle)
     assertEquals("Empty search must keep the compact quick-action menu", 5, quickActions.size)
     assertEquals(providerSubtitle, quickActions.single { it.action == providerAction }.subtitle.resolveNativeText())
 
-    val categoryMatches = commandItems(query = nativeString("Agents & automation"), desktopObserveAvailable = false, providerSubtitle = providerSubtitle)
+    val categoryMatches = commandItems(query = nativeString("Agents & Tools"), desktopObserveAvailable = false, operatorAdminScopeAvailable = false, providerSubtitle = providerSubtitle)
     assertTrue(categoryMatches.any { it.action == CommandAction.Settings(SettingsRoute.CronJobs) })
     assertEquals(providerSubtitle, categoryMatches.single { it.action == providerAction }.subtitle.resolveNativeText())
 
-    // These destinations are outside the main Settings row group but still own routes.
+    // Uncategorized personal settings and System destinations remain searchable.
     listOf(nativeString("Profile") to SettingsRoute.Profile, nativeString("Licenses") to SettingsRoute.Licenses).forEach { (query, route) ->
-      val matches = commandItems(query = query, desktopObserveAvailable = false, providerSubtitle = providerSubtitle)
+      val matches = commandItems(query = query, desktopObserveAvailable = false, operatorAdminScopeAvailable = false, providerSubtitle = providerSubtitle)
       assertEquals(query, matches.single { it.action == CommandAction.Settings(route) }.title.resolveNativeText())
     }
   }
@@ -150,12 +150,12 @@ class CommandPaletteLogicTest {
   @Test
   fun desktopCommandsRequireAvailabilityAndSearchDoesNotExposeSignOut() {
     val query = nativeString("Desktop")
-    assertTrue(commandItems(query = query, desktopObserveAvailable = false, providerSubtitle = "Ready").isEmpty())
+    assertTrue(commandItems(query = query, desktopObserveAvailable = false, operatorAdminScopeAvailable = false, providerSubtitle = "Ready").isEmpty())
     assertEquals(
       listOf(CommandAction.Settings(SettingsRoute.Desktop)),
-      commandItems(query = query, desktopObserveAvailable = true, providerSubtitle = "Ready").map { it.action },
+      commandItems(query = query, desktopObserveAvailable = true, operatorAdminScopeAvailable = false, providerSubtitle = "Ready").map { it.action },
     )
-    assertTrue(commandItems(query = nativeString("Sign Out"), desktopObserveAvailable = true, providerSubtitle = "Ready").isEmpty())
+    assertTrue(commandItems(query = nativeString("Sign Out"), desktopObserveAvailable = true, operatorAdminScopeAvailable = false, providerSubtitle = "Ready").isEmpty())
   }
 
   @Test
@@ -163,9 +163,9 @@ class CommandPaletteLogicTest {
   @Config(qualifiers = "fr-w320dp-h800dp-420dpi")
   fun settingsRowsKeepLocalizedTitlesAndStatusesReadable() {
     val fontScale = mutableStateOf(1f)
-    val title = nativeString("Providers & Models")
+    val title = nativeString("Models")
     val value = nativeString("Review readiness")
-    assertTrue(title.startsWith("Fournisseurs"))
+    assertEquals("Modèles", title)
     withShell(HomeDestination.Settings, Modifier.width(320.dp), { fontScale.value }) { backDispatcher, assertRuntimeUnchanged ->
       for (scale in listOf(1f, 2f)) {
         composeRule.runOnIdle { fontScale.value = scale }
@@ -218,7 +218,7 @@ class CommandPaletteLogicTest {
         "Talk or dictate with OpenClaw",
         "Browse Threads",
         "Find previous conversations",
-        "Providers & Models",
+        "Models",
         "Connect Gateway to view providers",
         "Settings",
         "Gateway, voice, notifications, privacy",

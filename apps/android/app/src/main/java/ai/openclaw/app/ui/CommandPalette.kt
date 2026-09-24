@@ -75,6 +75,7 @@ internal fun CommandPalette(
   val models by viewModel.providerModelCatalog.collectAsState()
   val providers by viewModel.modelAuthProviders.collectAsState()
   val desktopObserveAvailable by viewModel.desktopObserveAvailable.collectAsState()
+  val operatorAdminScopeAvailable by viewModel.operatorAdminScopeAvailable.collectAsState()
   var query by rememberSaveable { mutableStateOf("") }
   val searchFocusRequester = remember { FocusRequester() }
   val keyboardController = LocalSoftwareKeyboardController.current
@@ -87,6 +88,7 @@ internal fun CommandPalette(
     commandItems(
       query = normalizedQuery,
       desktopObserveAvailable = desktopObserveAvailable,
+      operatorAdminScopeAvailable = operatorAdminScopeAvailable,
       providerSubtitle = providerCommandSubtitle(isConnected, providers, models),
     )
   val sessionRows =
@@ -191,6 +193,7 @@ internal sealed interface CommandAction {
 internal fun commandItems(
   query: String,
   desktopObserveAvailable: Boolean,
+  operatorAdminScopeAvailable: Boolean,
   providerSubtitle: String,
 ): List<CommandItem> =
   buildList<CommandAction> {
@@ -201,7 +204,7 @@ internal fun commandItems(
     add(CommandAction.Settings(SettingsRoute.Home))
     if (query.isNotEmpty()) addAll(SettingsRoute.entries.map { CommandAction.Settings(it) })
   }.distinct()
-    .filter { it !is CommandAction.Settings || it.route.isAvailable(desktopObserveAvailable) }
+    .filter { it !is CommandAction.Settings || it.route.isAvailable(desktopObserveAvailable, operatorAdminScopeAvailable) }
     .map { action ->
       when (action) {
         CommandAction.Chat -> {
@@ -222,7 +225,8 @@ internal fun commandItems(
             when (route) {
               SettingsRoute.Home -> nativeText("Gateway, voice, notifications, privacy")
               SettingsRoute.ProvidersModels -> verbatimText(providerSubtitle)
-              else -> checkNotNull(route.category).title
+              SettingsRoute.SystemAgent -> nativeText("System setup and care")
+              else -> route.category?.title ?: SettingsRoute.Home.title
             }
           CommandItem(action, route.title, subtitle, route.icon)
         }

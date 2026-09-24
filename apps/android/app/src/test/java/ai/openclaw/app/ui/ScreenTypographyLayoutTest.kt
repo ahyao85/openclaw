@@ -17,6 +17,7 @@ import ai.openclaw.app.i18n.nativeString
 import ai.openclaw.app.ui.design.ClawDesignTheme
 import ai.openclaw.app.ui.design.ClawTheme
 import ai.openclaw.app.ui.design.ClawTypography
+import ai.openclaw.app.ui.design.assertCompleteText
 import android.content.Context
 import android.graphics.Bitmap
 import android.provider.Settings
@@ -353,7 +354,7 @@ class ScreenTypographyLayoutTest {
   fun providerPageKeepsHeadingHierarchyAndPhoneGutters() {
     show { ProvidersModelsScreen(model, onBack = {}) }
     capture("providers-dark")
-    assertTextStyle("Providers & Models", type.display)
+    assertTextStyle("Models", type.display)
     assertTextStyle("Review provider readiness\nand configured models.", type.caption)
     assertPhoneGutter()
     assertTextStyle("1 configured model", type.caption, scroll = true)
@@ -362,15 +363,15 @@ class ScreenTypographyLayoutTest {
 
   @Test
   @Config(qualifiers = "w320dp-h800dp-mdpi")
-  fun providerHeadingWrapsWithoutClippingAtLargeFontScale() {
+  fun providerHeadingRemainsReadableAtLargeFontScale() {
     show(fontScale = 2f) { ProvidersModelsScreen(model, onBack = {}) }
     capture("providers-large-dark")
-    val title = assertTextStyle("Providers & Models", type.display)
-    assertTrue("The large page title must wrap instead of shrinking or clipping", title.lineCount > 1)
-    assertFalse("The full page name must remain readable", title.hasVisualOverflow)
-    val titleBounds = composeRule.onNodeWithText("Providers & Models").getUnclippedBoundsInRoot()
+    assertTextStyle("Models", type.display)
+    // A short label can have a wider paragraph constraint than its measured glyph bounds.
+    composeRule.onNodeWithText("Models", useUnmergedTree = true).assertCompleteText("Models")
+    val titleBounds = composeRule.onNodeWithText("Models").getUnclippedBoundsInRoot()
     val subtitleBounds = composeRule.onNodeWithText("Review provider readiness\nand configured models.").getUnclippedBoundsInRoot()
-    assertTrue("The wrapped heading must not overlap its helper copy", titleBounds.bottom <= subtitleBounds.top)
+    assertTrue("The heading must not overlap its helper copy", titleBounds.bottom <= subtitleBounds.top)
   }
 
   @Test
@@ -404,7 +405,7 @@ class ScreenTypographyLayoutTest {
   fun providerPageRetainsHeadingHierarchyInLightMode() {
     show(dark = false) { ProvidersModelsScreen(model, onBack = {}) }
     capture("providers-light")
-    assertTextStyle("Providers & Models", type.display)
+    assertTextStyle("Models", type.display)
     assertPhoneGutter()
   }
 

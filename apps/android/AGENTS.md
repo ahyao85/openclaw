@@ -22,5 +22,5 @@ Root rules still apply. This file adds the Android release guardrails.
 - Do not add OpenClaw, OpenClaw Foundation, or other first-party/self-owned license entries. The screen is for third-party/open-source dependency acknowledgements.
 - When adding, removing, or upgrading Android dependencies, audit whether `apps/android/THIRD_PARTY_LICENSES/openclaw/licenses/` needs updates. Exclude dependencies owned by OpenClaw Foundation from the published license list.
 - Keep license detail bodies rendered as verbatim monospace text.
-- Keep the Settings `Licenses` section at the bottom of Settings, after `Account`, with a single `Licenses` row and no row subtitle unless product direction changes.
+- Keep the Settings `Licenses` row in `System`, after `About`, with no row subtitle. `Account` stays last.
 - When changing license loading or presentation, update `apps/android/app/src/test/java/ai/openclaw/app/AndroidLicenseNoticesTest.kt`, then run focused Android validation.

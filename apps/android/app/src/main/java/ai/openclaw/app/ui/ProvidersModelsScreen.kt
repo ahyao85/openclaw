@@ -94,7 +94,7 @@ internal fun ProvidersModelsScreen(
               ProviderHeaderIconButton(icon = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = nativeString("Back"), outlined = true, onClick = onBack)
             }
             Column(verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxxs)) {
-              Text(text = nativeString("Providers & Models"), style = ClawTheme.type.display, color = ClawTheme.colors.text)
+              Text(text = nativeString("Models"), style = ClawTheme.type.display, color = ClawTheme.colors.text)
               Text(
                 text = nativeString("Review provider readiness\nand configured models."),
                 style = ClawTheme.type.caption,

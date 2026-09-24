@@ -70,7 +70,7 @@ internal fun NodesDevicesSettingsScreen(
   }
 
   SettingsDetailFrame(
-    title = nativeString("Nodes & Devices"),
+    title = nativeString("Devices"),
     subtitle = nativeString("Live nodes, paired phones, and pending device requests."),
     icon = Icons.Default.Cloud,
     onBack = onBack,
