@@ -81,8 +81,7 @@ costs from the pinned `workflow_sha` checkout. Test discovery and execution stil
 use the candidate source, so current shard budgets do not replace release bytes.
 
 The npm/ClawHub release decision treats normal CI tests, plugin prerelease,
-Windows/macOS cross-OS, and QA lanes as advisory recorded evidence. Performance
-is advisory for beta validation and required for stable/full validation. Artifact,
+cross-OS, performance, and QA lanes as advisory recorded evidence. Artifact,
 install-smoke, survivor, all first-hop compatibility, pack/npm qualification,
 package-integrity, and target-resolution proofs remain required. Aggregators follow required inputs;
 identity and provenance verification still apply.

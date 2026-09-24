@@ -95,10 +95,10 @@ rejected before scheduling. Windows/macOS outcomes are recorded as advisory; the
 pairs are required proof.
 
 Selected QA, source and package Telegram, live-provider, Windows/macOS cross-OS,
-and beta-profile performance failures are recorded as advisory during validation
-(Release Decision `- Advisory:` entries and `::warning` annotations). Stable/full
-performance, Linux Gateway cross-OS lanes, and the other required proofs block.
-Publishing a stable with a recorded advisory failure, or without soak and blocking performance evidence,
+and performance failures are recorded as advisory during validation (Release
+Decision `- Advisory:` entries and `::warning` annotations); Linux Gateway
+cross-OS lanes and the other required proofs block. Publishing a stable with a
+recorded advisory failure, or without soak and blocking performance evidence,
 requires the operator waivers described in RELEASING.md "Publication modes";
 without them the publisher gates fail closed. Skipped or deferred attempts are
 never reported as passed. When

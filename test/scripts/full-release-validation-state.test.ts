@@ -726,7 +726,7 @@ describe("full release execution plan", () => {
   });
 
   it.each(["2026.8.28", "2026.8.28-1"])(
-    "retains the stable child inventory and blocking performance for npm %s",
+    "retains the stable child inventory and advisory performance for npm %s",
     (targetVersion) => {
       const input = {
         ...stableCoverage,
@@ -756,10 +756,8 @@ describe("full release execution plan", () => {
         releaseProfile: "stable",
         workflowRef: "release-ci/tooling",
       });
-      expect(decision.state).toBe("blocked_complete");
-      expect(decision.blockers).toEqual([
-        expect.objectContaining({ child: "productPerformance", job: "benchmark" }),
-      ]);
+      expect(decision.state).toBe("passed");
+      expect(decision.blockers).toHaveLength(0);
       const artifact = coveragePlan({ ...stableCoverage, targetVersion });
       expect(validateReleaseExecutionPlanArtifact(artifact)).toMatchObject({
         coveragePolicy: "npm-stable-v1",
@@ -1593,71 +1591,33 @@ describe("release decision policy", () => {
     });
   });
 
-  it.each(["beta", "stable", "full"])(
-    "applies %s performance policy while QA stays advisory",
-    (releaseProfile) => {
-      const result = classifyReleaseSnapshot({
-        children: [
-          child("releaseChecks", {
-            conclusion: "failure",
-            jobs: [
-              {
-                conclusion: "failure",
-                name: "Run QA Lab runtime-pair lane (core)",
-                status: "completed",
-              },
-              { conclusion: "success", name: "Verify release checks", status: "completed" },
-            ],
-            status: "completed",
-          }),
-          child("productPerformance", {
-            conclusion: "failure",
-            jobs: [{ conclusion: "failure", name: "benchmark", status: "completed" }],
-            runId: "202",
-            status: "completed",
-          }),
-        ],
-        releaseProfile,
-        workflowRef: "main",
-      });
-      expect(result).toMatchObject({
-        blockers:
-          releaseProfile === "beta"
-            ? []
-            : [expect.objectContaining({ child: "productPerformance", job: "benchmark" })],
-        errors: [],
-        state: releaseProfile === "beta" ? "passed" : "blocked_complete",
-      });
-      for (const conclusion of ["failure", "cancelled", "timed_out"]) {
-        const withoutFailedJobs = child("productPerformance", {
-          conclusion,
-          jobs: [{ conclusion: "success", name: "artifact-only guard", status: "completed" }],
+  it("keeps advisory QA and beta performance failures non-blocking", () => {
+    const result = classifyReleaseSnapshot({
+      children: [
+        child("releaseChecks", {
+          conclusion: "failure",
+          jobs: [
+            {
+              conclusion: "failure",
+              name: "Run QA Lab runtime-pair lane (core)",
+              status: "completed",
+            },
+            { conclusion: "success", name: "Verify release checks", status: "completed" },
+          ],
           status: "completed",
-        });
-        expect(terminalPolicyPass(withoutFailedJobs, releaseProfile, "main")).toBe(
-          releaseProfile === "beta",
-        );
-        expect(
-          classifyReleaseSnapshot({
-            children: [withoutFailedJobs],
-            releaseProfile,
-            workflowRef: "main",
-          }),
-        ).toMatchObject({
-          blockers:
-            releaseProfile === "beta"
-              ? []
-              : [
-                  expect.objectContaining({
-                    child: "productPerformance",
-                    kind: "workflow_failure",
-                  }),
-                ],
-          state: releaseProfile === "beta" ? "passed" : "blocked_complete",
-        });
-      }
-    },
-  );
+        }),
+        child("productPerformance", {
+          conclusion: "failure",
+          jobs: [{ conclusion: "failure", name: "benchmark", status: "completed" }],
+          runId: "202",
+          status: "completed",
+        }),
+      ],
+      releaseProfile: "beta",
+      workflowRef: "main",
+    });
+    expect(result).toMatchObject({ blockers: [], errors: [], state: "passed" });
+  });
 
   it.each(["beta", "stable", "full"])(
     "keeps Telegram execution failures advisory for %s releases",
@@ -4591,7 +4551,7 @@ describe("operator lane waiver", () => {
     ).toEqual([]);
   });
 
-  it("admits non-proof lanes while retaining profile-bound performance requirements", () => {
+  it("admits non-proof lane failures without an operator waiver", () => {
     const children = [
       failedCi(),
       releaseChecks([
@@ -4614,12 +4574,9 @@ describe("operator lane waiver", () => {
     ];
     for (const releaseProfile of ["beta", "stable", "full"]) {
       expect(classifyReleaseSnapshot({ children, ...policy, releaseProfile })).toMatchObject({
-        blockers:
-          releaseProfile === "beta"
-            ? []
-            : [expect.objectContaining({ child: "productPerformance", job: "confidence tests" })],
+        blockers: [],
         errors: [],
-        state: releaseProfile === "beta" ? "passed" : "blocked_complete",
+        state: "passed",
       });
     }
     expect(releaseWaivedJobs(children, { ...policy, laneWaiver: "ship" })).toEqual([]);

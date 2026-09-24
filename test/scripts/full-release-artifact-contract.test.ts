@@ -369,7 +369,7 @@ function registryBudgetFixture(warningCount = 0, validationInputs: Record<string
 describe("retained publication admission", () => {
   const directories = useAutoCleanupTempDirTracker(afterEach);
 
-  it.each(["beta", "stable"])(
+  it.each(["beta", "stable", "full"])(
     "writes fresh %s performance and Telegram evidence through the actual workflow command",
     async (releaseProfile) => {
       const telegram = {

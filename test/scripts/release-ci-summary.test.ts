@@ -1910,14 +1910,10 @@ function trustedMainFullFixture() {
   return { ...fixture, client, manifest, runs };
 }
 
-function trustedMainNpmFixture(
-  releaseProfile: "beta" | "stable" = "beta",
-  coverage: "npm" | "full" = "npm",
-) {
+function trustedMainNpmFixture(releaseProfile: "beta" | "stable" = "beta") {
   const fixture = trustedMainFullFixture();
   const beta = releaseProfile === "beta";
-  const reducedBeta = beta && coverage === "npm";
-  const coveragePolicy = coverage === "full" ? undefined : beta ? "npm-beta-v1" : "npm-stable-v1";
+  const coveragePolicy = beta ? "npm-beta-v1" : "npm-stable-v1";
   const targetVersion = beta ? "2026.8.28-beta.1" : "2026.8.28";
   Object.assign(fixture.manifest, { releaseProfile, runReleaseSoak: String(!beta) });
   Object.assign(fixture.manifest.validationInputs, {
@@ -1928,23 +1924,13 @@ function trustedMainNpmFixture(
   });
   fixture.manifest.controls.performanceBlocking = !beta;
   fixture.manifest.controls.stableSoakRequired = !beta;
-  fixture.manifest.childRuns.productPerformance = {
-    blocking: !beta,
-    conclusion: reducedBeta ? "" : "success",
-    runId: reducedBeta
-      ? ""
-      : String(
-          expectDefined(
-            fixture.runs.find((run) => run.path === ".github/workflows/openclaw-performance.yml"),
-            "performance child",
-          ).id,
-        ),
-  };
+  if (beta) {
+    fixture.manifest.childRuns.productPerformance = { blocking: false, conclusion: "", runId: "" };
+  }
   const plannedChildren = expectedChildDispatches(fixture.runId, 1, "main", 3).map((child) => {
     const run = fixture.runs.find((entry) => entry.display_title === child.displayTitle);
     const selected =
-      child.manifestKey !== "npmTelegram" &&
-      !(reducedBeta && child.manifestKey === "productPerformance");
+      child.manifestKey !== "npmTelegram" && !(beta && child.manifestKey === "productPerformance");
     return {
       displayTitle: child.displayTitle,
       key: child.manifestKey,
@@ -2029,8 +2015,7 @@ function trustedMainNpmFixture(
   const client = {
     ...fixture.client,
     getJobLog: vi.fn(
-      (jobId: number) =>
-        `${originalLog(jobId)}\nCI_RELEASE_SCOPE: ${coverage === "full" ? "full" : `npm-${releaseProfile}`}`,
+      (jobId: number) => `${originalLog(jobId)}\nCI_RELEASE_SCOPE: npm-${releaseProfile}`,
     ),
     getRunAttemptJobs: vi.fn((runId: string) =>
       jobsForChild(
@@ -3003,7 +2988,7 @@ describe("release CI summary child correlation", () => {
     ).rejects.toThrow(message);
   });
 
-  it("requires successful product performance in sealed npm stable evidence", async () => {
+  it("retains advisory product performance in sealed npm stable evidence", async () => {
     const fixture = trustedMainNpmFixture("stable");
     const options = {
       runId: fixture.runId,
@@ -3026,18 +3011,17 @@ describe("release CI summary child correlation", () => {
       "performance child",
     );
     performance.conclusion = "failure";
-    await expect(validateReleaseRunEvidence(options, fixture.client)).rejects.toThrow(
-      "manifest child run does not pass release policy: OpenClaw Performance",
-    );
+    await expect(validateReleaseRunEvidence(options, fixture.client)).resolves.toMatchObject({
+      children: expect.arrayContaining([
+        expect.objectContaining({ role: "productPerformance", conclusion: "failure" }),
+      ]),
+    });
   });
 
   it.each(["carried-guard", "newer-guard-failure", "earlier-publisher"])(
     "verifies effective artifact-only performance evidence after a targeted retry: %s",
     async (scenario) => {
-      const fixture =
-        scenario === "newer-guard-failure"
-          ? trustedMainNpmFixture("beta", "full")
-          : trustedMainNpmFixture("stable");
+      const fixture = trustedMainNpmFixture("stable");
       const performance = expectDefined(
         fixture.runs.find((run) => run.path === ".github/workflows/openclaw-performance.yml"),
         "performance child",
@@ -3107,7 +3091,7 @@ describe("release CI summary child correlation", () => {
           }),
         );
       } else {
-        // Artifact-only guards stay mandatory when beta performance is advisory.
+        // Performance lanes are advisory; the artifact-only guard still fails closed.
         await expect(result).rejects.toThrow(
           scenario === "newer-guard-failure"
             ? "performance artifact-only guard is missing or unsuccessful"
@@ -3117,31 +3101,45 @@ describe("release CI summary child correlation", () => {
     },
   );
 
-  it.each(["context", "soak-control", "soak", "missing-plan"])(
-    "rejects incomplete npm stable qualification: %s",
-    async (drift) => {
-      const fixture = trustedMainNpmFixture("stable");
-      if (drift === "context") {
-        fixture.manifest.validationInputs.targetContextRef = "";
-      } else if (drift === "soak-control") {
-        fixture.manifest.controls.stableSoakRequired = false;
-      } else if (drift === "soak") {
-        fixture.manifest.runReleaseSoak = "false";
-      } else {
-        fixture.client.loadExecutionPlan.mockReturnValue(undefined);
-      }
-      await expect(
-        validateReleaseRunEvidence(
-          {
-            runId: fixture.runId,
-            verifierSourceContent: readFileSync(SCRIPT),
-            verifierSourceSha: "c".repeat(40),
-          },
-          fixture.client,
-        ),
-      ).rejects.toThrow();
-    },
-  );
+  it.each([
+    "context",
+    "soak-control",
+    "soak",
+    "missing-plan",
+    "performance-run",
+    "performance-composite",
+  ])("rejects incomplete npm stable qualification: %s", async (drift) => {
+    const fixture = trustedMainNpmFixture("stable");
+    if (drift === "context") {
+      fixture.manifest.validationInputs.targetContextRef = "";
+    } else if (drift === "soak-control") {
+      fixture.manifest.controls.stableSoakRequired = false;
+    } else if (drift === "soak") {
+      fixture.manifest.runReleaseSoak = "false";
+    } else if (drift === "missing-plan") {
+      fixture.client.loadExecutionPlan.mockReturnValue(undefined);
+    } else if (drift === "performance-run") {
+      delete fixture.manifest.childRuns.productPerformance;
+    } else {
+      delete fixture.manifest.childEvidence.productPerformance;
+    }
+    await expect(
+      validateReleaseRunEvidence(
+        {
+          runId: fixture.runId,
+          verifierSourceContent: readFileSync(SCRIPT),
+          verifierSourceSha: "c".repeat(40),
+        },
+        fixture.client,
+      ),
+    ).rejects.toThrow(
+      drift === "performance-run"
+        ? "execution plan and manifest child identity differ: OpenClaw Performance"
+        : drift === "performance-composite"
+          ? "release validation manifest composite child set is invalid"
+          : undefined,
+    );
+  });
 
   it.each([
     "missing-plan",
