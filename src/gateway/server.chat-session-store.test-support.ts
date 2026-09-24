@@ -17,17 +17,17 @@ function createPersistentChatSessionStore() {
   const directories = createTempDirTracker();
   let directory: string;
   return {
-    prepare() {
+    prepare(this: void) {
       directory = directories.make("openclaw-chat-persistent-");
     },
-    directory() {
+    directory(this: void) {
       return directory;
     },
-    async reset() {
+    async reset(this: void) {
       await resetPersistentGatewaySessionStore(directory);
       testState.sessionStorePath = undefined;
     },
-    async dispose() {
+    async dispose(this: void) {
       await releaseSessionTestDirectories(directories.dirs);
       directories.cleanup();
     },
@@ -42,7 +42,7 @@ export function createDirectChatSessionStoreFixture(
   return {
     prepare: persistentStore.prepare,
     dispose: persistentStore.dispose,
-    open(options?: ChatSessionDirectoryOptions) {
+    open(this: void, options?: ChatSessionDirectoryOptions) {
       // Filesystem and alternate-owner cases retain their own physical store.
       const sessionDir = options?.fresh
         ? freshDirectories.make("openclaw-gw-")
@@ -52,7 +52,7 @@ export function createDirectChatSessionStoreFixture(
       testState.sessionStorePath = storePath;
       return { sessionDir, storePath };
     },
-    async reset() {
+    async reset(this: void) {
       if (persistentUsed) {
         await persistentStore.reset();
         persistentUsed = false;
@@ -68,6 +68,7 @@ export function createMainChatSessionStoreFixture(settleGatewayFixture: () => Pr
     prepare: persistentStore.prepare,
     dispose: persistentStore.dispose,
     async run<T>(
+      this: void,
       run: (dir: string) => Promise<T>,
       options?: { archivedAt?: number; sessionId?: string; freshStore?: boolean },
     ): Promise<T> {

@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "vitest
 import { WebSocket } from "ws";
 import type { ConnectParams } from "../../packages/gateway-protocol/src/index.js";
 import {
-  listDevicePairing,
+  listDevicePairing as listFixtureDevicePairing,
   rejectDevicePairing,
   removePairedDevice,
 } from "../infra/device-pairing.js";
@@ -54,7 +54,7 @@ export function registerControlUiMobileBootstrapSuite(): void {
     testState.gatewayAuth = { mode: "token", token: "secret" };
     process.env.OPENCLAW_GATEWAY_TOKEN = "secret";
     // Preserve fresh pairing state while the real Gateway and its workers stay prepared.
-    const pairing = await listDevicePairing();
+    const pairing = await listFixtureDevicePairing();
     for (const pending of pairing.pending) {
       await rejectDevicePairing(pending.requestId);
     }
