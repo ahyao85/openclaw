@@ -54,30 +54,33 @@ export async function importLegacySessionRecords(
     return;
   }
   try {
-    const assertRestoredIndexCurrent = prepareRestoredSessionIndex({
-      target,
-      env,
-      expectedIndexIdentity,
-      recoveryInventory,
-    });
+    const requireEmptyStore = Boolean(
+      recoveryInventory?.report.artifacts.some((artifact) =>
+        ["unreadable-manifest", "manifest-directory-alias"].includes(artifact.reason),
+      ),
+    );
+    const assertRestoredIndexCurrent = requireEmptyStore
+      ? undefined
+      : prepareRestoredSessionIndex({ target, env, expectedIndexIdentity, recoveryInventory });
+    // The exceptional empty-store admission and every row must share one transaction.
+    const batchSize = requireEmptyStore ? records.length : SESSION_IMPORT_BATCH_SIZE;
     const importedTranscriptSources = new Set<string>();
     const existingSnapshot = readOnlySqliteValidationSnapshot(target);
-    for (let offset = 0; offset < records.length; offset += SESSION_IMPORT_BATCH_SIZE) {
-      const pending = records
-        .slice(offset, offset + SESSION_IMPORT_BATCH_SIZE)
-        .flatMap((record) => {
-          const prepared = prepareLegacySessionImport(
-            target,
-            record,
-            report,
-            importedTranscriptSources,
-            existingSnapshot.ok ? existingSnapshot.snapshot : undefined,
-          );
-          return prepared ? [{ ...prepared, params: { ...prepared.params, env }, record }] : [];
-        });
+    for (let offset = 0; offset < records.length; offset += batchSize) {
+      const pending = records.slice(offset, offset + batchSize).flatMap((record) => {
+        const prepared = prepareLegacySessionImport(
+          target,
+          record,
+          report,
+          importedTranscriptSources,
+          existingSnapshot.ok ? existingSnapshot.snapshot : undefined,
+        );
+        return prepared ? [{ ...prepared, params: { ...prepared.params, env }, record }] : [];
+      });
       const imported = await importSqliteSessionRowsBatch(
         pending.map((entry, index) => ({
           ...entry.params,
+          requireEmptyStore,
           historicalOnly: entry.params.historicalOnly || Boolean(assertRestoredIndexCurrent),
           ...(index === 0 && assertRestoredIndexCurrent
             ? { beforePersistentApply: assertRestoredIndexCurrent }
@@ -127,13 +130,6 @@ function prepareRestoredSessionIndex(params: {
   recoveryInventory?: ReturnType<typeof collectRecoveryInventory>;
 }): (() => void) | undefined {
   const { expectedIndexIdentity, recoveryInventory, target } = params;
-  if (
-    recoveryInventory?.report.artifacts.some((artifact) =>
-      ["unreadable-manifest", "manifest-directory-alias"].includes(artifact.reason),
-    )
-  ) {
-    throw new Error("Session recovery history cannot be verified; retained without importing");
-  }
   if (!expectedIndexIdentity || !recoveryInventory) {
     return undefined;
   }

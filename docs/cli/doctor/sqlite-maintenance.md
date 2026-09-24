@@ -376,8 +376,11 @@ restore fail closed so restore cannot silently replace or hide recoverable data.
 Reimporting an unchanged, manifest-recorded restored index preserves current SQLite
 session metadata while reconciling its transcript history. It does not reset newer
 labels, activity timestamps, or the current session pointer to the restored values.
-A changed or unreadable restore receipt refuses import without replacing that state;
-a newly created index with a different file identity remains an ordinary import.
+A changed restore receipt refuses import without replacing that state. Unreadable
+recovery history permits an import only when the destination has no session rows;
+Doctor verifies that condition and imports the target in one transaction. This can
+use a larger transaction than normal batched imports. A newly created index with a
+different file identity remains an ordinary import when recovery history is readable.
 Keep recovery manifests with their original files so Doctor can distinguish the two.
 
 After verifying the migration and current history, use

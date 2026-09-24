@@ -23,6 +23,7 @@ import { retireSessionSqliteRecovery } from "./doctor-session-sqlite-retirement.
 import { runDoctorSessionSqlite } from "./doctor-session-sqlite.js";
 import {
   importLegacyStore,
+  RECOVERY_TRANSCRIPT_LINES,
   readMigrationManifest,
   requireMigrationManifestPath,
   trustedMigrationTarget,
@@ -434,6 +435,40 @@ describe("runDoctorSessionSqlite", () => {
       }
     },
   );
+
+  it("imports more than one normal batch into fresh state despite unrelated unreadable history", async () => {
+    const store = createLegacyStore({ transcriptLines: RECOVERY_TRANSCRIPT_LINES });
+    const index = JSON.parse(fs.readFileSync(store.storePath, "utf8"));
+    for (let number = 1; number <= 256; number++) {
+      const sessionId = `fresh-${number}`;
+      index[`agent:main:${sessionId}`] = {
+        sessionId,
+        sessionFile: `${sessionId}.jsonl`,
+        updatedAt: number,
+        label: `Fresh ${number}`,
+      };
+      fs.writeFileSync(
+        path.join(store.sessionDir, `${sessionId}.jsonl`),
+        `${JSON.stringify({ type: "session", id: sessionId, version: 3 })}\n`,
+      );
+    }
+    fs.writeFileSync(store.storePath, JSON.stringify(index));
+    const runs = path.join(store.stateDir, "session-sqlite-migration-runs");
+    fs.mkdirSync(runs, { recursive: true });
+    fs.writeFileSync(path.join(runs, "unrelated-agent.json"), "{");
+
+    const imported = await importLegacyStore(store);
+    expect(imported.totals.importedEntries).toBe(257);
+    expect(imported.targets[0]?.sqliteEntries).toBe(257);
+    expect(
+      loadSessionEntry({
+        agentId: "main",
+        env: store.env,
+        storePath: store.storePath,
+        sessionKey: "agent:main:fresh-256",
+      }),
+    ).toMatchObject({ label: "Fresh 256", sessionId: "fresh-256" });
+  });
 
   it("imports a fresh index inode normally despite a previous restore receipt", async () => {
     const { store } = await createVerifiedRecoveryStore();
