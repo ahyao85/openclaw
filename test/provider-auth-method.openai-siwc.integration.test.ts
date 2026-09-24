@@ -66,6 +66,13 @@ it("releases the SIWC callback port when OAuth expires before the wizard note is
     expect(timeoutSignal).toHaveBeenCalledWith(5 * 60_000);
     // Expire OAuth while the longer-lived wizard still awaits acknowledgement.
     timeout.abort(new DOMException("Sign-in timed out", "TimeoutError"));
+    // Retry only after the expired runner has released its callback listener.
+    await session.whenSettled();
+    expect(await session.next()).toMatchObject({
+      done: true,
+      status: "error",
+      error: "Login cancelled",
+    });
 
     retry = start();
     // SIWC publishes this note only after its callback listener has bound successfully.
@@ -78,12 +85,6 @@ it("releases the SIWC callback port when OAuth expires before the wizard note is
     });
     expect(loopback.port).toBeGreaterThan(0);
     expect(loopback.boundPorts).toEqual([loopback.port, loopback.port]);
-    await session.whenSettled();
-    expect(await session.next()).toMatchObject({
-      done: true,
-      status: "error",
-      error: "Login cancelled",
-    });
     expect(guardedFetch).not.toHaveBeenCalled();
   } finally {
     session.cancel();
