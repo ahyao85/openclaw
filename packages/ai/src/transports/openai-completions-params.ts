@@ -107,8 +107,8 @@ const MIN_USEFUL_OUTPUT_TOKENS = 16;
 // Used only to bound `max_completion_tokens` below the effective context cap
 // for strict OpenAI-compatible servers (e.g. vLLM, StepFun). The CJK-aware
 // helper avoids undercounting non-Latin prompts enough to trigger server-side
-// context rejections; wrong-high here just trims output a little. Estimate the
-// final shaped payload, not the raw context, so compat transforms and dropped
+// context rejections; exhausted estimates enter the existing overflow recovery.
+// Estimate the final shaped payload, not the raw context, so compat transforms and dropped
 // replay turns are reflected in the output cap.
 function estimateOpenAICompletionsInputTokens(payload: {
   messages?: unknown;
@@ -501,7 +501,7 @@ export function buildOpenAICompletionsRequest(
       effectiveContextTokens !== undefined
     ) {
       const estimatedInputTokens = estimateOpenAICompletionsInputTokens(params);
-      const remainingBudget = Math.max(1, effectiveContextTokens - estimatedInputTokens - 1);
+      const remainingBudget = effectiveContextTokens - estimatedInputTokens - 1;
       if (clampedMaxTokens > remainingBudget) {
         clampedMaxTokens = remainingBudget;
         emitModelTransportDebug(
@@ -511,10 +511,12 @@ export function buildOpenAICompletionsRequest(
             `effectiveContext=${effectiveContextTokens} estimatedInput=${estimatedInputTokens}`,
         );
         if (remainingBudget < MIN_USEFUL_OUTPUT_TOKENS) {
-          log.warn(
-            `[completions] insufficient_output_budget provider=${model.provider} api=${model.api} ` +
-              `model=${model.id} output=${clampedMaxTokens} ` +
-              `effectiveContext=${effectiveContextTokens} estimatedInput=${estimatedInputTokens}`,
+          throw Object.assign(
+            new Error(
+              `Context window exceeded: estimated input ${estimatedInputTokens} leaves only ` +
+                `${remainingBudget} output tokens within the ${effectiveContextTokens}-token context.`,
+            ),
+            { code: "context_length_exceeded" },
           );
         }
       }

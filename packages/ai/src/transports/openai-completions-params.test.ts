@@ -261,6 +261,35 @@ describe("openai completions params", () => {
     expect(params.max_completion_tokens).toBe(4_096 - 2 - 1);
   });
 
+  it.each([0, 1, 15])("rejects a proxy request with only %i output tokens left", (remaining) => {
+    const model = makeCompletionsModel({
+      baseUrl: "http://localhost:8000/v1",
+      contextWindow: 1000,
+      maxTokens: 1000,
+    });
+    // 3,200 ASCII characters estimate to 1,000 input tokens.
+    expect(() =>
+      buildOpenAICompletionsParams(
+        { ...model, contextTokens: 1001 + remaining },
+        emptyContext("x".repeat(3200)),
+        undefined,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "context_length_exceeded" }));
+  });
+
+  it("preserves useful clamping and intentionally short completions", () => {
+    const model = makeCompletionsModel({
+      baseUrl: "http://localhost:8000/v1",
+      contextWindow: 1017,
+      maxTokens: 1000,
+    });
+    const context = emptyContext("x".repeat(3200));
+    expect(buildOpenAICompletionsParams(model, context, undefined).max_completion_tokens).toBe(16);
+    expect(
+      buildOpenAICompletionsParams(model, context, { maxTokens: 1 }).max_completion_tokens,
+    ).toBe(1);
+  });
+
   it("clamps max_completion_tokens for proxy-like endpoints when configured maxTokens >= contextWindow and prompt is small", () => {
     // Misconfig case: tiny prompt, but configured maxTokens still exceeds the
     // model's contextWindow. Clamp should land just under the window.
