@@ -69,25 +69,33 @@ it("renews a selected video's ticket without interrupting playback and releases 
       url: source + "?mediaTicket=B",
       expiresAt: new Date(Date.now() + 300_000).toISOString(),
     });
-  const item = await open(
-    {
-      type: "attachment",
-      attachment: {
-        kind: "video",
-        url: source,
-        artifactId: "synthetic-video",
-        label: "Clip",
-        mimeType: "video/mp4",
-      },
+  const first: AttachmentItem = {
+    type: "attachment",
+    attachment: { kind: "video", url: "https://example.com/first.mp4", label: "First" },
+  };
+  const next: AttachmentItem = {
+    type: "attachment",
+    attachment: {
+      kind: "video",
+      url: source,
+      artifactId: "synthetic-video",
+      label: "Clip",
+      mimeType: "video/mp4",
     },
-    resolve,
-  );
-  const media = document.createElement("video");
-  const notify = vi.fn();
-  disconnect = item.connectVideo!(media, notify);
+  };
+  const opened = await open(first, resolve, [first, next]);
+  const item = await opened.gallery!.items[1]!();
+  const media = container!.appendChild(document.createElement("video"));
+  let paused = false;
+  const play = vi.spyOn(media, "play").mockImplementation(async () => {
+    paused = false;
+  });
+  const timersBeforeConnection = vi.getTimerCount();
+  disconnect = item!.connectVideo!(media, vi.fn());
+  await vi.advanceTimersByTimeAsync(0);
   expect(media.src).toContain("mediaTicket=A");
   Object.defineProperties(media, {
-    paused: { configurable: true, value: false },
+    paused: { configurable: true, get: () => paused },
     currentTime: { configurable: true, writable: true, value: 8 },
   });
   await vi.advanceTimersByTimeAsync(1000);
@@ -95,12 +103,20 @@ it("renews a selected video's ticket without interrupting playback and releases 
   expect(media.src).toContain("mediaTicket=A");
   media.dispatchEvent(new Event("seeking"));
   expect(media.src).toContain("mediaTicket=B");
+  // A native source swap resets the position and pauses until metadata arrives.
+  media.currentTime = 0;
+  paused = true;
+  media.dispatchEvent(new Event("loadedmetadata"));
+  expect(media.currentTime).toBe(8);
+  expect(play).toHaveBeenCalledOnce();
+  expect(paused).toBe(false);
   disconnect();
   disconnect = undefined;
   expect(media.hasAttribute("src")).toBe(false);
   expect(pause).toHaveBeenCalled();
-  releaseChatMediaResourceSubscriber(update);
-  update = undefined;
+  // This neighbor has no inline subscriber. The transcript owner remains alive;
+  // only the selected connection can release its pending refresh timer here.
+  expect(vi.getTimerCount()).toBe(timersBeforeConnection);
   await vi.advanceTimersByTimeAsync(300_000);
   expect(resolve).toHaveBeenCalledTimes(2);
 });

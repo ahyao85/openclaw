@@ -45,7 +45,7 @@ it("projects a whole turn across run frames, but never another user turn, divide
     e,
   ]);
   expect(index.get("a")?.map((entry) => entry.key)).toEqual(["a", "b"]);
-  expect(index.get("b")).toBe(index.get("a"));
+  expect(index.get("b")?.map((entry) => entry.key)).toEqual(["a", "b"]);
   expect(index.get("c")?.map((entry) => entry.key)).toEqual(["c"]);
   expect(index.get("d")?.map((entry) => entry.key)).toEqual(["d"]);
   expect(index.get("e")?.map((entry) => entry.key)).toEqual(["e"]);
