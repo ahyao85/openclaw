@@ -9,7 +9,14 @@ extract_openclaw_semver() {
 }
 
 quiet_npm() {
-  npm \
+  env \
+    -u NPM_CONFIG_BEFORE \
+    -u npm_config_before \
+    -u NPM_CONFIG_MIN_RELEASE_AGE \
+    -u npm_config_min_release_age \
+    -u npm_config_min-release-age \
+    npm \
+    --location=global \
     --loglevel=error \
     --logs-max=0 \
     --no-update-notifier \

@@ -888,6 +888,76 @@ describe("test-install-sh-docker", () => {
     expect(result.stdout).toContain("==> Sanity: CLI runs");
   });
 
+  it("keeps release-harness npm lookups outside caller freshness policy", () => {
+    const root = tempDirs.make("openclaw-install-npm-policy-");
+    const binDir = join(root, "bin");
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(
+      join(binDir, "npm"),
+      `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({ args: process.argv.slice(2), policy: Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(?:NPM_CONFIG_BEFORE|npm_config_before|NPM_CONFIG_MIN_RELEASE_AGE|npm_config_min_release_age|npm_config_min-release-age)$/.test(key))) }));\n`,
+      { mode: 0o755 },
+    );
+
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        "source scripts/docker/install-sh-common/version-parse.sh; quiet_npm view openclaw@2026.8.32 version",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          NPM_CONFIG_BEFORE: "2026-09-17T23:07:28.000Z",
+          NPM_CONFIG_MIN_RELEASE_AGE: "10080",
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          npm_config_before: "2026-09-17T23:07:28.000Z",
+          npm_config_min_release_age: "10080",
+          "npm_config_min-release-age": "10080",
+        },
+      },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      args: [
+        "--location=global",
+        "--loglevel=error",
+        "--logs-max=0",
+        "--no-update-notifier",
+        "--no-fund",
+        "--no-audit",
+        "--no-progress",
+        "view",
+        "openclaw@2026.8.32",
+        "version",
+      ],
+      policy: {},
+    });
+
+    const projectDir = join(root, "project");
+    mkdirSync(projectDir);
+    writeFileSync(join(projectDir, "package.json"), '{"name":"npm-policy-fixture"}\n');
+    writeFileSync(join(projectDir, ".npmrc"), "before=2026-09-17T23:07:28.000Z\n");
+    const projectResult = spawnSync(
+      "bash",
+      [
+        "-c",
+        'source "$1"; quiet_npm config get before',
+        "bash",
+        join(process.cwd(), "scripts/docker/install-sh-common/version-parse.sh"),
+      ],
+      {
+        cwd: projectDir,
+        encoding: "utf8",
+        env: { ...process.env, HOME: root },
+      },
+    );
+    expect(projectResult.status, projectResult.stderr).toBe(0);
+    expect(projectResult.stdout.trim()).toBe("null");
+  });
+
   it("can reuse dist from the already-built root Docker smoke image", () => {
     const script = readFileSync(SCRIPT_PATH, "utf8");
     const packageHelper = readFileSync(DOCKER_E2E_PACKAGE_HELPER_PATH, "utf8");
