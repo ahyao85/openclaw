@@ -144,6 +144,17 @@ export class DraftPlaceBrowser {
     return this.projectCatalog?.snapshot.result?.recents;
   }
 
+  get defaultRemoteProject(): DraftRemoteProject | null {
+    const configured = this.projectCatalog?.snapshot.result?.defaultRepository;
+    return configured
+      ? {
+          identity: configured.identity,
+          cloneUrl: configured.url,
+          ...(configured.ref ? { defaultBranch: configured.ref } : {}),
+        }
+      : null;
+  }
+
   get projectId(): string {
     return this.projectSelection?.kind === "local" ? this.projectSelection.id : "";
   }

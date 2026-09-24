@@ -90,8 +90,14 @@ export const ProjectsListParamsSchema = closedObject({
     }),
   ),
 });
+export const ProjectDefaultRepositorySchema = closedObject({
+  identity: Type.String({ minLength: 1, maxLength: 200 }),
+  url: Type.String({ minLength: 1, maxLength: 2048 }),
+  ref: Type.Optional(Type.String({ minLength: 1, maxLength: 255 })),
+});
 export const ProjectsListResultSchema = closedObject({
   projects: Type.Array(ProjectRecordSchema),
+  defaultRepository: Type.Optional(ProjectDefaultRepositorySchema),
   recents: Type.Optional(Type.Array(ProjectRecentSchema, { maxItems: 8 })),
   observedProjects: Type.Optional(
     Type.Array(ProjectSummarySchema, {
@@ -141,6 +147,7 @@ export type ProjectRecent = Static<typeof ProjectRecentSchema>;
 export type ProjectCheckout = Static<typeof ProjectCheckoutSchema>;
 export type ProjectSummary = Static<typeof ProjectSummarySchema>;
 export type ProjectsListParams = Static<typeof ProjectsListParamsSchema>;
+export type ProjectDefaultRepository = Static<typeof ProjectDefaultRepositorySchema>;
 export type ProjectsListResult = Static<typeof ProjectsListResultSchema>;
 export type ProjectsRegisterParams = Static<typeof ProjectsRegisterParamsSchema>;
 export type ProjectsRegisterResult = Static<typeof ProjectsRegisterResultSchema>;

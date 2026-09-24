@@ -28,6 +28,7 @@ import {
   materializeProjectClone,
   removeClonedProjectCheckout,
 } from "../../projects/project-clone.js";
+import { parseProjectGitUrl } from "../../projects/project-git-url.js";
 import {
   listProjectRegistry,
   listWorkspaceProjects,
@@ -59,6 +60,16 @@ type ProjectWorktreeService = Pick<
   ManagedWorktreeService,
   "listRegistryRecords" | "resolveRepositoryIdentity"
 >;
+
+function configuredDefaultRepository(env: NodeJS.ProcessEnv = process.env) {
+  const identity = normalizeOptionalString(env.OPENCLAW_PROJECTS_DEFAULT_REPOSITORY_IDENTITY);
+  const parsed = parseProjectGitUrl(env.OPENCLAW_PROJECTS_DEFAULT_REPOSITORY_URL ?? "");
+  const ref = normalizeOptionalString(env.OPENCLAW_PROJECTS_DEFAULT_REPOSITORY_REF);
+  if (!identity || identity.length > 200 || !parsed || (ref?.length ?? 0) > 255) {
+    return undefined;
+  }
+  return { identity, url: parsed.url, ...(ref ? { ref } : {}) };
+}
 
 type ProjectCandidate = {
   checkoutPath: string;
@@ -468,6 +479,7 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
           WRITE_SCOPE,
           Array.isArray(client?.connect.scopes) ? client.connect.scopes : [],
         ).allowed;
+      const defaultRepository = configuredDefaultRepository();
       let store: ReturnType<typeof loadCombinedSessionStoreForGatewayCore>["store"] = {};
       let observedProjects: ProjectSummary[] | undefined;
       try {
@@ -494,6 +506,7 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
           true,
           {
             projects,
+            ...(defaultRepository ? { defaultRepository } : {}),
             ...(recents ? { recents } : {}),
             ...(observedProjects ? { observedProjects } : {}),
           },
@@ -520,6 +533,7 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
                   source: project.source,
                 },
           ),
+          ...(defaultRepository ? { defaultRepository } : {}),
           ...(recents ? { recents: recents.filter((recent) => recent.kind === "project") } : {}),
         },
         undefined,

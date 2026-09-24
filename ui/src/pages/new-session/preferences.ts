@@ -65,6 +65,7 @@ export type NewSessionPreference = {
   where?: NewSessionWhere;
   projectId?: string;
   remoteProject?: DraftRemoteProject | null;
+  defaultRepositoryOptOut?: boolean;
   worktree?: boolean;
   freshWorkspace?: boolean;
   baseRef?: string;
@@ -132,6 +133,9 @@ function normalizePreference(value: unknown): NewSessionPreference | null {
   } else if (preference.worktree === true) {
     // Preserve the legacy source choice before Git discovery clears worktree availability.
     preference.freshWorkspace = false;
+  }
+  if (typeof value.defaultRepositoryOptOut === "boolean") {
+    preference.defaultRepositoryOptOut = value.defaultRepositoryOptOut;
   }
   if (isRecord(value.remoteProject)) {
     const identity = normalizeOptionalString(value.remoteProject.identity)?.slice(0, 200);

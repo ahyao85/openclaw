@@ -74,6 +74,27 @@ test("projects.searchRemote uses the opted-in native system GitHub identity", as
   }
 });
 
+test("projects.list exposes a normalized configured default repository", async () => {
+  vi.stubEnv("OPENCLAW_GITHUB_HOST", "microsoft.ghe.com");
+  vi.stubEnv("OPENCLAW_PROJECTS_DEFAULT_REPOSITORY_IDENTITY", "bic/lobster");
+  vi.stubEnv(
+    "OPENCLAW_PROJECTS_DEFAULT_REPOSITORY_URL",
+    "https://microsoft.ghe.com/BIC/Lobster.git",
+  );
+  vi.stubEnv("OPENCLAW_PROJECTS_DEFAULT_REPOSITORY_REF", "main");
+
+  expect(await invokeProjectMethod("projects.list", {})).toMatchObject({
+    ok: true,
+    payload: {
+      defaultRepository: {
+        identity: "bic/lobster",
+        url: "https://microsoft.ghe.com/bic/lobster.git",
+        ref: "main",
+      },
+    },
+  });
+});
+
 async function initializeRepository(
   root: string,
   name = "registered",

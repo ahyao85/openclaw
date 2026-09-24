@@ -98,6 +98,34 @@ function createRepositoryFixture(
 }
 
 describe("DraftPlaceState repository selection", () => {
+  it("adopts the configured default repository until the user chooses a folder", () => {
+    const configured = createRepositoryFixture();
+    configured.readPreference.mockReturnValue({ folder: "/workspace" });
+    vi.spyOn(configured.browser, "projectsReady", "get").mockReturnValue(true);
+    vi.spyOn(configured.browser, "defaultRemoteProject", "get").mockReturnValue({
+      identity: "bic/lobster",
+      cloneUrl: "https://microsoft.ghe.com/bic/lobster.git",
+      defaultBranch: "main",
+    });
+    configured.state.adoptAgentDefaults();
+    configured.state.restorePreferenceSelections();
+    expect(configured.browser.remoteProject).toEqual({
+      identity: "bic/lobster",
+      cloneUrl: "https://microsoft.ghe.com/bic/lobster.git",
+      defaultBranch: "main",
+    });
+    expect(configured.state.baseRef).toBe("main");
+    expect(configured.state.placementPreferenceReady).toBe(true);
+
+    configured.persistPreference.mockClear();
+    configured.state.clearProjectSelection();
+    expect(configured.persistPreference).toHaveBeenCalledWith(
+      "main",
+      "/workspace",
+      expect.objectContaining({ defaultRepositoryOptOut: true, remoteProject: null }),
+    );
+  });
+
   it("remembers a remote project and restores its default branch", () => {
     const selected = createRepositoryFixture();
     selected.state.selectRemoteProject(REMOTE_PROJECT);

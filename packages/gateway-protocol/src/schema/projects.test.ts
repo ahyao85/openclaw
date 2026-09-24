@@ -82,6 +82,11 @@ describe("project protocol schemas", () => {
             source: "registered",
           },
         ],
+        defaultRepository: {
+          identity: "bic/lobster",
+          url: "https://microsoft.ghe.com/bic/lobster.git",
+          ref: "main",
+        },
         recents: [
           { kind: "project", projectId: "openclaw", displayName: "OpenClaw" },
           { kind: "folder", folder: "/repo/scratch", displayName: "scratch" },
