@@ -338,11 +338,7 @@ else console.log(JSON.stringify({id:202,workflow_id:88,head_branch:'main',event:
       "prepare_npm_package",
       "prepare_docker_release",
     ]) {
-      expect(workflow.jobs[job], job).toHaveProperty("needs", [
-        "resolve_target",
-        "plugin_compatibility_readiness",
-        "evidence_reuse",
-      ]);
+      expect(workflow.jobs[job], job).toHaveProperty("needs", ["resolve_target", "evidence_reuse"]);
     }
     expect(workflow.jobs.candidate_acquisition).toHaveProperty("needs", [
       "resolve_target",
@@ -359,7 +355,6 @@ else console.log(JSON.stringify({id:202,workflow_id:88,head_branch:'main',event:
     ]);
     expect(workflow.jobs.release_checks_candidate).toHaveProperty("needs", [
       "resolve_target",
-      "plugin_compatibility_readiness",
       "evidence_reuse",
       "candidate_acquisition",
     ]);

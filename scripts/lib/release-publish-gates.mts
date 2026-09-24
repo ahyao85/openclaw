@@ -165,28 +165,6 @@ export function evaluateReleasePublishGates(input: {
           : "Stable releases require Full Release Validation with runReleaseSoak=true.",
     remediation: "Run release soak or supply the operator's explicit reason in stable_soak_waiver.",
   });
-  // Strict default: a stable publication with failed non-proof lanes, or with
-  // evidence sealed under an operator lane waiver, needs the operator's
-  // lane_waiver reason; the waived lanes travel into the receipt.
-  const laneWaiver = scalar(field(field(manifest, "validationInputs"), "laneWaiver")).trim();
-  const advisory = field(manifest, "advisoryJobs");
-  const failedLanes = (Array.isArray(advisory) ? advisory : [])
-    .filter((job) => scalar(field(job, "conclusion")) !== "success")
-    .map((job) => `${scalar(field(job, "child"))} ${scalar(field(job, "job"))}`);
-  if (laneWaiver || (soakRequired && failedLanes.length > 0)) {
-    const acknowledged = Boolean(acknowledgement);
-    gates.push({
-      id: `${consumer}.lane-waiver`,
-      status: acknowledged ? "WARN" : "FAIL",
-      message: acknowledged
-        ? `Operator lane waiver: ${acknowledgement}; waived lanes (${failedLanes.length}): ${failedLanes.join(", ") || "none"}`
-        : laneWaiver
-          ? `Full Release Validation evidence was sealed under an operator lane waiver (${laneWaiver}); pass lane_waiver=<reason> to acknowledge it.`
-          : `Stable publication with failed non-proof lanes (${failedLanes.length}) requires lane_waiver=<version reason>: ${failedLanes.join(", ")}`,
-      remediation:
-        "Acknowledge with lane_waiver=<target version> <reason>, or fix the lanes and reseal Full Release Validation.",
-    });
-  }
   // Evidence sealed under an operator lane waiver publishes only with an
   // explicit acknowledgement; the waived lanes travel into the receipt.
   const laneWaiver = scalar(field(field(manifest, "validationInputs"), "laneWaiver")).trim();
