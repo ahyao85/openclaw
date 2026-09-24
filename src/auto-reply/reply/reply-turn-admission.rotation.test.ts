@@ -135,6 +135,8 @@ describe("reply turn admission rotation", () => {
     const releaseRead = createDeferred();
     const load = sessionEntries.loadSessionEntryForAdmission;
     let reads = 0;
+    let transientOwnerCompleted = false;
+    let readAfterTransientOwnerCompletion = false;
     const loadSpy = vi
       .spyOn(sessionEntries, "loadSessionEntryForAdmission")
       .mockImplementation(async (...args) => {
@@ -142,6 +144,9 @@ describe("reply turn admission rotation", () => {
           return await load(...args);
         }
         const read = ++reads;
+        if (transientOwnerCompleted) {
+          readAfterTransientOwnerCompletion = true;
+        }
         const snapshot = await load(...args);
         if (read === 1) {
           preparationWitness.updateSessionId("rotated-preparation-witness");
@@ -154,6 +159,7 @@ describe("reply turn admission rotation", () => {
           }
           transientOwner.updateSessionId("transient-rotation");
           transientOwner.complete();
+          transientOwnerCompleted = true;
           ownerObserved.resolve();
           await releaseRead.promise;
         }
@@ -172,7 +178,7 @@ describe("reply turn admission rotation", () => {
       await ownerObserved.promise;
       releaseRead.resolve();
       const result = await admitted;
-      expect(reads).toBeGreaterThan(2);
+      expect(readAfterTransientOwnerCompletion).toBe(true);
       expect(result.status).toBe("owned");
       if (result.status === "owned") {
         expect(result.operation.sessionId).toBe(sessionId);
