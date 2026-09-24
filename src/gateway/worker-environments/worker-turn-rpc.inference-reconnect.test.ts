@@ -48,7 +48,7 @@ describe("worker inference reconnect source ownership", () => {
             throw new Error("Reconnect fixture lost its real placement claim");
           }
         });
-      bind();
+      await bind();
       const original = getWorkerTurnExecutionIdentityCapability(placements, claim);
       if (!original) {
         throw new Error("Reconnect fixture did not capture its original source");
@@ -119,7 +119,7 @@ describe("worker inference reconnect source ownership", () => {
         let nextIdentity = identity;
         if (change === "source replacement") {
           // Same claim, run, target, and registry authority; only the bound source owner changes.
-          bind();
+          await bind();
           const successor = getWorkerTurnExecutionIdentityCapability(placements, claim);
           if (!successor) {
             throw new Error("Reconnect fixture did not capture its successor source");
