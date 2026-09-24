@@ -134,7 +134,7 @@ describe("subagent registry persistence resume", () => {
       vi.mocked(callGatewayModule.callGateway).mockResolvedValue({ status: "pending" });
       const { name, ...registration } = options;
       const childSessionKey = "agent:main:subagent:parent-association";
-      mod.registerSubagentRun({
+      await mod.registerSubagentRun({
         runId: "child-parent-association",
         childSessionKey,
         requesterSessionKey: "agent:main:main",
