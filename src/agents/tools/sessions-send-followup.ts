@@ -213,7 +213,7 @@ export async function startSessionsSendFollowup(
   params: Parameters<typeof startSessionsSendAgentRun>[0],
   replyContext: Pick<
     Parameters<typeof startSessionsSendReplyFlow>[0],
-    "requesterSession" | "requesterOrigin" | "requesterChannel"
+    "requesterSession" | "requesterDeliveryGeneration" | "requesterOrigin" | "requesterChannel"
   >,
 ) {
   const dispatch = () => startSessionsSendAgentRun(params);

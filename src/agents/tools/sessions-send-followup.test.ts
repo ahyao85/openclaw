@@ -161,6 +161,13 @@ describe("followup retained session authorization", () => {
     });
     const replyContext = {
       requesterSession: { sessionId: "requester-id", lifecycleRevision: "requester-revision" },
+      requesterDeliveryGeneration: {
+        agentId: "main",
+        storePath: "/synthetic/agent.sqlite",
+        sessionKey: input.requesterSessionKey,
+        sessionId: "requester-id",
+        lifecycleRevision: "requester-revision",
+      },
       requesterOrigin: {
         channel: "telegram",
         to: "chat-123",

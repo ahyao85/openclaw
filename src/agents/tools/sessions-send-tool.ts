@@ -909,6 +909,7 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
             },
             {
               requesterSession: requesterContinuationSession,
+              requesterDeliveryGeneration,
               requesterOrigin,
               requesterChannel,
             },
