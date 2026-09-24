@@ -68,7 +68,7 @@ validate_release_suite_filters() {
 import { pathToFileURL } from 'node:url';
 const { hasRequiredCrossOsSuites } = await import(pathToFileURL(process.argv[2]));
 if (!hasRequiredCrossOsSuites(process.argv[3])) {
-  throw new Error('all-group cross_os_suite_filter requires all Linux cross-OS suites');
+  throw new Error('all-group cross_os_suite_filter requires all Linux, Windows, and macOS cross-OS suites');
 }
 NODE
   fi

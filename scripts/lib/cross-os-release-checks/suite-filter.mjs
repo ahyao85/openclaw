@@ -16,7 +16,9 @@ export function isSupportedCrossOsSuite(value) {
  */
 export function hasRequiredCrossOsSuites(rawFilter) {
   const filter = parseCrossOsSuiteFilter(rawFilter);
-  return RELEASE_SUITES.every((suite) => filter.matches("ubuntu", suite));
+  return [...SUPPORTED_OS_IDS].every((osId) =>
+    RELEASE_SUITES.every((suite) => filter.matches(osId, suite)),
+  );
 }
 
 /** @param {string} rawFilter */
