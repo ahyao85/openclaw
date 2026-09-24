@@ -2021,6 +2021,106 @@ describe("ci workflow guards", () => {
       });
     }
 
+    it.each([
+      { eventName: "push" as const, runnerBackend: "hybrid" as const },
+      { eventName: "pull_request" as const, runnerBackend: "hybrid" as const },
+      { eventName: "push" as const, runnerBackend: "runson" as const },
+      { eventName: "pull_request" as const, runnerBackend: "runson" as const },
+      { eventName: "workflow_dispatch" as const, runnerBackend: "runson" as const },
+    ])(
+      "routes admitted control gates without hosted queue waits ($eventName, $runnerBackend)",
+      (options) => {
+        const qualification = options.eventName === "workflow_dispatch";
+        const manifest = manifestWithHostedNodeRows(0, {
+          ...options,
+          runnerProfile: "hybrid",
+          nodeRunnerBackend: options.runnerBackend,
+          nodeTestShards: undefined,
+          releaseGate: qualification,
+          changedPaths: [".github/workflows/ci.yml"],
+        });
+        expect(manifest.status, manifest.output).toBe(0);
+        const workflow = readCiWorkflow();
+        for (const [jobName, runner] of [
+          ["checks-baseline-ratchets", "blacksmith-16vcpu-ubuntu-2404"],
+          ["ci-gate", "blacksmith-4vcpu-ubuntu-2404"],
+        ] as const) {
+          const context = {
+            ...options,
+            repository: "openclaw/openclaw",
+            runAttempt: 1,
+            preflightOutputs: manifest.outputs,
+          };
+          const expression = workflow.jobs[jobName]["runs-on"];
+          expect(evaluateWorkflowExpression(expression, context), jobName).toBe(runner);
+          // Failed-job reruns reuse the successful first preflight's outputs.
+          expect
+            .soft(
+              evaluateWorkflowExpression(expression, { ...context, runAttempt: 2 }),
+              `${jobName}: retry with retained admission`,
+            )
+            .toBe("ubuntu-24.04");
+          if (qualification) {
+            expect(
+              evaluateWorkflowExpression(expression, {
+                ...context,
+                dispatchId: "full-release-validation-fixture",
+                releaseRunnerGroup: "release-fixture",
+              }),
+              jobName,
+            ).toEqual({ group: "release-fixture", labels: runner });
+            expect
+              .soft(
+                evaluateWorkflowExpression(expression, {
+                  ...context,
+                  runAttempt: 2,
+                  dispatchId: "full-release-validation-fixture",
+                  releaseRunnerGroup: "release-fixture",
+                }),
+                `${jobName}: release-group retry with retained admission`,
+              )
+              .toEqual({ group: "release-fixture", labels: "ubuntu-24.04" });
+          }
+          for (const result of ["failure", "cancelled", "skipped"]) {
+            expect(
+              evaluateWorkflowExpression(expression, {
+                ...context,
+                jobResults: { preflight: result },
+              }),
+              `${jobName}: ${result}`,
+            ).toBe("ubuntu-24.04");
+          }
+          expect(
+            evaluateWorkflowExpression(expression, {
+              ...context,
+              preflightOutputs: {},
+            }),
+            `${jobName}: no decision`,
+          ).toBe("ubuntu-24.04");
+        }
+        expect(
+          evaluateWorkflowExpression(workflow.jobs.preflight.outputs.hybrid_paid_controls, {
+            ...options,
+            repository: "openclaw/openclaw",
+            runAttempt: 1,
+            steps: { manifest: { outputs: manifest.outputs } },
+          }),
+        ).toBe("true");
+        expect(manifest.outputs.hybrid_hosted_reserved_rows).toBe("2");
+      },
+    );
+
+    it("reserves only the final control gate when baseline ratchets are unselected", () => {
+      const manifest = manifestWithHostedNodeRows(0, { runNode: false });
+      expect(manifest.status, manifest.output).toBe(0);
+      expect(manifest.outputs.run_baseline_ratchets).toBe("false");
+      expect(manifest.outputs.hybrid_paid_controls).toBe("true");
+      expect(manifest.outputs.hybrid_hosted_reserved_rows).toBe("1");
+      expect(Number(manifest.outputs.hybrid_hosted_total_rows)).toBe(
+        emittedHostedRows(manifest.outputs).length,
+      );
+    });
+
     it("counts the actual workflow rows and admits five offloads only below the base threshold", () => {
       const planner = readCiWorkflow().jobs.preflight.steps.find(
         (step: WorkflowStep) => step.name === "Build CI manifest",
@@ -2035,18 +2135,19 @@ describe("ci workflow guards", () => {
       }).length;
       expect(Number(baseline.outputs.hybrid_hosted_base_rows)).toBe(originalBase);
       for (const baseRows of [40, 41, 45, 46]) {
-        const manifest = manifestWithHostedNodeRows(baseRows - originalBase);
+        const manifest = manifestWithHostedNodeRows(baseRows - originalBase - 2);
         expect(manifest.status, manifest.output).toBe(0);
         if (baseRows === 46) {
           expect(manifest.output).toContain(
-            "::warning::Hybrid base manifest has 46 hosted jobs, above the 45-row offload budget; keeping optional offloads on Blacksmith.",
+            "::warning::Hybrid base admission has 44 hosted jobs plus 2 reserved rows, above the 45-row offload budget; keeping optional offloads on Blacksmith.",
           );
         }
         const hosted = emittedHostedRows(manifest.outputs);
         expect(manifest.outputs.hybrid_hosted_offload).toBe(String(baseRows <= 40));
-        expect(Number(manifest.outputs.hybrid_hosted_base_rows)).toBe(baseRows);
+        expect(Number(manifest.outputs.hybrid_hosted_base_rows)).toBe(baseRows - 2);
+        expect(manifest.outputs.hybrid_hosted_reserved_rows).toBe("2");
         expect(Number(manifest.outputs.hybrid_hosted_total_rows)).toBe(hosted.length);
-        expect(hosted.length).toBe(baseRows <= 40 ? baseRows + 5 : baseRows);
+        expect(hosted.length).toBe(baseRows <= 40 ? baseRows + 3 : baseRows - 2);
         for (const name of ["security-fast", "checks-ui", "checks-ui-e2e"]) {
           expect(hosted.includes(name), name).toBe(baseRows <= 40);
         }
@@ -2258,7 +2359,7 @@ describe("ci workflow guards", () => {
       const originalBase = Number(baseline.outputs.hybrid_hosted_base_rows);
       for (const healthy of ["true", "false", ""]) {
         for (const baseRows of [30, 31, 32, 33, 40, 41, 45, 46]) {
-          const manifest = manifestWithHostedNodeRows(baseRows - originalBase, {
+          const manifest = manifestWithHostedNodeRows(baseRows - originalBase - 2, {
             scopeEnv: { OPENCLAW_CI_HOSTED_HEALTHY: healthy },
           });
           expect(manifest.status, manifest.output).toBe(0);
@@ -2373,6 +2474,8 @@ describe("ci workflow guards", () => {
         expect(manifest.outputs.hybrid_hosted_offload).toBe("false");
         expect(manifest.outputs.hybrid_hosted_checks).toBe("false");
         expect(manifest.outputs.hybrid_hosted_main_checks).toBe("false");
+        expect(manifest.outputs.hybrid_paid_controls).toBe("false");
+        expect(manifest.outputs.hybrid_hosted_reserved_rows).toBe("0");
       },
     );
 

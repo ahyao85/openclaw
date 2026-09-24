@@ -136,6 +136,8 @@ jobs:
       hybrid_hosted_offload: ${{ steps.manifest.outputs.hybrid_hosted_offload }}
       hybrid_hosted_checks: ${{ steps.manifest.outputs.hybrid_hosted_checks }}
       hybrid_hosted_main_checks: ${{ steps.manifest.outputs.hybrid_hosted_main_checks }}
+      hybrid_paid_controls: ${{ steps.manifest.outputs.hybrid_paid_controls }}
+      hybrid_hosted_reserved_rows: ${{ steps.manifest.outputs.hybrid_hosted_reserved_rows }}
       hybrid_hosted_base_rows: ${{ steps.manifest.outputs.hybrid_hosted_base_rows }}
       hybrid_hosted_total_rows: ${{ steps.manifest.outputs.hybrid_hosted_total_rows }}
       diff_base_revision: ${{ steps.diff_base.outputs.sha }}
@@ -2318,6 +2320,11 @@ jobs:
               ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"].includes(
                 process.env.OPENCLAW_CI_AUTHOR_ASSOCIATION ?? "",
               )));
+          // Paid control gates keep their former admission slots reserved, so this
+          // queue fix cannot widen optional hosted routing.
+          const hybridHostedReservedRows = hybridHostedEligible
+            ? 1 + Number(manifest.run_baseline_ratchets)
+            : 0;
           let hybridHostedBaseRows = 0;
           let hybridHostedOffloadRows = 0;
           if (hybridHostedEligible) {
@@ -2334,11 +2341,9 @@ jobs:
             // Qualification authenticates on hosted preflight before paid admission.
             hybridHostedBaseRows = Object.values({
               "preflight": count(ciQualification),
-              "ci-gate": 1,
               "control-ui-performance": count(manifest.run_control_ui_performance),
               "native-i18n": count(manifest.run_native_i18n),
               "control-ui-i18n": count(manifest.run_control_ui_i18n),
-              "checks-baseline-ratchets": count(manifest.run_baseline_ratchets),
               "checks-fast-core": count(manifest.run_checks_fast_core, manifest.checks_fast_core_matrix.include.length),
               "checks-fast-plugin-contracts-shard": count(manifest.run_plugin_contracts_shards, manifest.plugin_contracts_matrix.include.length),
               "checks-fast-channel-contracts-shard": count(manifest.run_channel_contracts_shards, manifest.channel_contracts_matrix.include.length),
@@ -2359,12 +2364,13 @@ jobs:
               count(manifest.run_ui_e2e && !compatibilityTarget,
                 manifest.ui_e2e_matrix.include.filter((row) => row.task === "browser-extension").length);
           }
-          if (hybridHostedEligible && hybridHostedBaseRows > HYBRID_HOSTED_ROW_LIMIT) {
-            console.warn(`::warning::Hybrid base manifest has ${hybridHostedBaseRows} hosted jobs, above the ${HYBRID_HOSTED_ROW_LIMIT}-row offload budget; keeping optional offloads on Blacksmith.`);
+          const hybridHostedAdmissionBaseRows = hybridHostedBaseRows + hybridHostedReservedRows;
+          if (hybridHostedEligible && hybridHostedAdmissionBaseRows > HYBRID_HOSTED_ROW_LIMIT) {
+            console.warn(`::warning::Hybrid base admission has ${hybridHostedBaseRows} hosted jobs plus ${hybridHostedReservedRows} reserved rows, above the ${HYBRID_HOSTED_ROW_LIMIT}-row offload budget; keeping optional offloads on Blacksmith.`);
           }
           const hybridHostedOffload = hybridHostedEligible &&
-            hybridHostedBaseRows <= HYBRID_HOSTED_BASE_ROW_LIMIT &&
-            hybridHostedBaseRows + hybridHostedOffloadRows <= HYBRID_HOSTED_ROW_LIMIT;
+            hybridHostedAdmissionBaseRows <= HYBRID_HOSTED_BASE_ROW_LIMIT &&
+            hybridHostedAdmissionBaseRows + hybridHostedOffloadRows <= HYBRID_HOSTED_ROW_LIMIT;
           // The measured check rows consume only remaining hosted capacity.
           // Keep the original UI/security decision and all test-runner labels intact.
           const hybridHostedCheckRows = (manifest.run_check ? 1 : 0) +
@@ -2384,7 +2390,7 @@ jobs:
             ((eventName === "push" && eventRef === "refs/heads/main") ||
               (eventName === "pull_request" && manifest.run_checks_windows && hybridHostedPullRequestHasSlack)) &&
             process.env.OPENCLAW_CI_HOSTED_HEALTHY === "true" &&
-            hybridHostedExistingRows + hybridHostedCheckRows <= HYBRID_HOSTED_ROW_LIMIT;
+            hybridHostedExistingRows + hybridHostedReservedRows + hybridHostedCheckRows <= HYBRID_HOSTED_ROW_LIMIT;
           const hybridHostedRowsWithChecks = hybridHostedExistingRows +
             (hybridHostedChecks ? hybridHostedCheckRows : 0);
           // Main can spend remaining hosted capacity on independent four-CPU checks.
@@ -2392,8 +2398,10 @@ jobs:
           const hybridHostedMainCheckRows = manifest.run_check ? 2 : 0;
           const hybridHostedMainChecks = hybridHostedChecks && eventName === "push" &&
             eventRef === "refs/heads/main" &&
-            hybridHostedRowsWithChecks + hybridHostedMainCheckRows <= HYBRID_HOSTED_ROW_LIMIT;
+            hybridHostedRowsWithChecks + hybridHostedReservedRows + hybridHostedMainCheckRows <= HYBRID_HOSTED_ROW_LIMIT;
           Object.assign(manifest, {
+            hybrid_paid_controls: hybridHostedEligible,
+            hybrid_hosted_reserved_rows: hybridHostedReservedRows,
             hybrid_hosted_offload: hybridHostedOffload,
             hybrid_hosted_checks: hybridHostedChecks,
             hybrid_hosted_main_checks: hybridHostedMainChecks,
@@ -2402,6 +2410,7 @@ jobs:
               (hybridHostedMainChecks ? hybridHostedMainCheckRows : 0),
           });
           if (hybridHostedEligible) {
+            console.log(`Hybrid paid control gates reserve ${hybridHostedReservedRows} hosted admission slots.`);
             console.log(`Hybrid hosted rows: ${manifest.hybrid_hosted_base_rows} base, ${manifest.hybrid_hosted_total_rows} total; optional offload ${hybridHostedOffload ? "admitted" : "retained on Blacksmith"}; measured checks ${hybridHostedChecks ? "admitted" : "retained on Blacksmith"}; main checks ${hybridHostedMainChecks ? "admitted" : "retained on Blacksmith"}`);
           }
 
@@ -3593,7 +3602,7 @@ jobs:
     name: checks-fast-baseline-ratchets
     needs: [preflight]
     if: needs.preflight.outputs.run_baseline_ratchets == 'true'
-    runs-on: ${{ (github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') && vars.OPENCLAW_RELEASE_RUNNER_GROUP || '') != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON((github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') && vars.OPENCLAW_RELEASE_RUNNER_GROUP || '')), toJSON(((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND))) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')))) || (((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND))) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) }}
+    runs-on: ${{ (github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') && vars.OPENCLAW_RELEASE_RUNNER_GROUP || '') != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON((github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') && vars.OPENCLAW_RELEASE_RUNNER_GROUP || '')), toJSON(github.run_attempt == 1 && needs.preflight.result == 'success' && needs.preflight.outputs.hybrid_paid_controls == 'true' && 'blacksmith-16vcpu-ubuntu-2404' || (((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND))) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04'))))) || (github.run_attempt == 1 && needs.preflight.result == 'success' && needs.preflight.outputs.hybrid_paid_controls == 'true' && 'blacksmith-16vcpu-ubuntu-2404' || (((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND))) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04'))) }}
     timeout-minutes: 60
     env:
       CHECKOUT_BASE_SHA: ${{ needs.preflight.outputs.diff_base_revision }}
@@ -6935,8 +6944,8 @@ jobs:
     # Report failed prerequisites, but let superseded runs release their slot
     # without waiting for an aggregate runner after workflow cancellation.
     if: ${{ (github.event_name != 'push' || github.ref != 'refs/heads/main' || vars.OPENCLAW_CI_ON_PUSH == 'true') && !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    # The gate only aggregates job results; keep it independent of Blacksmith capacity.
-    runs-on: ${{ (github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') && vars.OPENCLAW_RELEASE_RUNNER_GROUP || '') != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON((github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') && vars.OPENCLAW_RELEASE_RUNNER_GROUP || '')), toJSON('ubuntu-24.04'))) || ('ubuntu-24.04') }}
+    # Paid admission avoids another hosted queue after all selected lanes finish.
+    runs-on: ${{ (github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') && vars.OPENCLAW_RELEASE_RUNNER_GROUP || '') != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON((github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') && vars.OPENCLAW_RELEASE_RUNNER_GROUP || '')), toJSON(github.run_attempt == 1 && needs.preflight.result == 'success' && needs.preflight.outputs.hybrid_paid_controls == 'true' && 'blacksmith-4vcpu-ubuntu-2404' || ('ubuntu-24.04')))) || (github.run_attempt == 1 && needs.preflight.result == 'success' && needs.preflight.outputs.hybrid_paid_controls == 'true' && 'blacksmith-4vcpu-ubuntu-2404' || ('ubuntu-24.04')) }}
     timeout-minutes: 5
     steps:
       - name: Verify selected CI lanes
