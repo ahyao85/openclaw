@@ -28,11 +28,11 @@ describe("tokenjuice plugin", () => {
   });
 
   it("is opt-in by default", () => {
-    const manifest = JSON.parse(
+    const manifestFromDisk = JSON.parse(
       fs.readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"),
     ) as { enabledByDefault?: unknown };
 
-    expect(manifest.enabledByDefault).toBeUndefined();
+    expect(manifestFromDisk.enabledByDefault).toBeUndefined();
   });
 
   it("registers tokenjuice tool result middleware for OpenClaw, Codex, and Agents API runtimes", () => {
