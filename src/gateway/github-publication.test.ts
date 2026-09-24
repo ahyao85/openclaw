@@ -824,7 +824,9 @@ describe("Gateway GitHub publication", () => {
           return commandResult(JSON.stringify({ ref: "refs/heads/main", sha: BASE_HEAD }));
         }
         if (command === "git show -s --format=%B HEAD") {
-          return commandResult(`Resume the publication\n\nOpenClaw-Publication: ${requestId}\n`);
+          return commandResult(
+            `Resume the publication\n\nCo-authored-by: alice <7+alice@users.noreply.github.com>\nOpenClaw-Publication: ${requestId}\n`,
+          );
         }
         if (command === "git rev-parse HEAD^{tree}") {
           return commandResult(`${WORKSPACE_TREE}\n`);

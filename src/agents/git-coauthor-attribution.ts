@@ -3,7 +3,10 @@ import { readSessionEntriesFromStoreInWorker } from "../config/sessions/session-
 import { resolveSessionStorePathForScope } from "../config/sessions/session-store-path.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
-import { resolveUserProfileGitHubAttribution } from "../state/user-profile-github-identity.js";
+import {
+  prepareUserProfileGitHubAttribution,
+  resolveUserProfileGitHubAttribution,
+} from "../state/user-profile-github-identity.js";
 import { resolveConfiguredGitHubToolIdentity } from "./github-tool-identity.js";
 
 type GitCoauthorAttribution = {
@@ -19,7 +22,7 @@ type GitCoauthorContributor = {
   inheritedOrder?: number;
 };
 
-export async function resolveGitCoauthorAttribution(params: {
+type GitCoauthorAttributionParams = {
   agentId: string;
   config: OpenClawConfig;
   excludeAccountId?: number;
@@ -27,9 +30,45 @@ export async function resolveGitCoauthorAttribution(params: {
   sessionKey?: string;
   sessionId?: string;
   storePath?: string;
-}): Promise<GitCoauthorAttribution | undefined> {
+};
+
+type PreparedGitCoauthorAttribution = {
+  attribution: GitCoauthorAttribution | undefined;
+  isCurrent: () => boolean;
+};
+
+/** Recovery can reuse a prepared commit only while its recorded public credit still matches. */
+export function hasCurrentGitCoauthorTrailers(
+  message: string,
+  attribution: GitCoauthorAttribution | undefined,
+): boolean {
+  const actual = message
+    .split(/\r?\n/u)
+    .filter((line) => /^co-authored-by:/iu.test(line.trim()))
+    .map((line) => line.trim());
+  const expected = attribution?.trailers ?? [];
+  return actual.length === expected.length && expected.every((trailer) => actual.includes(trailer));
+}
+
+export async function resolveGitCoauthorAttribution(
+  params: GitCoauthorAttributionParams,
+): Promise<GitCoauthorAttribution | undefined> {
+  return (await resolveAttribution(params, false)).attribution;
+}
+
+export async function prepareGitCoauthorAttribution(
+  params: GitCoauthorAttributionParams,
+): Promise<PreparedGitCoauthorAttribution> {
+  return await resolveAttribution(params, true);
+}
+
+async function resolveAttribution(
+  params: GitCoauthorAttributionParams,
+  retainAuthority: boolean,
+): Promise<PreparedGitCoauthorAttribution> {
+  const empty = { attribution: undefined, isCurrent: () => true };
   if (!params.sessionKey || isIncognitoSessionKey(params.sessionKey)) {
-    return undefined;
+    return empty;
   }
   const storePath = resolveSessionStorePathForScope(
     {
@@ -49,7 +88,7 @@ export async function resolveGitCoauthorAttribution(params: {
   });
   const entry = read.entries.find(({ sessionKey }) => sessionKey === params.sessionKey)?.entry;
   if (!entry || entry.incognito || (params.sessionId && entry.sessionId !== params.sessionId)) {
-    return undefined;
+    return empty;
   }
   const records = read.participantRecords?.[params.sessionKey] ?? [];
   const profileRecords = new Map(
@@ -60,11 +99,15 @@ export async function resolveGitCoauthorAttribution(params: {
   const inheritedProfileIds = entry.inheritedGitContributorProfileIds ?? [];
   const profileIds = [...new Set([...profileRecords.keys(), ...inheritedProfileIds])];
   if (profileIds.length === 0) {
-    return undefined;
+    return empty;
   }
-  const identities = await resolveUserProfileGitHubAttribution(profileIds, {
-    env: params.env,
-  });
+  const prepared = retainAuthority
+    ? await prepareUserProfileGitHubAttribution(profileIds, { env: params.env })
+    : {
+        identities: await resolveUserProfileGitHubAttribution(profileIds, { env: params.env }),
+        isCurrent: () => true,
+      };
+  const identities = prepared.identities;
   const primaryIdentity =
     resolveConfiguredGitHubToolIdentity({ ...params, scope: "agent" }) ??
     resolveConfiguredGitHubToolIdentity({ ...params, scope: "system" });
@@ -124,5 +167,8 @@ export async function resolveGitCoauthorAttribution(params: {
     ({ accountId, login }) =>
       `Co-authored-by: ${login} <${accountId}+${login}@users.noreply.github.com>`,
   );
-  return trailers.length ? { trailers, logins } : undefined;
+  return {
+    attribution: trailers.length ? { trailers, logins } : undefined,
+    isCurrent: prepared.isCurrent,
+  };
 }

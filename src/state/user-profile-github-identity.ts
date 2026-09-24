@@ -20,8 +20,12 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
 import type { OpenClawStateReadCommand } from "./openclaw-state-read.types.js";
+import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
 import { deleteUserPreference, selectUserPreferenceValues } from "./user-preferences.store.js";
-import { publishUserProfileAuthorityChange } from "./user-profile-events.js";
+import {
+  captureUserProfileAuthorityRead,
+  publishUserProfileAuthorityChange,
+} from "./user-profile-events.js";
 import type { UserProfileMutationContext } from "./user-profile-mutation.js";
 import {
   selectResolvedUserProfileMetadataById,
@@ -33,6 +37,7 @@ import type {
   CachedGitHubIdentity,
   StoredGitHubIdentity,
   UserProfileGitHubAttribution,
+  UserProfileGitHubAttributionRead,
 } from "./user-profiles.types.js";
 
 const GITHUB_PROVIDER = "github";
@@ -233,9 +238,9 @@ export async function resolveUserProfileGitHubAttribution(
 function resolveUserProfileGitHubAttributionInDatabase(
   db: DatabaseSync,
   profileIds: readonly string[],
-): UserProfileGitHubAttribution {
+): UserProfileGitHubAttributionRead {
   if (profileIds.length === 0 || !tableExists(db, "user_profiles")) {
-    return new Map();
+    return { identities: new Map(), canonicalProfileIds: [] };
   }
   const profiles = executeSqliteQuerySync(
     db,
@@ -255,14 +260,46 @@ function resolveUserProfileGitHubAttributionInDatabase(
     ? selectStoredGitHubIdentities(db, canonicalIds)
     : new Map();
   const preferences = selectUserPreferenceValues(db, canonicalIds, GIT_COAUTHOR_PREFERENCE_KEY);
-  return new Map(
-    [...canonicalBySource].map(([sourceId, canonicalId]) => [
-      sourceId,
-      isGitCoauthorCreditEnabled(preferences.get(canonicalId))
-        ? (identities.get(canonicalId)?.primary ?? null)
-        : null,
-    ]),
-  );
+  return {
+    identities: new Map(
+      [...canonicalBySource].map(([sourceId, canonicalId]) => [
+        sourceId,
+        isGitCoauthorCreditEnabled(preferences.get(canonicalId))
+          ? (identities.get(canonicalId)?.primary ?? null)
+          : null,
+      ]),
+    ),
+    canonicalProfileIds: canonicalIds,
+  };
+}
+
+/** Bind public credit to its live profile owner before any later publication awaits. */
+export async function prepareUserProfileGitHubAttribution(
+  profileIds: readonly string[],
+  options: OpenClawStateDatabaseOptions = {},
+): Promise<{ identities: UserProfileGitHubAttribution; isCurrent: () => boolean }> {
+  const selectedProfileIds = [...profileIds];
+  const context = captureOpenClawStateWorkerContext(options);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const authority = await captureUserProfileAuthorityRead(context.admission);
+    const reply = await executeExistingOpenClawStateRead(
+      { path: context.admission.databasePath, env: context.environment },
+      { type: "userProfiles.githubAttribution.resolve", profileIds: selectedProfileIds },
+      { context, current: true },
+    );
+    context.admission.assertCurrent();
+    if (reply && (!reply.ok || reply.type !== "userProfiles.githubAttribution.resolve")) {
+      throw new Error("GitHub attribution reader returned an unexpected result");
+    }
+    const isCurrent = authority.bind([
+      ...selectedProfileIds,
+      ...(reply?.canonicalProfileIds ?? []),
+    ]);
+    if (isCurrent) {
+      return { identities: reply?.identities ?? new Map(), isCurrent };
+    }
+  }
+  throw new Error("Git co-author credit changed while preparing attribution");
 }
 
 export function readUserProfileGitHubCommand(
@@ -273,10 +310,7 @@ export function readUserProfileGitHubCommand(
   >,
 ):
   | { type: "userProfiles.githubIdentity.cached"; identity: CachedGitHubIdentity | undefined }
-  | {
-      type: "userProfiles.githubAttribution.resolve";
-      identities: UserProfileGitHubAttribution;
-    } {
+  | ({ type: "userProfiles.githubAttribution.resolve" } & UserProfileGitHubAttributionRead) {
   return runSqliteDeferredTransactionSync(db, () =>
     command.type === "userProfiles.githubIdentity.cached"
       ? {
@@ -285,7 +319,7 @@ export function readUserProfileGitHubCommand(
         }
       : {
           type: command.type,
-          identities: resolveUserProfileGitHubAttributionInDatabase(db, command.profileIds),
+          ...resolveUserProfileGitHubAttributionInDatabase(db, command.profileIds),
         },
   );
 }

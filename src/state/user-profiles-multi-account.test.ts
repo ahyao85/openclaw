@@ -9,9 +9,14 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "./openclaw-state-db.js";
-import { getUserPreferences, setUserPreferences } from "./user-preferences.js";
+import {
+  getUserPreferences,
+  setCanonicalUserPreferences,
+  setUserPreferences,
+} from "./user-preferences.js";
 import {
   listUserProfileGitHubLogins,
+  prepareUserProfileGitHubAttribution,
   resolveUserProfileGitHubAttribution,
 } from "./user-profile-github-identity.js";
 import { listUserProfilesSync } from "./user-profile-identity.read.js";
@@ -181,7 +186,9 @@ describe("multi-account people", () => {
     const version = openOpenClawStateDatabase(options)
       .db.prepare("PRAGMA user_version")
       .get()?.user_version;
+    const beforeMerge = await prepareUserProfileGitHubAttribution([work.id], options);
     linkEmail(secondary.email, person.id, options);
+    expect(beforeMerge.isCurrent()).toBe(false);
     closeOpenClawStateDatabaseForTest();
     for (const account of [secondary, primary, secondary]) {
       expect(syncEmailGitHubProfile(account, options)).toMatchObject({
@@ -247,6 +254,25 @@ describe("multi-account people", () => {
         (await resolveUserProfileGitHubAttribution([work.id], options)).get(work.id),
       ).toBeNull();
     }, options);
+    setUserPreferences(person.id, { [GIT_COAUTHOR_PREFERENCE_KEY]: true }, options);
+    const preparedCredit = await prepareUserProfileGitHubAttribution([work.id], options);
+    expect(await setCanonicalUserPreferences(work.id, { theme: "dark" }, options)).toMatchObject({
+      ok: true,
+    });
+    expect(preparedCredit.isCurrent()).toBe(true);
+    expect(
+      await setCanonicalUserPreferences(
+        work.id,
+        { [GIT_COAUTHOR_PREFERENCE_KEY]: false },
+        { ...options, expectedEntries: { [GIT_COAUTHOR_PREFERENCE_KEY]: false } },
+      ),
+    ).toEqual({ ok: false, error: { code: "conflict" } });
+    expect(preparedCredit.isCurrent()).toBe(true);
+    expect(
+      await setCanonicalUserPreferences(work.id, { [GIT_COAUTHOR_PREFERENCE_KEY]: false }, options),
+    ).toEqual({ ok: true, value: { profileId: person.id } });
+    expect(preparedCredit.isCurrent()).toBe(false);
+    expect((await resolveUserProfileGitHubAttribution([work.id], options)).get(work.id)).toBeNull();
     expect(
       openOpenClawStateDatabase(options).db.prepare("PRAGMA user_version").get()?.user_version,
     ).toBe(version);

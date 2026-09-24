@@ -146,7 +146,7 @@ The snapshot survives session resets and disappears with the child session. Inco
 
 When a session has someone to credit, its system prompt lists the exact trailers once. It tells the agent to add them to commits it makes from the session. The Codex runtime receives the same block in its developer instructions. Nothing is added when there is nobody to credit, and incognito sessions never carry credit. The Gateway publication broker applies the same credit directly in its generated commits and pull requests. When the Gateway exposes an external HTTPS session URL, pull requests end with a link to that exact team session. The trailers are not exported through the process or shell environment. Direct Git commands remain ordinary shell execution. OpenClaw does not replace `git` or install repository hooks. The agent following that system-prompt instruction is therefore the enforcement boundary.
 
-Turning **Git co-author credit** off stops attribution for future runs. It does not rewrite commits that already contain the public trailer.
+Turning **Git co-author credit** off stops attribution for future runs. Gateway-managed publication also checks contributor identity and consent before each pending commit, push, or pull request write. If eligibility changes during publication, it stops before the next write and asks you to review recorded effects before requesting publication again. It does not rewrite commits that already contain the public trailer.
 
 ## Channel identity links
 

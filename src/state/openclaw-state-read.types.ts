@@ -85,7 +85,7 @@ import type {
   UserChannelIdentityAuthorityFacts,
   UserChannelIdentityResult,
   CachedGitHubIdentity,
-  UserProfileGitHubAttribution,
+  UserProfileGitHubAttributionRead,
   UserProfileDisplay,
   ProfileDisplayRow,
   UserProfileEmailBinding,
@@ -382,12 +382,11 @@ export type OpenClawStateReadReply = (
       sourceAdmitted: true;
       identity: CachedGitHubIdentity | undefined;
     }
-  | {
+  | ({
       ok: true;
       type: "userProfiles.githubAttribution.resolve";
       sourceAdmitted: true;
-      identities: UserProfileGitHubAttribution;
-    }
+    } & UserProfileGitHubAttributionRead)
   | {
       ok: true;
       type: "audit.run.inspect";

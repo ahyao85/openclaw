@@ -45,6 +45,7 @@ const mocks = vi.hoisted(() => ({
   loadSession: vi.fn(),
   getConfigSnapshot: vi.fn(),
   attribution: vi.fn(),
+  prepareAttribution: vi.fn(),
   updateIndex: vi.fn(),
   refreshIdentity: vi.fn(),
 }));
@@ -73,9 +74,15 @@ vi.mock("../agents/worktrees/git-lock.js", async (importOriginal) => ({
   unlockWorktree: vi.fn(async () => undefined),
 }));
 
-vi.mock("../agents/git-coauthor-attribution.js", () => ({
-  resolveGitCoauthorAttribution: mocks.attribution,
-}));
+vi.mock("../agents/git-coauthor-attribution.js", async (importOriginal) => {
+  const { hasCurrentGitCoauthorTrailers } =
+    await importOriginal<typeof import("../agents/git-coauthor-attribution.js")>();
+  return {
+    resolveGitCoauthorAttribution: mocks.attribution,
+    prepareGitCoauthorAttribution: mocks.prepareAttribution,
+    hasCurrentGitCoauthorTrailers,
+  };
+});
 
 vi.mock("../agents/worktrees/service.js", () => ({
   managedWorktrees: {
@@ -443,6 +450,10 @@ export function installGitHubPublicationTestHarness(
       logins: ["alice"],
       prompt: "",
     });
+    mocks.prepareAttribution.mockReset().mockImplementation(async (...args) => ({
+      attribution: await mocks.attribution(...args),
+      isCurrent: () => true,
+    }));
     mocks.getConfigSnapshot.mockReset().mockReturnValue(null);
     mocks.refreshIdentity.mockReset().mockResolvedValue(undefined);
     mocks.matchesIdentity.mockReset().mockReturnValue(true);

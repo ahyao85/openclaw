@@ -1,5 +1,8 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { resolveGitCoauthorAttribution } from "../agents/git-coauthor-attribution.js";
+import {
+  hasCurrentGitCoauthorTrailers,
+  prepareGitCoauthorAttribution,
+} from "../agents/git-coauthor-attribution.js";
 import type { PreparedGitHubPublicationIdentity } from "../agents/github-tool-identity.js";
 import { resolveControlUiSessionUrl } from "../config/control-ui-link-base.js";
 import type { SessionRepositoryWorkspaceRecord } from "../state/session-repository-workspaces.types.js";
@@ -12,6 +15,7 @@ import {
 } from "./github-publication-execution-identity.js";
 import {
   GitHubPublicationBranchChangedError,
+  GitHubPublicationCreditChangedError,
   GitHubPublicationKnownFailure,
   GitHubPublicationRequesterUnavailableError,
   GitHubPublicationWorkspaceChangedError,
@@ -65,6 +69,7 @@ async function api(
     apiArgs(endpoint, body === undefined ? "GET" : "POST"),
     {
       env: identity.env,
+      beforeRun: assertCurrent,
       ...(body === undefined ? {} : { input: JSON.stringify(body) }),
     },
   );
@@ -216,6 +221,7 @@ export async function executeRepositoryGitHubPublication(params: {
     // GitHub's merge-base proves shared history without changing the accepted source.
     const mergeBase = objectSha(JSON.parse(lineage));
     let headCommit = row.head_commit;
+    let preparedCommitMessage: string | undefined;
     const verifyCommit = (value: unknown) => {
       if (
         !isRecord(value) ||
@@ -230,6 +236,7 @@ export async function executeRepositoryGitHubPublication(params: {
           "GitHub publication commit does not match its accepted checkpoint.",
         );
       }
+      preparedCommitMessage = value.message;
       return objectSha(value);
     };
     if (headCommit) {
@@ -310,13 +317,13 @@ export async function executeRepositoryGitHubPublication(params: {
             api("repos/" + owner + "/git/trees/" + sha, identity, assertCurrent),
         }),
     );
-    const assertAction = () => {
+    const assertPublicationAction = () => {
       assertWorkflowAuthority();
       assertCurrent();
     };
-    assertAction();
+    assertPublicationAction();
     const config = currentGitHubPublicationConfig();
-    const attribution = await resolveGitCoauthorAttribution({
+    const preparedAttribution = await prepareGitCoauthorAttribution({
       agentId: row.agent_id,
       config,
       excludeAccountId: identity.account.accountId,
@@ -324,7 +331,21 @@ export async function executeRepositoryGitHubPublication(params: {
       sessionId: row.session_id,
       storePath: params.storePath,
     });
+    const attribution = preparedAttribution.attribution;
+    const assertAction = () => {
+      assertPublicationAction();
+      if (!preparedAttribution.isCurrent()) {
+        throw new GitHubPublicationCreditChangedError();
+      }
+    };
     assertAction();
+    if (
+      headCommit &&
+      remoteHead !== headCommit &&
+      !hasCurrentGitCoauthorTrailers(preparedCommitMessage ?? "", attribution)
+    ) {
+      throw new GitHubPublicationCreditChangedError();
+    }
     const credit = attribution?.logins.map((login) => "- @" + login).join("\n");
     const title = row.title?.trim() || "Publish " + branch;
     if (!headCommit) {
