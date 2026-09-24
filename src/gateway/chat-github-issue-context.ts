@@ -14,6 +14,21 @@ const COMMENT_CHARS = 2 * 1024;
 const COMMENT_LIMIT = 8;
 
 type IssueTarget = { owner: string; repo: string; number: number; url: string };
+type IssueComment = {
+  author: string;
+  body: string;
+  createdAt?: string;
+};
+type IssueDocument = {
+  author: string;
+  body: string;
+  comments: IssueComment[];
+  commentsTotal: number;
+  createdAt?: string;
+  state?: string;
+  title: string;
+  updatedAt?: string;
+};
 
 function trimUrlPunctuation(value: string): string {
   return value.replace(/[),.;:!?\]}]+$/u, "");
@@ -67,6 +82,70 @@ export function parseSessionGitHubIssueTarget(params: {
   return undefined;
 }
 
+async function loadSessionGitHubIssue(
+  target: IssueTarget,
+  identity: {
+    token: string;
+    revalidate: () => Promise<void>;
+    assertSelected: () => void;
+  },
+): Promise<IssueDocument> {
+  const repositoryUrl = `${gitHubPublicApi.GITHUB_API_ORIGIN}/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}`;
+  const rejectRedirect = async () => {
+    throw new gitHubPublicApi.ControlUiGitHubError(
+      409,
+      "GitHub repository changed while loading the selected issue",
+    );
+  };
+  const read = async (url: string) =>
+    await gitHubPublicApi.readGitHubJsonResponse(
+      await gitHubPublicApi.fetchGitHubApi(url, fetch, identity.token, rejectRedirect, identity),
+    );
+  const value = await read(`${repositoryUrl}/issues/${target.number}`);
+  if (!gitHubPublicApi.isRecord(value) || value.pull_request !== undefined) {
+    throw new gitHubPublicApi.ControlUiGitHubError(404, "GitHub issue is unavailable");
+  }
+  const author = gitHubPublicApi.isRecord(value.user)
+    ? gitHubPublicApi.readOptionalGitHubString(value.user, "login")
+    : undefined;
+  const commentsTotal = gitHubPublicApi.optionalNumber(value, "comments");
+  if (commentsTotal === undefined || !Number.isSafeInteger(commentsTotal) || commentsTotal < 0) {
+    throw new gitHubPublicApi.ControlUiGitHubError(502, "GitHub response omitted comments");
+  }
+  let comments: IssueComment[] = [];
+  if (commentsTotal > 0) {
+    const page = await read(
+      `${repositoryUrl}/issues/${target.number}/comments?per_page=${COMMENT_LIMIT}`,
+    );
+    if (!Array.isArray(page)) {
+      throw new gitHubPublicApi.ControlUiGitHubError(502, "GitHub comments were not an array");
+    }
+    comments = page.slice(0, COMMENT_LIMIT).map((comment) => {
+      if (!gitHubPublicApi.isRecord(comment)) {
+        throw new gitHubPublicApi.ControlUiGitHubError(502, "GitHub comment was not an object");
+      }
+      const commentAuthor = gitHubPublicApi.isRecord(comment.user)
+        ? gitHubPublicApi.readOptionalGitHubString(comment.user, "login")
+        : undefined;
+      return {
+        author: commentAuthor ?? "ghost",
+        body: gitHubPublicApi.readOptionalGitHubString(comment, "body") ?? "",
+        createdAt: gitHubPublicApi.readOptionalGitHubString(comment, "created_at"),
+      };
+    });
+  }
+  return {
+    author: author ?? "ghost",
+    body: gitHubPublicApi.readOptionalGitHubString(value, "body") ?? "",
+    comments,
+    commentsTotal,
+    createdAt: gitHubPublicApi.readOptionalGitHubString(value, "created_at"),
+    state: gitHubPublicApi.readOptionalGitHubString(value, "state"),
+    title: gitHubPublicApi.requiredString(value, "title"),
+    updatedAt: gitHubPublicApi.readOptionalGitHubString(value, "updated_at"),
+  };
+}
+
 export async function attachSessionGitHubIssueContext(params: {
   agentId: string;
   assertActive: () => void;
@@ -100,20 +179,14 @@ export async function attachSessionGitHubIssueContext(params: {
   if (!identity) {
     return;
   }
-  const document = await identity.start(() =>
-    gitHubPublicApi.loadGitHubDetail(
-      { kind: "issue", owner: target.owner, repo: target.repo, number: target.number },
-      identity,
-    ),
-  );
+  const document = await identity.start(() => loadSessionGitHubIssue(target, identity));
   identity.assertSelected();
   params.assertActive();
   const comments = (document.comments ?? []).slice(0, COMMENT_LIMIT).map((comment) => ({
     author: truncateUtf16Safe(comment.author, 256),
     created_at: comment.createdAt,
     body: truncateUtf16Safe(comment.body, COMMENT_CHARS),
-    body_truncated:
-      comment.bodyTruncated === true || comment.body.length > COMMENT_CHARS || undefined,
+    body_truncated: comment.body.length > COMMENT_CHARS || undefined,
   }));
   params.templateContext.ChannelStructuredContext = [
     ...(params.templateContext.ChannelStructuredContext ?? []),
@@ -126,19 +199,15 @@ export async function attachSessionGitHubIssueContext(params: {
         repository: `${target.owner}/${target.repo}`,
         number: target.number,
         title: truncateUtf16Safe(document.title, 512),
-        state: document.badge?.label,
+        state: document.state,
         author: document.author,
         created_at: document.createdAt,
         updated_at: document.updatedAt,
         body: truncateUtf16Safe(document.body, BODY_CHARS),
-        body_truncated:
-          document.bodyTruncated === true || document.body.length > BODY_CHARS || undefined,
+        body_truncated: document.body.length > BODY_CHARS || undefined,
         comments,
         comments_total: document.commentsTotal,
-        comments_truncated:
-          document.commentsTruncated === true ||
-          (document.comments?.length ?? 0) > COMMENT_LIMIT ||
-          undefined,
+        comments_truncated: document.commentsTotal > comments.length || undefined,
       },
     },
   ];

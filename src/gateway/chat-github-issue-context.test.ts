@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TemplateContext } from "../auto-reply/templating.js";
 
 const mocks = vi.hoisted(() => ({
+  fetchApi: vi.fn(),
   getWorkspace: vi.fn(),
-  loadDetail: vi.fn(),
   parseTarget: vi.fn(),
   prepareIdentity: vi.fn(),
+  readJson: vi.fn(),
 }));
 
 vi.mock("../state/session-repository-workspaces.js", () => ({
@@ -16,8 +17,29 @@ vi.mock("./project-github-identity.js", () => ({
 }));
 vi.mock("./github-public-api.js", () => ({
   gitHubPublicApi: {
+    GITHUB_API_ORIGIN: "https://api.microsoft.ghe.com",
+    ControlUiGitHubError: class extends Error {
+      constructor(
+        readonly statusCode: number,
+        message: string,
+      ) {
+        super(message);
+      }
+    },
+    fetchGitHubApi: mocks.fetchApi,
+    isRecord: (value: unknown) =>
+      typeof value === "object" && value !== null && !Array.isArray(value),
+    optionalNumber: (value: Record<string, unknown>, key: string) =>
+      typeof value[key] === "number" ? value[key] : undefined,
     parseGitHubTarget: mocks.parseTarget,
-    loadGitHubDetail: mocks.loadDetail,
+    readGitHubJsonResponse: mocks.readJson,
+    readOptionalGitHubString: (value: Record<string, unknown>, key: string) =>
+      typeof value[key] === "string" && value[key] ? value[key] : undefined,
+    requiredString: (value: Record<string, unknown>, key: string) => {
+      const result = value[key];
+      if (typeof result !== "string" || !result) throw new Error(`missing ${key}`);
+      return result;
+    },
   },
 }));
 
@@ -31,6 +53,8 @@ describe("Gateway GitHub issue context", () => {
     vi.clearAllMocks();
     vi.stubEnv("OPENCLAW_GITHUB_HOST", "microsoft.ghe.com");
     mocks.parseTarget.mockImplementation((value) => value);
+    mocks.fetchApi.mockResolvedValue(new Response());
+    mocks.readJson.mockReset();
   });
 
   it("accepts only the selected enterprise repository's exact issue URL", () => {
@@ -66,20 +90,23 @@ describe("Gateway GitHub issue context", () => {
       assertSelected,
       start: async (operation: () => unknown) => await operation(),
     });
-    mocks.loadDetail.mockResolvedValue({
-      url: "https://github.com/bic/lobster/issues/15938",
-      title: "Synthetic issue",
-      body: "b".repeat(30_000),
-      badge: { label: "Open" },
-      author: "owner",
-      commentsTotal: 9,
-      comments: Array.from({ length: 9 }, (_, index) => ({
-        id: String(index),
-        url: `https://example.test/${index}`,
-        author: `author-${index}`,
-        body: "c".repeat(3_000),
-      })),
-    });
+    mocks.readJson
+      .mockResolvedValueOnce({
+        title: "Synthetic issue",
+        body: "b".repeat(30_000),
+        state: "open",
+        user: { login: "owner" },
+        comments: 9,
+        created_at: "2026-09-24T00:00:00Z",
+        updated_at: "2026-09-24T01:00:00Z",
+      })
+      .mockResolvedValueOnce(
+        Array.from({ length: 9 }, (_, index) => ({
+          user: { login: `author-${index}` },
+          body: "c".repeat(3_000),
+          created_at: "2026-09-24T02:00:00Z",
+        })),
+      );
     const templateContext: TemplateContext = {};
     await attachSessionGitHubIssueContext({
       agentId: "main",
@@ -92,8 +119,11 @@ describe("Gateway GitHub issue context", () => {
     });
 
     expect(assertSelected).toHaveBeenCalled();
-    expect(mocks.loadDetail).toHaveBeenCalledWith(
-      { kind: "issue", owner: "bic", repo: "lobster", number: 15938 },
+    expect(mocks.fetchApi).toHaveBeenCalledWith(
+      "https://api.microsoft.ghe.com/repos/bic/lobster/issues/15938",
+      expect.any(Function),
+      "must-not-enter-context",
+      expect.any(Function),
       expect.objectContaining({ token: "must-not-enter-context" }),
     );
     const serialized = JSON.stringify(templateContext);
