@@ -132,6 +132,7 @@ const sharedUiTestConfig = {
   clearMocks: false,
   isolate: false,
   pool: "threads",
+  execArgv: sharedVitestConfig.test.execArgv,
   // Real-Chromium layout tests exceed Vitest's 5s default on 4vcpu CI runners;
   // without this the checks-ui lane flakes on cold hover/interaction tests.
   testTimeout: 60_000,
