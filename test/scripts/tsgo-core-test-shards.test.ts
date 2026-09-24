@@ -272,7 +272,9 @@ describe("changed core test graph selection", () => {
       const graphs = inventory();
       const source = "src/shared/public.ts";
       if (scope === "broad") {
-        for (const graph of graphs) graph.files.push(source);
+        for (const graph of graphs) {
+          graph.files.push(source);
+        }
       }
       const paths = scope === "narrow" ? [leaf] : [source];
       const selected = selectChangedTsgoCoreTestShards(paths, graphs) ?? TSGO_CORE_TEST_SHARDS;
@@ -296,8 +298,9 @@ describe("changed core test graph selection", () => {
       expect(Math.max(...stripes.map((stripe) => stripe.length))).toBeLessThanOrEqual(
         Math.ceil(TSGO_CORE_TEST_SHARDS.length / 5),
       );
-      if (scope === "narrow")
+      if (scope === "narrow") {
         expect(stripes.filter((stripe) => stripe.length === 0)).toHaveLength(4);
+      }
     },
   );
 

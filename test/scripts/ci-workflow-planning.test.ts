@@ -4800,7 +4800,11 @@ describe("ci workflow guards", () => {
         ],
       },
     ].flatMap((fixture) =>
-      (["hybrid", "github", "blacksmith"] as const).map((profile) => ({ ...fixture, profile })),
+      (["hybrid", "github", "blacksmith"] as const).map((profile) => ({
+        label: fixture.label,
+        paths: fixture.paths,
+        profile,
+      })),
     ),
   )("retains compiler coverage when narrowing $label on $profile", ({ paths, profile }) => {
     const changedPaths = [...paths, "docs/ci.md"];
