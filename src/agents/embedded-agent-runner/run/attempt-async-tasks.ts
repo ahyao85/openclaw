@@ -164,6 +164,7 @@ async function findTerminalTasks(
 export async function requiresCompletionRequiredAsyncTaskWait(params: {
   sessionKey: string | undefined;
   toolMetas: readonly AsyncStartedToolMeta[];
+  abortSignal?: AbortSignal;
 }): Promise<boolean> {
   const sessionKey = params.sessionKey?.trim();
   if (!sessionKey || !isCronRunSessionKey(sessionKey)) {
@@ -176,7 +177,7 @@ export async function requiresCompletionRequiredAsyncTaskWait(params: {
   ) {
     return true;
   }
-  const read = await prepareCompletionTaskRead();
+  const read = await prepareCompletionTaskRead(params.abortSignal);
   return listCompletionTasks(read, sessionKey).some(
     (task) =>
       COMPLETION_REQUIRED_TASK_KINDS.has(task.taskKind ?? "") &&
@@ -190,6 +191,7 @@ export async function shouldWaitForCompletionRequiredAsyncTasks(params: {
   sessionKey: string | undefined;
   toolMetas: readonly AsyncStartedToolMeta[];
   yieldDetected?: boolean;
+  abortSignal?: AbortSignal;
 }): Promise<boolean> {
   if (params.yieldDetected === true) {
     // sessions_yield pauses the turn so the completion event can wake it later;
@@ -199,6 +201,7 @@ export async function shouldWaitForCompletionRequiredAsyncTasks(params: {
   return requiresCompletionRequiredAsyncTaskWait({
     sessionKey: params.sessionKey,
     toolMetas: params.toolMetas,
+    abortSignal: params.abortSignal,
   });
 }
 

@@ -322,6 +322,7 @@ function prepareStream(
       const requiresTaskWait = await requiresCompletionRequiredAsyncTaskWait({
         sessionKey: attempt.sessionKey,
         toolMetas: toolMetasForTerminal,
+        abortSignal: input.runAbortController.signal,
       });
       if (deferredLifecycleOwner || requiresTaskWait) {
         return;

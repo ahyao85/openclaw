@@ -2,6 +2,7 @@ import path from "node:path";
 import { MessagePort } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
+import { loseFirstCronMutationReply } from "../../../test/helpers/cron/runtime-mutation.js";
 import {
   createCronRegressionState,
   createDueIsolatedJob,
@@ -39,7 +40,6 @@ import {
   reserveQueuedCronRun,
   supersedeActivatedCronRun,
 } from "./run-admission.js";
-import { loseFirstCronMutationReply } from "./runtime-mutation.test-support.js";
 
 async function withReservation(
   run: (fixture: {

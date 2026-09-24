@@ -1,6 +1,7 @@
 import { MessagePort } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, onTestFinished, vi } from "vitest";
+import { loseFirstCronMutationReply } from "../../../test/helpers/cron/runtime-mutation.js";
 import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
 import { captureTaskDeliveryWork } from "../../tasks/task-registry-delivery.test-support.js";
 import { clearCronJobActive, markCronJobActive } from "../active-jobs.js";
@@ -20,7 +21,6 @@ import { readCronTaskRunHistoryPage } from "../task-run-history.js";
 import { stop } from "./ops-lifecycle.js";
 import { ensureLoadedForRead } from "./ops-shared.js";
 import { makeCronRecoveryState, observeCronTimerAdmissions } from "./run-recovery.test-support.js";
-import { loseFirstCronMutationReply } from "./runtime-mutation.test-support.js";
 import { recomputeUnownedCronSchedules } from "./schedule-maintenance.js";
 import { createCronServiceState, type CronEvent } from "./state.js";
 import { tryCreateCronTaskRunHandle } from "./task-runs.js";

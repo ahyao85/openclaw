@@ -35,6 +35,7 @@ import { createCronRunReceiptSettlementOwner } from "./run-receipt-settlement.js
 import type {
   CronRunReceipt,
   CronRunReceiptHandle,
+  CronRunReceiptOwnerObservation,
   CronRunReceiptRecoveryCandidate,
   CronRunReceiptStatus,
 } from "./run-receipt.types.js";
@@ -58,13 +59,6 @@ import type {
 export type CronRunReceiptSettlementDisposition = "owner-unavailable";
 
 type ResolveReceiptAgentId = (job: CronJob) => string;
-
-type CronRunReceiptOwnerObservation = {
-  receiptId: string;
-  ownerPid: number;
-  ownerStartTime: number | null;
-  startedAtMs: number;
-};
 
 type PreparedCronRunReceiptAdjudication = {
   storeKey: string;
@@ -483,7 +477,7 @@ export function exactCronRunReceiptMatches(
 }
 
 export function isCronRunReceiptOwnerStale(
-  candidate: CronRunReceiptRecoveryCandidate,
+  candidate: CronRunReceiptOwnerObservation,
   nowMs = Date.now(),
 ): boolean {
   return ownerStale(candidate, nowMs);
