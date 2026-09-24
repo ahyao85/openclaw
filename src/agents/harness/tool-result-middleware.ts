@@ -10,7 +10,8 @@ import type {
   AgentToolResultMiddlewareEvent,
   OpenClawAgentToolResult,
 } from "../../plugins/agent-tool-result-middleware-types.js";
-import { PluginInstanceUnavailableError } from "../../plugins/plugin-instance-error.js";
+import { getPluginValueInstance } from "../../plugins/plugin-instance-scope.js";
+import { getPluginRegistryState } from "../../plugins/runtime-state.js";
 import { createLazyPromiseLoader } from "../../shared/lazy-promise.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import { readEmbeddedMessageDeliveryFact } from "../embedded-agent-message-delivery.js";
@@ -402,6 +403,22 @@ function reconcileDeliveredMessagingFailure(
     : result;
 }
 
+/**
+ * A run resolves middleware once. When a handler's own plugin was retired and is
+ * gone from the live registry, its post-processing no longer applies. This check
+ * runs before the handler, so a skipped plugin cannot have touched the result.
+ */
+function isRemovedPluginMiddleware(handler: AgentToolResultMiddleware): boolean {
+  const instance = getPluginValueInstance(handler);
+  return (
+    instance !== undefined &&
+    (instance.disposing || !instance.acceptingCalls) &&
+    !getPluginRegistryState()?.activeRegistry?.plugins.some(
+      (record) => record.id === instance.pluginId && record.enabled && record.status === "loaded",
+    )
+  );
+}
+
 export function createAgentToolResultMiddlewareRunner(
   ctx: AgentToolResultMiddlewareContext,
   handlers?: AgentToolResultMiddleware[],
@@ -441,6 +458,9 @@ export function createAgentToolResultMiddlewareRunner(
       );
       let current = sanitizeToolResultForMiddleware(event.result);
       for (const handler of handlersForRun) {
+        if (isRemovedPluginMiddleware(handler)) {
+          continue;
+        }
         try {
           const next = await handler({ ...event, result: current }, ctx);
           // Middleware may mutate event.result in place for legacy runtime parity.
@@ -462,13 +482,7 @@ export function createAgentToolResultMiddlewareRunner(
               deliveredMessagingFallback,
             );
           }
-        } catch (error) {
-          if (error instanceof PluginInstanceUnavailableError) {
-            // A plugin removed or reloaded during this run no longer owns
-            // post-processing; its absence must not erase the tool's own result.
-            log.debug(`[${ctx.runtime}] skipped tool result middleware from a retired plugin`);
-            continue;
-          }
+        } catch {
           log.warn(
             `[${ctx.runtime}] tool result middleware failed for ${truncateUtf16Safe(
               event.toolName,

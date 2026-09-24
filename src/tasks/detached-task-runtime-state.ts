@@ -20,16 +20,19 @@ export function getRegisteredDetachedTaskLifecycleRuntime():
   return requireActivePluginRegistry().detachedTaskRuntimes[0]?.runtime;
 }
 
-/** Core work retains its scoped owner until that generation retires; plugin work follows its exact live instance. */
-export function captureDetachedTaskRuntimeOwner(): {
+/**
+ * Core work retains its scoped owner; plugin work follows its exact live instance.
+ * Settlement of already-admitted work may move from a retired generation to the
+ * live one while core owns tasks in both. New work never leaves its admitting scope.
+ */
+export function captureDetachedTaskRuntimeOwner(options?: { settlement?: boolean }): {
   runtime: DetachedTaskLifecycleRuntime | undefined;
   assertCurrent: () => void;
 } {
   const scoped = requireActivePluginRegistry();
   const live = getActivePluginRegistry();
-  // Detached work can outlive the plugin generation that admitted it. Core owns
-  // settlement in both generations, so a retired scope settles on the live one.
   const adopted =
+    options?.settlement === true &&
     live &&
     isPluginRegistryRetired(scoped) &&
     !scoped.detachedTaskRuntimes[0] &&

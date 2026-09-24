@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { createAgentToolResultMiddlewareRunner } from "../agents/harness/tool-result-middleware.js";
 import { withEnv } from "../test-utils/env.js";
 import { createHookRunner } from "./hooks.js";
 import { loadInstalledPluginIndex } from "./installed-plugin-index.js";
@@ -29,6 +30,9 @@ import {
 import { loadPluginManifestRegistryForInstalledIndex } from "./manifest-registry-installed.js";
 import { loadPluginManifestRegistryCore } from "./manifest-registry.js";
 import { createPluginCache, retirePluginCache, withPluginCache } from "./plugin-cache.js";
+import { getPluginInstance } from "./plugin-instance-scope.js";
+import { createEmptyPluginRegistry } from "./registry-empty.js";
+import { setActivePluginRegistry } from "./runtime.js";
 
 afterEach(globalAfterEach0);
 afterAll(globalAfterAll1);
@@ -1341,6 +1345,65 @@ ${channelPluginSource({
       vi.useRealTimers();
     }
   });
+
+  it.each([
+    { successor: "removed", preserved: true },
+    { successor: "replaced", preserved: false },
+  ])(
+    "keeps a run's tool result only when its middleware plugin was $successor",
+    async ({ successor, preserved }) => {
+      useNoBundledPlugins();
+      const pluginId = `tool-result-middleware-${successor}`;
+      const plugin = writePlugin({
+        id: pluginId,
+        filename: `${pluginId}.cjs`,
+        registration: `api.registerAgentToolResultMiddleware((event) => ({
+          result: { ...event.result, content: [{ type: "text", text: "compacted" }] },
+        }), { runtimes: ["openclaw"] });`,
+      });
+      updatePluginManifest(plugin, { contracts: { agentToolResultMiddleware: ["openclaw"] } });
+      const registry = loadRegistryFromSinglePlugin({
+        plugin,
+        pluginConfig: { allow: [pluginId] },
+      });
+      const record = registry.plugins.find((entry) => entry.id === pluginId);
+      const instance = record && getPluginInstance(record);
+      const entry = registry.agentToolResultMiddlewares[0];
+      if (!instance || !entry) {
+        throw new Error("expected a loaded middleware plugin instance");
+      }
+      setActivePluginRegistry(registry);
+      // A run resolves its middleware once and keeps that list.
+      const runner = createAgentToolResultMiddlewareRunner({ runtime: "openclaw" }, [
+        entry.handler,
+      ]);
+      const event = {
+        toolCallId: "call-1",
+        toolName: "exec",
+        args: {},
+        result: { content: [{ type: "text" as const, text: "exit 0" }], details: {} },
+      };
+      expect((await runner.applyToolResultMiddleware(event)).content).toEqual([
+        { type: "text", text: "compacted" },
+      ]);
+
+      const next = createEmptyPluginRegistry();
+      if (!preserved) {
+        next.plugins.push({ ...record });
+      }
+      setActivePluginRegistry(next);
+      await instance.dispose();
+      const result = await runner.applyToolResultMiddleware(event);
+      if (preserved) {
+        // The removed plugin no longer post-processes; the tool's own output survives.
+        expect(result.content).toEqual(event.result.content);
+        expect(result.details).not.toMatchObject({ middlewareError: true });
+      } else {
+        // A replacement exists, so the stale handler fails closed.
+        expect(result.details).toEqual({ status: "error", middlewareError: true });
+      }
+    },
+  );
 
   it("leaves agent tool-result middleware unbounded when no timeout is configured", async () => {
     useNoBundledPlugins();

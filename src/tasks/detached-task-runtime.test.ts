@@ -229,7 +229,7 @@ describe("detached-task-runtime", () => {
     { successor: "core-owned", settles: true },
     { successor: "plugin-owned", settles: false },
   ])(
-    "settles work from a replaced plugin generation only while core still owns tasks ($successor)",
+    "settles, but never admits, work from a replaced plugin generation ($successor)",
     async ({ settles }) => {
       const task = createFakeTaskRecord();
       const transition = vi
@@ -244,6 +244,20 @@ describe("detached-task-runtime", () => {
         if (!settles) {
           setDetachedTaskLifecycleRuntime({ ...getDetachedTaskLifecycleRuntime() });
         }
+        // The retired scope cannot admit new work, even while core owns tasks.
+        expect(() =>
+          withPluginRuntimeRegistryScope(spawning, () =>
+            createPreparedRunningTask({
+              runtime: "subagent",
+              ownerKey: "agent:main:main",
+              runId: "run-after-retirement",
+              task: "new work from a retired scope",
+            }),
+          ),
+        ).toThrow(DetachedTaskRuntimeOwnerRetiredError);
+        expect(mockCreateRunningTaskRunCoreWithReceiptAsync).not.toHaveBeenCalled();
+        expect(mockCreateRunningTaskRunCore).not.toHaveBeenCalled();
+        // Work it already admitted still settles.
         const settlement = withPluginRuntimeRegistryScope(spawning, () =>
           finalizeTaskRunByRunIdAsync({ runId: task.runId!, status: "succeeded", endedAt: 200 }),
         );

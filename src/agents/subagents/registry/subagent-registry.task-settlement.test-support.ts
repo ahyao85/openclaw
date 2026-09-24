@@ -13,6 +13,7 @@ import { readTaskRegistryRevision } from "../../../tasks/task-registry-state.js"
 import {
   configureTaskRegistryRuntime,
   getTaskRegistryStore,
+  onTaskRegistryChange,
 } from "../../../tasks/task-registry.store.js";
 import {
   resetTaskFlowRegistryForTests,
@@ -24,7 +25,6 @@ import {
   createSubagentRunRecord,
   mockGatewayMethods,
   type SubagentRegistryHarness,
-  waitForFast,
 } from "../../subagent-test-fixtures.test-helpers.js";
 import { SUBAGENT_ENDED_REASON_COMPLETE } from "./subagent-lifecycle-events.js";
 import { observeRootWork } from "./subagent-registry.browser-cleanup.test-support.js";
@@ -267,41 +267,52 @@ export function registerReplacedGenerationTaskSettlementTest({
   it.each([
     { name: "unchanged", replaced: false },
     { name: "replaced by a plugin reload", replaced: true },
-  ])("settles a child task when the spawning generation is $name", async ({ replaced }) => {
-    const mod = getRegistry();
-    resetTaskRegistryForTests({ persist: false });
-    resetTaskFlowRegistryForTests({ persist: false });
-    const runId = `run-spawn-generation-${String(replaced)}`;
-    const spawning = createEmptyPluginRegistry();
-    setActivePluginRegistry(spawning);
-    const childEnded = createDeferred<{ status: "ok"; startedAt: number; endedAt: number }>();
-    mockGatewayMethods(mocks.callGateway, { "agent.wait": () => childEnded.promise });
-    const settleRootWork = observeRootWork();
-    try {
-      // The spawning turn runs inside its admitted plugin generation.
-      withPluginRuntimeRegistryScope(spawning, () =>
-        mod.registerSubagentRun({
-          runId,
-          task: "outlive a plugin reload",
-          expectsCompletionMessage: false,
-        }),
-      );
-      expect(findTaskByRunIdForStatus(runId)).toMatchObject({ status: "running" });
-      if (replaced) {
-        // A plugin enable/disable publishes a successor while the child still runs.
-        setActivePluginRegistry(createEmptyPluginRegistry());
-      }
-      childEnded.resolve({ status: "ok", startedAt: Date.now() - 1_000, endedAt: Date.now() });
-
-      await waitForFast(async () => {
-        await settleRootWork(true);
-        expect(findTaskByRunIdForStatus(runId)).toMatchObject({ status: "succeeded" });
-      });
-    } finally {
-      await settleRootWork();
-      resetPluginRuntimeStateForTest();
+  ])(
+    "settles a child task when the spawning generation is $name",
+    async ({ replaced }) => {
+      const mod = getRegistry();
       resetTaskRegistryForTests({ persist: false });
       resetTaskFlowRegistryForTests({ persist: false });
-    }
-  });
+      const runId = `run-spawn-generation-${String(replaced)}`;
+      const spawning = createEmptyPluginRegistry();
+      setActivePluginRegistry(spawning);
+      const childEnded = createDeferred<{ status: "ok"; startedAt: number; endedAt: number }>();
+      mockGatewayMethods(mocks.callGateway, { "agent.wait": () => childEnded.promise });
+      const settled = createDeferred<void>();
+      // The task registry publishes the terminal write; await it instead of polling.
+      const stopObserving = onTaskRegistryChange(() => {
+        if (findTaskByRunIdForStatus(runId)?.status === "succeeded") {
+          settled.resolve();
+        }
+      });
+      const settleRootWork = observeRootWork();
+      try {
+        // The spawning turn runs inside its admitted plugin generation.
+        withPluginRuntimeRegistryScope(spawning, () =>
+          mod.registerSubagentRun({
+            runId,
+            task: "outlive a plugin reload",
+            expectsCompletionMessage: false,
+          }),
+        );
+        expect(findTaskByRunIdForStatus(runId)).toMatchObject({ status: "running" });
+        if (replaced) {
+          // A plugin enable/disable publishes a successor while the child still runs.
+          setActivePluginRegistry(createEmptyPluginRegistry());
+        }
+        childEnded.resolve({ status: "ok", startedAt: Date.now() - 1_000, endedAt: Date.now() });
+
+        await settled.promise;
+        expect(findTaskByRunIdForStatus(runId)).toMatchObject({ status: "succeeded" });
+      } finally {
+        stopObserving();
+        await settleRootWork();
+        resetPluginRuntimeStateForTest();
+        resetTaskRegistryForTests({ persist: false });
+        resetTaskFlowRegistryForTests({ persist: false });
+      }
+      // An unsettled child never publishes; fail promptly instead of waiting on retries.
+    },
+    10_000,
+  );
 }

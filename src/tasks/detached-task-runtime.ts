@@ -81,7 +81,7 @@ export function getDetachedTaskLifecycleRuntime(): DetachedTaskLifecycleRuntime 
 
 /** Exact settlement stays with the registered runtime; unsupported owners never fall through. */
 export function transitionTaskAssignment(params: DetachedTaskAssignmentTransition): TaskRecord[] {
-  const owner = captureDetachedTaskRuntimeOwner();
+  const owner = captureDetachedTaskRuntimeOwner({ settlement: true });
   const assertCurrent = () => {
     owner.assertCurrent();
     params.assertCurrent();
