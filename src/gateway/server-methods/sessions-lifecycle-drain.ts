@@ -124,7 +124,7 @@ export async function prepareSessionLifecycleDrain(
   const workerService = params.context.workerEnvironmentService;
   const workerControl = asWorkerInferenceControl(workerService);
   let workerDrain: AcceptedWorkerInferenceSessionDrain | undefined;
-  let workerStartFailure: { error: unknown; drained: Promise<void> } | undefined;
+  let workerDrained: Promise<void> | undefined;
   let terminalDrain: AgentTerminalSessionDrain | undefined;
   let reclaimed: Promise<void> | undefined;
   let releaseAdmissions = () => {};
@@ -179,14 +179,9 @@ export async function prepareSessionLifecycleDrain(
             throw new Error("Worker inference drain is unavailable");
           }
           if (workerDrain) {
-            const drained = workerDrain.drained;
-            void drained.catch(() => {});
-            try {
-              workerDrain.start();
-            } catch (error) {
-              workerStartFailure = { error, drained };
-              throw error;
-            }
+            workerDrained = workerDrain.drained;
+            void workerDrained.catch(() => {});
+            workerDrain.start();
           }
           terminalDrain = params.context.terminalSessions?.beginAgentSessionDrain({
             kind: "agent",
@@ -299,10 +294,8 @@ export async function prepareSessionLifecycleDrain(
             .then(() => true)
         : Promise.resolve(false)
       : Promise.resolve(true);
-    const workerWork = workerDrain
-      ? withTimeout(workerDrain.drained, timeoutMs, "worker inference lifecycle drain").then(
-          () => true,
-        )
+    const workerWork = workerDrained
+      ? withTimeout(workerDrained, timeoutMs, "worker inference lifecycle drain").then(() => true)
       : Promise.resolve(true);
     const terminalWork = terminalDrain
       ? withTimeout(terminalDrain.drained, timeoutMs, "agent terminal lifecycle drain").then(
@@ -346,10 +339,11 @@ export async function prepareSessionLifecycleDrain(
     };
   } catch (error) {
     await reclaimed?.catch(() => {});
-    if (workerStartFailure) {
-      // Acceptance retains raw work even when start throws; this join is outside the mutex.
-      const failures = new Set([error, workerStartFailure.error]);
-      const [settled] = await Promise.allSettled([workerStartFailure.drained]);
+    if (workerDrained) {
+      // Every failure after acceptance retains raw settlement outside the mutex,
+      // including a timeout of the caller's wait or a later authority refusal.
+      const failures = new Set([error]);
+      const [settled] = await Promise.allSettled([workerDrained]);
       if (settled.status === "rejected") {
         failures.add(settled.reason);
       }
@@ -359,7 +353,7 @@ export async function prepareSessionLifecycleDrain(
         failures.add(releaseError);
       }
       if (failures.size > 1) {
-        throw new AggregateError([...failures], "Worker drain start and settlement failed", {
+        throw new AggregateError([...failures], "Session lifecycle and worker settlement failed", {
           cause: error,
         });
       }
