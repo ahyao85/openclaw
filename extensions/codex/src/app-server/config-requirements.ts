@@ -1,13 +1,9 @@
 import { readFileSync } from "node:fs";
 import { parse as parseToml, type TomlTable } from "smol-toml";
-import type {
-  CodexAppServerApprovalsReviewer,
-  CodexAppServerManagedApprovalPolicy,
-  CodexAppServerSandboxMode,
-  OpenClawExecMode,
-} from "./config-contracts.js";
+import type { CodexAppServerManagedApprovalPolicy, OpenClawExecMode } from "./config-contracts.js";
 import { resolveApprovalPolicy, resolveApprovalsReviewer } from "./config-exec-policy.js";
 import { readNonEmptyString, readRecord } from "./config-utils.js";
+import type { CodexApprovalsReviewer, CodexSandboxMode } from "./protocol.js";
 
 const UNIX_CODEX_REQUIREMENTS_PATH = "/etc/codex/requirements.toml";
 const WINDOWS_CODEX_REQUIREMENTS_SUFFIX = "\\OpenAI\\Codex\\requirements.toml";
@@ -46,7 +42,7 @@ function resolveCodexRequirementsPath(env: NodeJS.ProcessEnv, platform: NodeJS.P
 export function parseAllowedSandboxModesFromCodexRequirements(
   content: string,
   hostName: string,
-): Set<CodexAppServerSandboxMode> | undefined {
+): Set<CodexSandboxMode> | undefined {
   const requirements = parseCodexRequirements(content);
   const remoteSandboxModes = parseMatchingRemoteSandboxModesFromCodexRequirements(
     requirements,
@@ -76,7 +72,7 @@ export function parseAllowedApprovalPoliciesFromCodexRequirements(
 
 export function parseAllowedApprovalsReviewersFromCodexRequirements(
   content: string,
-): Set<CodexAppServerApprovalsReviewer> | undefined {
+): Set<CodexApprovalsReviewer> | undefined {
   const values = readRequirementsStringArray(
     parseCodexRequirements(content)?.allowed_approvals_reviewers,
   );
@@ -85,14 +81,14 @@ export function parseAllowedApprovalsReviewersFromCodexRequirements(
   }
   const normalizedReviewers = values
     .map((entry) => normalizeRequirementsApprovalsReviewer(entry))
-    .filter((entry): entry is CodexAppServerApprovalsReviewer => entry !== undefined);
+    .filter((entry): entry is CodexApprovalsReviewer => entry !== undefined);
   return normalizedReviewers.length > 0 ? new Set(normalizedReviewers) : undefined;
 }
 
 function parseMatchingRemoteSandboxModesFromCodexRequirements(
   requirements: TomlTable | undefined,
   hostName: string,
-): Set<CodexAppServerSandboxMode> | undefined {
+): Set<CodexSandboxMode> | undefined {
   const normalizedHostName = normalizeRequirementsHostName(hostName);
   const remoteConfigs = requirements?.remote_sandbox_config;
   if (normalizedHostName === undefined || !Array.isArray(remoteConfigs)) {
@@ -113,13 +109,13 @@ function parseMatchingRemoteSandboxModesFromCodexRequirements(
 
 function parseRequirementsSandboxModes(
   values: string[] | undefined,
-): Set<CodexAppServerSandboxMode> | undefined {
+): Set<CodexSandboxMode> | undefined {
   if (values === undefined) {
     return undefined;
   }
   const normalizedModes = values
     .map((entry) => normalizeRequirementsSandboxMode(entry))
-    .filter((entry): entry is CodexAppServerSandboxMode => entry !== undefined);
+    .filter((entry): entry is CodexSandboxMode => entry !== undefined);
   return normalizedModes.length > 0 ? new Set(normalizedModes) : undefined;
 }
 
@@ -137,7 +133,7 @@ function readRequirementsStringArray(value: unknown): string[] | undefined {
     : undefined;
 }
 
-function normalizeRequirementsSandboxMode(value: string): CodexAppServerSandboxMode | undefined {
+function normalizeRequirementsSandboxMode(value: string): CodexSandboxMode | undefined {
   const compact = value.replace(/[\s_-]/g, "").toLowerCase();
   if (compact === "readonly") {
     return "read-only";
@@ -193,9 +189,7 @@ function normalizeRequirementsApprovalPolicy(
   return resolveApprovalPolicy(normalized);
 }
 
-function normalizeRequirementsApprovalsReviewer(
-  value: string,
-): CodexAppServerApprovalsReviewer | undefined {
+function normalizeRequirementsApprovalsReviewer(value: string): CodexApprovalsReviewer | undefined {
   const normalized = value.trim().toLowerCase();
   return resolveApprovalsReviewer(normalized);
 }
@@ -222,9 +216,9 @@ export function selectGuardianApprovalPolicy(
 }
 
 export function selectGuardianApprovalsReviewer(
-  allowedApprovalsReviewers: Set<CodexAppServerApprovalsReviewer> | undefined,
+  allowedApprovalsReviewers: Set<CodexApprovalsReviewer> | undefined,
   execModeRequiringAutoReviewer?: Extract<OpenClawExecMode, "auto">,
-): CodexAppServerApprovalsReviewer {
+): CodexApprovalsReviewer {
   if (allowedApprovalsReviewers === undefined || allowedApprovalsReviewers.has("auto_review")) {
     return "auto_review";
   }
@@ -243,9 +237,9 @@ export function selectGuardianApprovalsReviewer(
 }
 
 export function selectUserApprovalsReviewer(
-  allowedApprovalsReviewers: Set<CodexAppServerApprovalsReviewer> | undefined,
+  allowedApprovalsReviewers: Set<CodexApprovalsReviewer> | undefined,
   execModeRequiringUserReviewer?: OpenClawExecMode,
-): CodexAppServerApprovalsReviewer {
+): CodexApprovalsReviewer {
   if (allowedApprovalsReviewers === undefined || allowedApprovalsReviewers.has("user")) {
     return "user";
   }
