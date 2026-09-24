@@ -1,4 +1,4 @@
-import type { APIMessage } from "discord-api-types/v10";
+import type { APIAttachment, APIMessage } from "discord-api-types/v10";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { registerSessionBindingAdapter } from "openclaw/plugin-sdk/conversation-runtime";
 import { onTestFinished } from "vitest";
@@ -89,11 +89,11 @@ export function createDiscordMessage(params: {
     bot: boolean;
     username?: string;
   };
-  mentionedUsers?: Array<{ id: string }>;
+  mentionedUsers?: Array<{ id: string; username?: string }>;
   mentionedEveryone?: boolean;
   messageReference?: import("../internal/discord.js").Message["messageReference"];
   referencedMessage?: import("../internal/discord.js").Message;
-  attachments?: Array<Record<string, unknown>>;
+  attachments?: Array<Pick<APIAttachment, "id" | "filename" | "url"> & Partial<APIAttachment>>;
   webhookId?: string;
   type?: import("../internal/discord.js").MessageType;
   timestamp?: string;
@@ -108,18 +108,27 @@ export function createDiscordMessage(params: {
     timestamp: params.timestamp ?? new Date().toISOString(),
     channel_id: params.channelId,
     webhook_id: params.webhookId,
-    attachments: (params.attachments ?? []) as APIMessage["attachments"],
+    attachments: (params.attachments ?? []).map((attachment) =>
+      Object.assign({ size: 1, proxy_url: attachment.url }, attachment),
+    ),
     mentions: (params.mentionedUsers ?? []).map((user) => ({
-      username: user.id,
+      id: user.id,
+      username: user.username ?? user.id,
+      global_name: null,
       discriminator: "0",
       avatar: null,
-      ...user,
     })),
     mention_roles: [],
     mention_everyone: params.mentionedEveryone ?? false,
     message_reference: params.messageReference,
     ...(params.referencedMessage ? { referenced_message: params.referencedMessage.rawData } : {}),
-    author: { username: params.author.id, discriminator: "0", avatar: null, ...params.author },
+    author: {
+      username: params.author.id,
+      global_name: null,
+      discriminator: "0",
+      avatar: null,
+      ...params.author,
+    },
     edited_timestamp: null,
     tts: false,
     pinned: false,
