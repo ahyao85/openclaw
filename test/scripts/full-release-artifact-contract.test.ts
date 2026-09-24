@@ -31,8 +31,10 @@ import {
   MAX_RELEASE_ARTIFACT_BYTES,
   serializeReleaseArtifact,
 } from "../../scripts/full-release-validation-policy.mjs";
+import { evaluateReleasePublishGates } from "../../scripts/lib/release-publish-gates.mts";
 import { tryReadReleaseDecisionArtifact } from "../../scripts/release-ci-summary.mjs";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import { createManifestWorkflowFixture } from "./full-release-manifest-workflow.test-support.js";
 
 const SHA = "a".repeat(40);
 
@@ -205,7 +207,7 @@ describe("retained publication admission", () => {
 
   it.each(["beta", "stable"])(
     "writes fresh %s performance and Telegram evidence through the actual workflow command",
-    (releaseProfile) => {
+    async (releaseProfile) => {
       const telegram = {
         npm_telegram_package_spec: "openclaw@2026.9.9",
         npm_telegram_provider_mode: "live-frontier",
@@ -256,12 +258,18 @@ describe("retained publication admission", () => {
           ),
         ]),
       );
-      const result = spawnSync("bash", ["-c", writer.run], {
+      expect(plan.targetSha).toBe(context.targetRef);
+      const fixture = await createManifestWorkflowFixture(directory, {
+        targetSha: context.targetRef,
+        workflowSha: context.workflowSha,
+        workflowFullRef: context.workflowFullRef,
+      });
+      // Host shell startup files must not replace the hermetic fixture PATH.
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-c", writer.run], {
         encoding: "utf8",
         env: {
           ...Object.fromEntries(Object.keys(writer.env).map((key) => [key, ""])),
           ...selectedEnv,
-          PATH: process.env.PATH,
           RUNNER_TEMP: directory,
           GITHUB_RUN_ID: context.runId,
           GITHUB_RUN_ATTEMPT: context.runAttempt,
@@ -274,6 +282,7 @@ describe("retained publication admission", () => {
           RUN_RELEASE_SOAK: context.runReleaseSoak,
           RELEASE_EXECUTION_PLAN_PATH: planPath,
           DIAGNOSTIC_DRAIN_PATH: drainPath,
+          ...fixture.env,
         },
       });
       expect(result.status, result.stderr).toBe(0);
@@ -284,11 +293,23 @@ describe("retained publication admission", () => {
         ),
       );
       expect(manifest.releaseProfile).toBe(releaseProfile);
+      // Validation reports performance as advisory; it does not waive the strict
+      // stable publication boundary introduced by the release-policy owner.
       expect(manifest.controls).toMatchObject({
-        performanceBlocking: releaseProfile !== "beta",
+        performanceBlocking: false,
         performanceReportPublication: "artifact-only",
       });
-      expect(manifest.childRuns.productPerformance.blocking).toBe(releaseProfile !== "beta");
+      expect(manifest.childRuns.productPerformance.blocking).toBe(false);
+      expect(
+        evaluateReleasePublishGates({
+          manifest,
+          releaseTag: "v2026.9.9",
+          npmDistTag: "latest",
+          consumer: "publisher",
+          expectedSha: context.targetRef,
+          currentStableSoakWaiver: "",
+        }).find((gate) => gate.id === "publisher.performance"),
+      ).toMatchObject({ status: "FAIL" });
       expect(manifest.validationInputs).toMatchObject({
         npmTelegramPackageSpec: "openclaw@2026.9.9",
         npmTelegramProviderMode: "live-frontier",
@@ -297,6 +318,20 @@ describe("retained publication admission", () => {
         allowUnreleasedChangelog: "true",
       });
       expect(manifest.publicationAdmission).toEqual(plan.publicationAdmission);
+      expect(manifest.publishInputs).toMatchObject({
+        targetSha: plan.targetSha,
+        pluginSdkApiEvidenceDigest: fixture.sdkDigest,
+        pluginSdkApiAcknowledgement: "",
+        stableSoakWaiver: "",
+        npmDecisions: [expect.objectContaining({ packageName: "openclaw", decision: "plan" })],
+      });
+      expect(fixture.readCalls()).toEqual(
+        expect.arrayContaining([
+          ["gh", "repos/openclaw/openclaw/actions/runs/81/attempts/1"],
+          ["fetch", "https://api.github.com/repos/openclaw/openclaw/actions/artifacts/402/zip"],
+          ["fetch", "https://registry.npmjs.org/openclaw"],
+        ]),
+      );
     },
   );
 
@@ -1118,7 +1153,7 @@ describe("full release artifact contract", () => {
     { reuse: true, source: true },
   ])(
     "writes all matrix evidence with reuse=$reuse source=$source without argv size limits",
-    ({ reuse, source }) => {
+    async ({ reuse, source }) => {
       const workflow = parse(readFileSync(".github/workflows/full-release-validation.yml", "utf8"));
       const writer = workflow.jobs.summary.steps.find(
         (entry: { name: string }) => entry.name === "Write release validation manifest",
@@ -1199,6 +1234,7 @@ describe("full release artifact contract", () => {
       );
       const trustedWorkflow = { fullRef: "refs/heads/main", ref: "main", sha: "d".repeat(40) };
       const sourceManifest = {
+        workflowName: "Full Release Validation",
         ...(source
           ? { sourceAdmissionContract: "1", sourceAdmission: oldSource, trustedWorkflow }
           : {}),
@@ -1244,7 +1280,14 @@ describe("full release artifact contract", () => {
       const drainPath = join(dir, "drain.json");
       writeFileSync(planPath, serializeReleaseArtifact(plan));
       writeFileSync(drainPath, serializeReleaseArtifact(drain));
-      const result = spawnSync("bash", ["-c", writer.run], {
+      const fixture = source
+        ? await createManifestWorkflowFixture(dir, {
+            targetSha: SHA,
+            workflowSha: "d".repeat(40),
+            workflowFullRef: "refs/heads/release-ci/test",
+          })
+        : undefined;
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-c", writer.run], {
         encoding: "utf8",
         env: {
           ...Object.fromEntries(Object.keys(writer.env).map((key) => [key, ""])),
@@ -1270,6 +1313,7 @@ describe("full release artifact contract", () => {
           RUN_RELEASE_SOAK: "true",
           RELEASE_EXECUTION_PLAN_PATH: planPath,
           DIAGNOSTIC_DRAIN_PATH: drainPath,
+          ...fixture?.env,
         },
       });
       expect(result.status, result.stderr).toBe(0);
@@ -1280,6 +1324,20 @@ describe("full release artifact contract", () => {
       expect(Buffer.byteLength(bytes)).toBeLessThan(MAX_RELEASE_ARTIFACT_BYTES);
       const manifest = JSON.parse(bytes);
       if (source) {
+        assert.ok(fixture);
+        expect(manifest.publishInputs).toMatchObject({
+          targetSha: SHA,
+          pluginSdkApiEvidenceDigest: fixture.sdkDigest,
+          pluginSdkApiAcknowledgement: "",
+          stableSoakWaiver: "",
+        });
+        expect(fixture.readCalls()).toEqual(
+          expect.arrayContaining([
+            ["gh", "repos/openclaw/openclaw/actions/runs/81/attempts/1"],
+            ["fetch", "https://api.github.com/repos/openclaw/openclaw/actions/artifacts/402/zip"],
+            ["fetch", "https://registry.npmjs.org/openclaw"],
+          ]),
+        );
         expect(
           validatePublicationSourceBinding(manifest, { sourceAdmissionContract: "1" }),
         ).toEqual(sourceAdmission);
