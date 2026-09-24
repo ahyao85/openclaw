@@ -382,6 +382,10 @@ Doctor verifies that condition and imports the target in one transaction. This c
 use a larger transaction than normal batched imports. A newly created index with a
 different file identity remains an ordinary import when recovery history is readable.
 Keep recovery manifests with their original files so Doctor can distinguish the two.
+Shared indexes retain a receipt for each agent's SQLite target; another owner's
+receipt alone does not establish restored provenance for the selected target. Explicit custom
+stores keep their existing restore/import admission outside the state directory;
+that does not make their files eligible for automatic recovery cleanup.
 
 After verifying the migration and current history, use
 `openclaw update cleanup --dry-run` to inspect retained recovery data without

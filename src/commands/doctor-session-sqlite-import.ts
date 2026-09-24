@@ -12,7 +12,9 @@ import {
   type MigrationArtifactIdentity,
 } from "../infra/session-sqlite-migration-artifact.js";
 import {
+  assertSafeSessionSqliteMigrationMove,
   canonicalMigrationFilePath,
+  filterRestoreManifestTargets,
   hasSymbolicLinkInDirectoryPath,
   migrationMoveKey,
   readSessionSqliteMigrationManifest,
@@ -136,6 +138,7 @@ function prepareRestoredSessionIndex(params: {
   const storePath = canonicalMigrationFilePath(target.storePath);
   const sqlitePath = resolveTargetSqlitePath(target, params.env);
   const receipts = new Map<string, MigrationArtifactIdentity>();
+  let hasSelectedOwner = false;
   for (const refs of recoveryInventory.references.values()) {
     for (const ref of refs) {
       if (
@@ -160,17 +163,21 @@ function prepareRestoredSessionIndex(params: {
       ) {
         continue;
       }
+      // Shared originals have several owners; explicit restore admission also covers
+      // custom stores outside automatic cleanup discovery.
+      const selectedOwner = filterRestoreManifestTargets(ref.run.manifest, [
+        { agentId: target.agentId, storePath, sqlitePath },
+      ]).includes(ref.target);
       if (
         !sameMigrationArtifact(artifact.identity, expectedIndexIdentity) ||
-        !ref.trusted ||
         !ref.consumedByRestore ||
-        ref.target.agentId !== target.agentId ||
         ref.target.storePath !== storePath ||
-        ref.target.sqlitePath !== sqlitePath ||
+        (ref.target.agentId === target.agentId && !selectedOwner) ||
         artifact.disposal.state !== "retained"
       ) {
         throw new Error(`Restored session index evidence cannot be verified: ${storePath}`);
       }
+      assertSafeSessionSqliteMigrationMove(ref.move, ref.target);
       const identity = readMigrationArtifactIdentity(ref.run.manifestPath);
       if (
         JSON.stringify(readSessionSqliteMigrationManifest(ref.run.manifestPath)) !==
@@ -180,10 +187,14 @@ function prepareRestoredSessionIndex(params: {
         throw new Error(`Session restore receipt changed: ${ref.run.manifestPath}`);
       }
       receipts.set(ref.run.manifestPath, identity);
+      hasSelectedOwner ||= selectedOwner;
     }
   }
   if (receipts.size === 0) {
     return undefined;
+  }
+  if (!hasSelectedOwner) {
+    throw new Error(`Restored session index evidence cannot be verified: ${storePath}`);
   }
   // A per-file restore can succeed during a partial or failed run. It proves provenance,
   // not permission to replace the current node; the import transaction preserves that owner.

@@ -289,95 +289,106 @@ describe("runDoctorSessionSqlite", () => {
     },
   );
 
-  it.each(["completed restore", "interrupted linked restore"] as const)(
-    "preserves current session state while retiring a reimport after %s",
-    async (restoreState) => {
-      const { store, imported } = await createVerifiedRecoveryStore();
-      const manifest = readMigrationManifest(imported.migrationRun?.manifestPath);
-      expect(manifest.completedAt).toBeDefined();
-      const originals = [store.storePath, store.transcriptPath].map((sourcePath) => {
-        const move = expectDefined(
-          manifest.targets[0]?.completedMoves.find((item) => item.sourcePath === sourcePath),
-          "completed import source",
-        );
-        return {
-          sourcePath,
-          archivePath: move.archivePath,
-          bytes: fs.readFileSync(move.archivePath),
-        };
-      });
-      const scope = {
-        agentId: "main",
-        env: store.env,
-        sessionKey: "agent:main:main",
-        storePath: store.storePath,
-      };
-      const currentTimestamp = Date.parse("2026-08-31T00:00:00.000Z");
-      const currentMetadata = {
-        label: "Renamed after import",
-        pinnedAt: currentTimestamp,
-        lastActivityAt: currentTimestamp + 1000,
-        updatedAt: currentTimestamp + 2000,
-      };
-      await updateSessionEntry(scope, () => currentMetadata);
-      const transcriptScope = { ...scope, sessionId: "session-1" };
-      const appended = await appendTranscriptMessage(transcriptScope, {
-        eventId: "after-import",
-        now: currentMetadata.updatedAt,
-        message: { role: "user", content: "Current history after the completed import" },
-      });
-      expect(appended.appended).toBe(true);
-      const currentEntry = structuredClone(
-        expectDefined(loadSessionEntry(scope), "current session entry"),
+  it.each([
+    "completed restore",
+    "interrupted linked restore",
+    "external completed restore",
+  ] as const)("preserves current session state on reimport after %s", async (restoreState) => {
+    const store = createLegacyStore({
+      customStore: restoreState === "external completed restore",
+      transcriptLines: RECOVERY_TRANSCRIPT_LINES,
+    });
+    const imported = await importLegacyStore(store);
+    expect(imported.targets[0]?.issues).toEqual([]);
+    closeOpenClawAgentDatabasesForTest();
+    const manifest = readMigrationManifest(imported.migrationRun?.manifestPath);
+    expect(manifest.completedAt).toBeDefined();
+    const originals = [store.storePath, store.transcriptPath].map((sourcePath) => {
+      const move = expectDefined(
+        manifest.targets[0]?.completedMoves.find((item) => item.sourcePath === sourcePath),
+        "completed import source",
       );
-      expect(currentEntry).toMatchObject({
-        label: currentMetadata.label,
-        pinnedAt: currentMetadata.pinnedAt,
-        lastActivityAt: currentMetadata.lastActivityAt,
-      });
-      const currentHistory = structuredClone(loadTranscriptEventsSync(transcriptScope));
-      closeOpenClawAgentDatabasesForTest();
+      return {
+        sourcePath,
+        archivePath: move.archivePath,
+        bytes: fs.readFileSync(move.archivePath),
+      };
+    });
+    const scope = {
+      agentId: "main",
+      env: store.env,
+      sessionKey: "agent:main:main",
+      storePath: store.storePath,
+    };
+    const currentTimestamp = Date.parse("2026-08-31T00:00:00.000Z");
+    const currentMetadata = {
+      label: "Renamed after import",
+      pinnedAt: currentTimestamp,
+      lastActivityAt: currentTimestamp + 1000,
+      updatedAt: currentTimestamp + 2000,
+    };
+    await updateSessionEntry(scope, () => currentMetadata);
+    const transcriptScope = { ...scope, sessionId: "session-1" };
+    const appended = await appendTranscriptMessage(transcriptScope, {
+      eventId: "after-import",
+      now: currentMetadata.updatedAt,
+      message: { role: "user", content: "Current history after the completed import" },
+    });
+    expect(appended.appended).toBe(true);
+    const currentEntry = structuredClone(
+      expectDefined(loadSessionEntry(scope), "current session entry"),
+    );
+    expect(currentEntry).toMatchObject({
+      label: currentMetadata.label,
+      pinnedAt: currentMetadata.pinnedAt,
+      lastActivityAt: currentMetadata.lastActivityAt,
+    });
+    const currentHistory = structuredClone(loadTranscriptEventsSync(transcriptScope));
+    closeOpenClawAgentDatabasesForTest();
 
-      if (restoreState === "interrupted linked restore") {
-        // Persist the two-name inode left by a crash before the restore receipt and unlink.
-        for (const original of originals) {
-          fs.linkSync(original.archivePath, original.sourcePath);
-        }
-        expect(readMigrationManifest(imported.migrationRun?.manifestPath).restore).toBeUndefined();
-      } else {
-        const restored = await runDoctorSessionSqlite({
-          env: store.env,
-          mode: "restore",
-          store: store.storePath,
-        });
-        expect(restored.targets[0]?.issues).toEqual([]);
-      }
+    if (restoreState === "interrupted linked restore") {
+      // Persist the two-name inode left by a crash before the restore receipt and unlink.
       for (const original of originals) {
-        expect(fs.readFileSync(original.sourcePath)).toEqual(original.bytes);
+        fs.linkSync(original.archivePath, original.sourcePath);
       }
-      const reimported = await importLegacyStore(store);
-      expect(reimported.targets[0]?.issues).toEqual([]);
-      expect({
-        entry: loadSessionEntry(scope),
-        history: loadTranscriptEventsSync(transcriptScope),
-      }).toEqual({ entry: currentEntry, history: currentHistory });
-      closeOpenClawAgentDatabasesForTest();
-      const result = await retireSessionSqliteRecovery({
+      expect(readMigrationManifest(imported.migrationRun?.manifestPath).restore).toBeUndefined();
+    } else {
+      const restored = await runDoctorSessionSqlite({
         env: store.env,
-        preview: inspectSessionSqliteRecovery({ cfg: {}, env: store.env }),
-        readConfig: async () => ({}),
-        confirm: async () => true,
+        mode: "restore",
+        store: store.storePath,
       });
-      expect(result.status).toBe("complete");
-      expect(result.totals.removedFiles).toBe(2);
-      const current = readMigrationManifest(reimported.migrationRun?.manifestPath);
-      for (const move of current.targets[0]!.plannedMoves.filter(
-        (item) => item.kind === "transcript" || item.kind === "legacy-store",
-      )) {
-        expect(move.artifact?.disposal.state).toBe("disposed");
-      }
-    },
-  );
+      expect(restored.targets[0]?.issues).toEqual([]);
+    }
+    for (const original of originals) {
+      expect(fs.readFileSync(original.sourcePath)).toEqual(original.bytes);
+    }
+    const reimported = await importLegacyStore(store);
+    expect(reimported.targets[0]?.issues).toEqual([]);
+    expect({
+      entry: loadSessionEntry(scope),
+      history: loadTranscriptEventsSync(transcriptScope),
+    }).toEqual({ entry: currentEntry, history: currentHistory });
+    closeOpenClawAgentDatabasesForTest();
+    if (restoreState === "external completed restore") {
+      // Explicit import admission does not grant cleanup ownership outside the state directory.
+      return;
+    }
+    const result = await retireSessionSqliteRecovery({
+      env: store.env,
+      preview: inspectSessionSqliteRecovery({ cfg: {}, env: store.env }),
+      readConfig: async () => ({}),
+      confirm: async () => true,
+    });
+    expect(result.status).toBe("complete");
+    expect(result.totals.removedFiles).toBe(2);
+    const current = readMigrationManifest(reimported.migrationRun?.manifestPath);
+    for (const move of current.targets[0]!.plannedMoves.filter(
+      (item) => item.kind === "transcript" || item.kind === "legacy-store",
+    )) {
+      expect(move.artifact?.disposal.state).toBe("disposed");
+    }
+  });
 
   it.each(["untrusted target", "unreadable manifest", "missing restore markers"] as const)(
     "refuses %s without changing current state or restored originals",
