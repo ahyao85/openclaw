@@ -518,8 +518,9 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       batchRunIds,
       rearmGeneration: selectedState.rearmGeneration,
       attemptIndex,
-      // Keyed on the batch contents, not delivery policy, so replay keeps its identity.
-      parentOnly: hasPrivateRows,
+      // Private turns replay under one key; a deliverable yield retries under a
+      // fresh key so a cached terminal failure cannot stand in for a new send.
+      sharedAttemptKey: parentOnly,
     });
     const requesterSessionId = requesterEntry.sessionId;
     const requesterLifecycleRevision = requesterEntry.lifecycleRevision;
