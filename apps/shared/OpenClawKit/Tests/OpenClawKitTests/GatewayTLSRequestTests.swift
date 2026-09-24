@@ -111,20 +111,27 @@ struct GatewayTLSRequestTests {
             allowsStoredCredentials: false)
     }
 
-    @Test @MainActor func `header-only probe accepts a nonempty body and never forwards a credential on redirect`() async throws {
+    @Test(arguments: [200, 302])
+    @MainActor func `header-only probe returns before body completion and refuses redirects`(
+        statusCode: Int) async throws
+    {
         let destination = try GatewayHTTPFixture(reply: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
         defer { destination.stop() }
         let destinationURL = try await destination.readyURL()
         let source =
             try GatewayHTTPFixture(
-                reply: "HTTP/1.1 302 Found\r\nLocation: \(destinationURL)\r\nContent-Length: 3\r\n\r\nabc")
+                reply: "HTTP/1.1 \(statusCode) Test\r\nLocation: \(destinationURL)\r\nContent-Length: 10\r\n\r\n")
         defer { source.stop() }
         let session = Self.session()
         defer { session.finishTasksAndInvalidate() }
         var request = try await URLRequest(url: source.readyURL())
         request.setValue("test-only-ingress-grant", forHTTPHeaderField: "Cf-Access-Token")
-        let response = try await session.response(for: request)
-        #expect((response as? HTTPURLResponse)?.statusCode == 302)
+        // The fixture keeps the connection open without sending any declared body bytes.
+        // A full-body implementation must time out instead of satisfying this assertion.
+        let response = try await AsyncTimeout.withTimeout(seconds: 3, onTimeout: { URLError(.timedOut) }) { [request] in
+            try await session.response(for: request)
+        }
+        #expect((response as? HTTPURLResponse)?.statusCode == statusCode)
         #expect(response.url == request.url)
         #expect(source.requests.count == 1)
         #expect(source.requests[0].lowercased().contains("cf-access-token: test-only-ingress-grant"))
