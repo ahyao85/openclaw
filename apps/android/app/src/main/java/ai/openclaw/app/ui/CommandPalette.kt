@@ -204,7 +204,7 @@ internal fun commandItems(
     add(CommandAction.Settings(SettingsRoute.Home))
     if (query.isNotEmpty()) addAll(SettingsRoute.entries.map { CommandAction.Settings(it) })
   }.distinct()
-    .filter { it !is CommandAction.Settings || it.route.isAvailable(desktopObserveAvailable, operatorAdminScopeAvailable) }
+    .filter { it !is CommandAction.Settings || it.route.isAvailable(desktopObserveAvailable) }
     .map { action ->
       when (action) {
         CommandAction.Chat -> {
@@ -225,7 +225,7 @@ internal fun commandItems(
             when (route) {
               SettingsRoute.Home -> nativeText("Gateway, voice, notifications, privacy")
               SettingsRoute.ProvidersModels -> verbatimText(providerSubtitle)
-              SettingsRoute.SystemAgent -> nativeText("System setup and care")
+              SettingsRoute.SystemAgent -> systemAgentSettingsSubtitle(operatorAdminScopeAvailable)
               else -> route.category?.title ?: SettingsRoute.Home.title
             }
           CommandItem(action, route.title, subtitle, route.icon)

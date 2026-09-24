@@ -1482,7 +1482,7 @@ private fun SettingsShellScreen(
         listOf(
           SettingsRow(
             SettingsRoute.SystemAgent,
-            nativeText("System setup and care"),
+            systemAgentSettingsSubtitle(operatorAdminScopeAvailable),
             status =
               when (systemAgentChatState.access) {
                 SystemAgentChatAccess.Ready -> true
@@ -1539,7 +1539,7 @@ private fun SettingsShellScreen(
           SettingsRow(SettingsRoute.Health, nativeText("Diagnostics"), status = isConnected),
           SettingsRow(SettingsRoute.About, nativeText("Version and update")),
           SettingsRow(SettingsRoute.Licenses, verbatimText("")),
-        ).filter { it.route.isAvailable(desktopObserveAvailable, operatorAdminScopeAvailable) }
+        ).filter { it.route.isAvailable(desktopObserveAvailable) }
 
       settingsSections(settingsRows).forEach { section ->
         section.title?.let { title ->

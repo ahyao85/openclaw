@@ -21,6 +21,7 @@ import androidx.compose.ui.test.DeviceConfigurationOverride
 import androidx.compose.ui.test.FontScale
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasAnyDescendant
@@ -164,8 +165,8 @@ class SettingsHomeTest {
   }
 
   @Test
-  fun currentAdminAuthorityControlsHomeAndSearchNotSystemAgentReadiness() {
-    // A Gateway can grant admin while lacking the newer system-agent method.
+  fun currentAuthorityUpdatesHomeAndSearchCopyWithoutHidingAccessRecovery() {
+    // Admin copy does not depend on whether this Gateway supports the newer system-agent method.
     ReflectionHelpers.getField<MutableStateFlow<Boolean?>>(runtime, "systemAgentChatSupported").value = false
     runtime.refreshSystemAgentChat()
     composeRule.setContent { ShellScreen(model) }
@@ -173,36 +174,44 @@ class SettingsHomeTest {
       assertTrue(model.operatorAdminScopeAvailable.value)
       assertEquals(SystemAgentChatAccess.GatewayUpdateRequired, model.systemAgentChatState.value.access)
     }
-    composeRule.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("OpenClaw"))
-    composeRule.onNodeWithContentDescription("Open OpenClaw").assertIsDisplayed()
-    composeRule.onNode(hasScrollToIndexAction()).performScrollToIndex(0)
+    val homeRow = composeRule.onNodeWithContentDescription("Open OpenClaw")
+    homeRow.performScrollTo().assertIsDisplayed().assertTextContains("System setup and care")
     composeRule.onNodeWithContentDescription("Search settings").performClick()
     val results = hasScrollToIndexAction() and hasAnyDescendant(hasSetTextAction())
     val systemAgent = hasText("OpenClaw") and hasClickAction() and !hasSetTextAction() and hasAnyAncestor(results)
     composeRule.onNode(hasSetTextAction()).performTextReplacement("OpenClaw")
-    composeRule.onNode(systemAgent).assertIsDisplayed()
+    composeRule.onNode(systemAgent).assertIsDisplayed().assertTextContains("System setup and care")
     capture("admin-search")
 
     val scopes = ReflectionHelpers.getField<MutableStateFlow<List<String>>>(runtime, "_operatorScopes")
     composeRule.runOnIdle { scopes.value = listOf("operator.read", "operator.write") }
-    composeRule.onNode(systemAgent).assertDoesNotExist()
     capture("nonadmin-search")
-    composeRule.onNodeWithContentDescription("Close search").performClick()
-    composeRule.onNodeWithContentDescription("Open OpenClaw").assertDoesNotExist()
+    composeRule
+      .onNode(systemAgent)
+      .assertIsDisplayed()
+      .assertTextContains("Needs admin access")
+      .performClick()
+    composeRule.onNodeWithText("Full Access Required").assertIsDisplayed()
+    composeRule.onNode(hasSetTextAction()).assertDoesNotExist()
+    composeRule.runOnIdle { assertEquals(SystemAgentChatAccess.MissingAdminScope, model.systemAgentChatState.value.access) }
+    composeRule.onNodeWithContentDescription("Back").performClick()
+    homeRow.performScrollTo().assertIsDisplayed().assertTextContains("Needs admin access")
     composeRule.onNodeWithContentDescription("Open Profile").assertIsDisplayed()
     capture("nonadmin-home")
+    homeRow.performClick()
+    composeRule.onNodeWithText("Full Access Required").assertIsDisplayed()
+    composeRule.onNodeWithContentDescription("Back").performClick()
 
     composeRule.runOnIdle { scopes.value = listOf("operator.admin") }
-    composeRule.onNodeWithContentDescription("Open OpenClaw").assertIsDisplayed()
+    homeRow.performScrollTo().assertIsDisplayed().assertTextContains("System setup and care")
     composeRule.onNodeWithContentDescription("Search settings").performClick()
     composeRule.onNode(hasSetTextAction()).performTextReplacement("OpenClaw")
-    composeRule.onNode(systemAgent).assertIsDisplayed()
+    composeRule.onNode(systemAgent).assertIsDisplayed().assertTextContains("System setup and care")
     composeRule.runOnIdle { runtime.disconnect() }
-    composeRule.onNode(systemAgent).assertDoesNotExist()
+    composeRule.onNode(systemAgent).assertIsDisplayed().assertTextContains("Needs admin access")
     composeRule.runOnIdle { assertFalse(model.operatorAdminScopeAvailable.value) }
     composeRule.onNodeWithContentDescription("Close search").performClick()
-    composeRule.onNodeWithContentDescription("Open OpenClaw").assertDoesNotExist()
-    composeRule.onNodeWithContentDescription("Open Profile").assertIsDisplayed()
+    homeRow.performScrollTo().assertIsDisplayed().assertTextContains("Needs admin access")
   }
 
   private fun capture(name: String) {

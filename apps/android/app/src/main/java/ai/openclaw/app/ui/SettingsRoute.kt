@@ -66,16 +66,10 @@ internal enum class SettingsRoute(
   constructor(title: NativeText, icon: ImageVector, category: SettingsCategory?) :
     this(title, SettingsIcon.Vector(icon), category)
 
-  fun isAvailable(
-    desktopObserveAvailable: Boolean,
-    operatorAdminScopeAvailable: Boolean,
-  ): Boolean =
-    when (this) {
-      Desktop -> desktopObserveAvailable
-      SystemAgent -> operatorAdminScopeAvailable
-      else -> true
-    }
+  fun isAvailable(desktopObserveAvailable: Boolean): Boolean = this != Desktop || desktopObserveAvailable
 }
+
+internal fun systemAgentSettingsSubtitle(operatorAdminScopeAvailable: Boolean): NativeText = if (operatorAdminScopeAvailable) nativeText("System setup and care") else nativeText("Needs admin access")
 
 internal sealed interface SettingsIcon {
   data class Vector(
