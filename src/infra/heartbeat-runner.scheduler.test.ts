@@ -819,6 +819,11 @@ describe("startHeartbeatRunner", () => {
     await vi.advanceTimersByTimeAsync(20_000);
     expect(runSpy).toHaveBeenCalledTimes(2);
 
+    // A legitimate third completion resumes after a short backoff instead of
+    // waiting for the 30-minute monitor tick.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(runSpy).toHaveBeenCalledTimes(3);
+
     runner.stop();
   });
 

@@ -219,7 +219,7 @@ describe("shouldDeferWake", () => {
     ).toEqual({ defer: true, reason: "min-spacing", retryAtMs: 79_000 });
   });
 
-  it("holds a third consecutive exec completion until the monitor slot", () => {
+  it("backs off a third consecutive exec completion without waiting for the monitor slot", () => {
     expect(
       decide({
         source: "exec-event",
@@ -230,18 +230,39 @@ describe("shouldDeferWake", () => {
         consecutiveExecEventRuns: 2,
         retainedWork: true,
       }),
-    ).toEqual({ defer: true, reason: "not-due", retryAtMs: 1_849_000 });
+    ).toEqual({ defer: true, reason: "min-spacing", retryAtMs: 109_000 });
     expect(
       decide({
         source: "exec-event",
         reason: "exec-event",
-        now: 1_849_000,
+        now: 109_000,
         nextDueMs: 1_849_000,
         lastRunStartedAtMs: 49_000,
         consecutiveExecEventRuns: 2,
         retainedWork: true,
       }),
     ).toEqual({ defer: false });
+  });
+
+  it("increases completion spacing but caps it at the monitor cadence", () => {
+    const common = {
+      source: "exec-event" as const,
+      reason: "exec-event",
+      now: 110_000,
+      nextDueMs: 1_849_000,
+      lastRunStartedAtMs: 49_000,
+      retainedWork: true,
+    };
+    expect(decide({ ...common, consecutiveExecEventRuns: 3 })).toEqual({
+      defer: true,
+      reason: "min-spacing",
+      retryAtMs: 169_000,
+    });
+    expect(decide({ ...common, consecutiveExecEventRuns: 20 })).toEqual({
+      defer: true,
+      reason: "min-spacing",
+      retryAtMs: 1_849_000,
+    });
   });
 
   describe("event-driven wakes before any prior run (bootstrap)", () => {
