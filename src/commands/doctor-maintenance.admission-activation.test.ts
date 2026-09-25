@@ -16,9 +16,10 @@ const native = vi.hoisted(() => ({
 // Only the external sd-bus ABI is synthetic. Native queueing, deadlines, identity
 // checks, nested service authority, and every Doctor ledger read remain real.
 vi.mock("node:module", async (importOriginal) => {
+  const { mockNodeBuiltinModule } =
+    await import("../plugin-sdk/test-helpers/node-builtin-mocks.js");
   const original = await importOriginal<typeof import("node:module")>();
-  return {
-    ...original,
+  return mockNodeBuiltinModule(() => Promise.resolve(original), {
     createRequire: (filename: string | URL) => {
       const require = original.createRequire(filename);
       return Object.assign(
@@ -37,7 +38,9 @@ vi.mock("node:module", async (importOriginal) => {
                         (args[0] as unknown[])[0] = {};
                       } else if (name === "sd_bus_message_new_method_call") {
                         (args[1] as unknown[])[0] = { member: args[5] };
-                        if (args[5] === "RestartUnit") native.preparingRestart?.();
+                        if (args[5] === "RestartUnit") {
+                          native.preparingRestart?.();
+                        }
                       } else if (name === "sd_bus_call") {
                         const member = (args[1] as { member: string }).member;
                         const values: Record<string, unknown> = {
@@ -48,8 +51,9 @@ vi.mock("node:module", async (importOriginal) => {
                           RestartUnit: "/org/freedesktop/systemd1/job/7",
                           ResetFailedUnit: undefined,
                         };
-                        if (!Object.hasOwn(values, member))
+                        if (!Object.hasOwn(values, member)) {
                           throw new Error(`Unexpected method ${member}`);
+                        }
                         if (member === "ResetFailedUnit" || member === "RestartUnit") {
                           native.effects.push(member);
                         }
@@ -61,8 +65,9 @@ vi.mock("node:module", async (importOriginal) => {
                           User: "",
                         };
                         const member = args[4] as string;
-                        if (!Object.hasOwn(values, member))
+                        if (!Object.hasOwn(values, member)) {
                           throw new Error(`Unexpected property ${member}`);
+                        }
                         (args[6] as unknown[])[0] = { value: values[member] };
                       } else if (name === "sd_bus_message_read_basic") {
                         native.decoded.set(
@@ -91,7 +96,7 @@ vi.mock("node:module", async (importOriginal) => {
         require,
       );
     },
-  };
+  });
 });
 
 const fixture = setupDoctorAdmissionFixture();
@@ -175,7 +180,9 @@ it("retains final native custody revocation after restart message preparation", 
   try {
     await expect(
       activate(admission, () => {
-        if (!current) throw new Error("original native custody revoked");
+        if (!current) {
+          throw new Error("original native custody revoked");
+        }
       }),
     ).rejects.toThrow("original native custody revoked");
   } finally {

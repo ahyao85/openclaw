@@ -93,7 +93,9 @@ export function setupDoctorAdmissionFixture() {
     const env = { OPENCLAW_STATE_DIR: root, OPENCLAW_TEST_FAST: "1" };
     const run = createUpdateRun({ trigger: "cli" }, { env });
     finishUpdateRun(run.runId, { status: "succeeded" }, { env });
-    if (!keepWriter) closeOpenClawStateDatabaseForTest();
+    if (!keepWriter) {
+      closeOpenClawStateDatabaseForTest();
+    }
     const database = path.join(root, "state", "openclaw.sqlite");
     // Even artifact hashing must not close raw source descriptors in a writer's process.
     const family = () => {
@@ -124,9 +126,13 @@ export function setupDoctorAdmissionFixture() {
       for (const spy of spawns) {
         for (const [index, call] of spy.mock.calls.entries()) {
           const args = call[1];
-          if (call[0] !== process.execPath || !Array.isArray(args)) continue;
+          if (call[0] !== process.execPath || !Array.isArray(args)) {
+            continue;
+          }
           const marker = args.indexOf("--openclaw-sqlite-readonly-child");
-          if (marker < 1) continue;
+          if (marker < 1) {
+            continue;
+          }
           const result = spy.mock.results[index];
           const pid = result?.type === "return" ? result.value?.pid : undefined;
           expect(pid).toBeDefined();
@@ -139,7 +145,9 @@ export function setupDoctorAdmissionFixture() {
             expect(witness.realParent).toBe(root);
           }
           const entry = args[marker - 1];
-          if (typeof entry !== "string") throw new Error("Worker entrypoint is missing");
+          if (typeof entry !== "string") {
+            throw new Error("Worker entrypoint is missing");
+          }
           const guarded = JSON.parse(
             fs.readFileSync(path.join(root, `sqlite-open-guard-${pid}.json`), "utf8"),
           );
