@@ -16,7 +16,11 @@ import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "../utils/system-prompt-cache-bound
 import { resolveResponsesContextUsageBoundary } from "./openai-responses-context-usage.js";
 import {
   completedSdkResponse,
+  completedSseResponse,
   createCompactionContext,
+  createContext,
+  createJwt,
+  createModel,
   createOrphanedToolOutputCompactionContext,
   SDK_FULL_HISTORY_PREFIX,
   SDK_REASONING_CIPHERTEXT,
@@ -60,55 +64,6 @@ import {
 } from "./openai-responses-client.js";
 
 const initialHost = getAiTransportHost();
-
-function createModel<TApi extends Api = "openai-responses">(
-  overrides: Partial<Model<TApi>> = {},
-): Model<TApi> {
-  return {
-    id: "gpt-5.4",
-    name: "GPT-5.4",
-    api: "openai-responses",
-    provider: "openai",
-    baseUrl: "https://api.openai.com/v1",
-    reasoning: true,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 200_000,
-    maxTokens: 8192,
-    ...overrides,
-  } as Model<TApi>;
-}
-
-function createContext(systemPrompt: string, overrides: Partial<Context> = {}): Context {
-  return {
-    systemPrompt,
-    messages: [{ role: "user", content: "hello", timestamp: 1 }],
-    tools: [],
-    ...overrides,
-  } as Context;
-}
-
-function createJwt(): string {
-  const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  return `${encode({ alg: "none", typ: "JWT" })}.${encode({
-    "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" },
-  })}.signature`;
-}
-
-function completedSseResponse(responseId = "resp_test"): Response {
-  return new Response(
-    `data: ${JSON.stringify({
-      type: "response.completed",
-      response: {
-        id: responseId,
-        status: "completed",
-        output: [],
-        usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 },
-      },
-    })}\n\n`,
-    { status: 200, headers: { "content-type": "text/event-stream" } },
-  );
-}
 
 function requestHasCompaction(request: Record<string, unknown> | undefined): boolean {
   return Array.isArray(request?.input) && request.input.some((item) => item?.type === "compaction");
