@@ -122,6 +122,7 @@ export async function createGuestQuestionFixture(deliver: (frame: unknown) => Pr
       operatorRunAuthority: createAdmittedRunOperatorAuthority({
         profileId: profile.id,
         scopes: guestQuestionScopes,
+        readCurrentRoleAssignment: () => null,
         signal: source.signal,
         assertCurrent: () => source.signal.throwIfAborted(),
       }),
