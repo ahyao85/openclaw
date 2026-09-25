@@ -1,11 +1,11 @@
-import { formatPortDiagnostics } from "../../infra/ports.js";
+import { formatPortDiagnostics } from "../../infra/ports-format.js";
 import type { GatewayPortHealthSnapshot, GatewayRestartSnapshot } from "./restart-health.types.js";
 
 function formatGatewayStillStarting(snapshot: GatewayRestartSnapshot): string {
   return `Gateway service is still starting after ${Math.round((snapshot.elapsedMs ?? 0) / 1000)}s. Last observed startup phase: ${snapshot.startupPhase ?? "unknown"}. Run openclaw gateway status --deep.`;
 }
 
-function renderPortUsageDiagnostics(snapshot: GatewayPortHealthSnapshot): string[] {
+export function renderGatewayPortHealthDiagnostics(snapshot: GatewayPortHealthSnapshot): string[] {
   const lines: string[] = [];
   if (snapshot.portUsage.status === "busy") {
     lines.push(...formatPortDiagnostics(snapshot.portUsage));
@@ -69,7 +69,7 @@ export function renderRestartDiagnostics(snapshot: GatewayRestartSnapshot): stri
   if (runtimeSummary) {
     lines.push(`Service runtime: ${runtimeSummary}`);
   }
-  lines.push(...renderPortUsageDiagnostics(snapshot));
+  lines.push(...renderGatewayPortHealthDiagnostics(snapshot));
   return lines;
 }
 
@@ -101,8 +101,4 @@ export function formatGatewayRestartFailure(params: {
     statusLine: `Timed out after ${timeoutSeconds}s waiting for gateway port ${params.port} to become healthy.`,
     failMessage: `Gateway restart timed out after ${timeoutSeconds}s waiting for health checks.`,
   };
-}
-
-export function renderGatewayPortHealthDiagnostics(snapshot: GatewayPortHealthSnapshot): string[] {
-  return renderPortUsageDiagnostics(snapshot);
 }
