@@ -524,7 +524,12 @@ export function startOpenClawStateLeaseHeartbeat(
       if (remainingMs <= 0) {
         fail(new Error("state lease heartbeat is not responsive"));
       } else {
-        awaiting.timer = setTimeout(checkDeadline, remainingMs);
+        // Renewal completion only wakes synchronous waiters. Observe it here even
+        // when the occupied worker never sends the outstanding async reply.
+        awaiting.timer = setTimeout(
+          checkDeadline,
+          Math.min(remainingMs, WORKER_RESPONSE_TIMEOUT_MS),
+        );
       }
     };
     checkDeadline();

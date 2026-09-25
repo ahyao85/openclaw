@@ -521,6 +521,35 @@ describe("state lease heartbeat lifetime", () => {
     },
   );
 
+  it.each(["verify", "renew"] as const)(
+    "rejects an unanswered %s after native renewal finishes",
+    async (operation) => {
+      const params = options();
+      const heartbeat = startOpenClawStateLeaseHeartbeat(params);
+      const worker = await constructedWorker();
+      const progress = new BigInt64Array(worker.data.renewalProgress);
+      try {
+        await heartbeat.ready;
+        Atomics.store(progress, 0, 1n);
+        const outcomes: unknown[] = [];
+        const result = heartbeat[operation]().then(
+          (value) => outcomes.push(value),
+          (error: unknown) => outcomes.push(error),
+        );
+        await vi.advanceTimersByTimeAsync(1_500);
+        expect(outcomes).toEqual([]);
+        expect(params.onLost).not.toHaveBeenCalled();
+        Atomics.store(progress, 0, 2n);
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect([...outcomes]).toEqual([new Error("state lease heartbeat is not responsive")]);
+        expect(params.onLost).toHaveBeenCalledOnce();
+        await result;
+      } finally {
+        await finish(heartbeat, worker);
+      }
+    },
+  );
+
   it.each(["acknowledged", "stuck"] as const)(
     "requires a fresh synchronous acknowledgement after an occupied worker is %s",
     async (ending) => {
