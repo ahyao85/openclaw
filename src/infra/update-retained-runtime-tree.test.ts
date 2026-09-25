@@ -75,7 +75,8 @@ it("copies overlay files without copy-up changing their admitted identity", asyn
   const f = await fixture();
   vi.spyOn(process, "platform", "get").mockReturnValue("linux");
   const disk = await fs.statfs(f.source);
-  vi.spyOn(fs, "statfs").mockResolvedValue({ ...disk, type: 0x794c7630 });
+  disk.type = 0x794c7630;
+  vi.spyOn(fs, "statfs").mockResolvedValue(disk);
   const link = vi.spyOn(fs, "link");
   expect(await f.link()).toEqual({ linked: 0, copied: 3 });
   expect(link).not.toHaveBeenCalled();
