@@ -593,14 +593,13 @@ test.each([
   });
   const storePath = expectDefined(testState.sessionStorePath, "session store path");
 
-  const cfg = {
-    agents: scenario.agents,
-    session: { store: storePath },
-  };
   const { respond } = await invokeSessionsList({
     requestId: `req-sessions-list-fast-${scenario.label.replaceAll(" ", "-")}`,
     context: {
-      getRuntimeConfig: () => cfg,
+      getRuntimeConfig: vi.fn<GatewayRequestContext["getRuntimeConfig"]>().mockReturnValue({
+        agents: scenario.agents,
+        session: { store: storePath },
+      }),
     },
   });
 

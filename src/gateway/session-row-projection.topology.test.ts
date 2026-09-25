@@ -176,6 +176,8 @@ it.each(
         "dispose",
         "unrelated-agent",
         "unrelated-store",
+        "new-agent-registration",
+        "new-store-registration",
         "alias-reset",
       ] as const
     ).map((change) => ({ kind, change })),
@@ -294,6 +296,12 @@ it.each(
           await copyFile(`${target.path}.original`, target.path);
         } else if (change === "dispose") {
           projection.dispose();
+        } else if (change === "new-agent-registration" || change === "new-store-registration") {
+          openOpenClawAgentDatabase({
+            agentId: change === "new-agent-registration" ? "new-agent" : query.agentId,
+            path: path.join(state.root, "newly-registered.sqlite"),
+            env: state.env,
+          });
         } else if (unrelated) {
           replaceSessionEntrySync(unrelated, {
             sessionId: entry.sessionId,
@@ -313,7 +321,12 @@ it.each(
         }
         release.resolve();
         const result = await settled;
-        if (change === "unchanged" || unrelated) {
+        if (
+          change === "unchanged" ||
+          change === "new-agent-registration" ||
+          change === "new-store-registration" ||
+          unrelated
+        ) {
           expect(result).toEqual([{ status: "fulfilled", value: undefined }]);
           expect(broadcastToConnIds).toHaveBeenCalledTimes(1);
           expect(broadcastToConnIds.mock.calls[0]?.[0]).toBe(

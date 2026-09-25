@@ -8,7 +8,10 @@ import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
 import { publishSqliteWalCheckpointObservation } from "../infra/sqlite-wal-checkpoint.js";
 import type { SqliteWorkerCloseReceipt } from "../infra/sqlite-worker-contract.js";
-import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
+import {
+  assertExistingDatabaseIdentity,
+  type DatabasePathIdentity,
+} from "../infra/sqlite-worker-identity.js";
 import type {
   SqliteWorkerAdmissionFactory,
   SqliteWorkerAdmissionRequest,
@@ -91,6 +94,7 @@ export function createAgentDatabaseNativeGeneration(
   assertCleanupOwned: () => void,
   expectedIdentity: AgentDatabaseExecutionFileIdentity | undefined,
   acceptFileIdentity: (identity: AgentDatabaseExecutionFileIdentity) => void,
+  creatingIdentity?: DatabasePathIdentity,
 ): AgentDatabaseNativeGeneration {
   const input: AgentDatabaseExecutionOpen = {
     leaseId: randomUUID(),
@@ -99,6 +103,7 @@ export function createAgentDatabaseNativeGeneration(
     stateDatabasePath: context.admission.databasePath,
     environment: context.environment,
     ...(expectedIdentity ? { expectedIdentity } : {}),
+    ...(creatingIdentity ? { creatingIdentity } : {}),
   };
   let retiring = false;
   let opening: Promise<Store | undefined> | undefined;
@@ -234,6 +239,7 @@ export function createAgentDatabaseNativeGeneration(
             !isRecord(received) ||
             received.kind !== "file" ||
             typeof received.physicalIdentity !== "string" ||
+            typeof received.birthtime !== "string" ||
             typeof received.incarnation !== "string" ||
             typeof received.nativeLocation !== "string" ||
             (nativeIdentity && !isDeepStrictEqual(received, nativeIdentity))
@@ -243,10 +249,15 @@ export function createAgentDatabaseNativeGeneration(
           const receivedIdentity: AgentDatabaseExecutionIdentity = {
             kind: "file",
             physicalIdentity: received.physicalIdentity,
+            birthtime: received.birthtime,
             incarnation: received.incarnation,
             nativeLocation: received.nativeLocation,
           };
-          assertExistingDatabaseIdentity(pathname, `file:${receivedIdentity.physicalIdentity}`);
+          assertExistingDatabaseIdentity(
+            pathname,
+            `file:${receivedIdentity.physicalIdentity}`,
+            receivedIdentity.birthtime,
+          );
           if (
             expectedIdentity &&
             receivedIdentity.physicalIdentity !== expectedIdentity.physicalIdentity
@@ -256,6 +267,7 @@ export function createAgentDatabaseNativeGeneration(
           acceptFileIdentity({
             kind: "file",
             physicalIdentity: receivedIdentity.physicalIdentity,
+            birthtime: receivedIdentity.birthtime,
             nativeLocation: receivedIdentity.nativeLocation,
           });
           assertPreparationJournal?.(

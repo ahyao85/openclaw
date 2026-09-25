@@ -275,7 +275,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     }));
   }
   function mark(change: SessionRowChange) {
-    if ("all" in change && (change.scope === "config" || change.scope === "stores")) {
+    if ("all" in change && change.scope === "config") {
       generations.invalidate();
     }
     if ("all" in change && change.scope === "config" && !change.factsInvalidated) {

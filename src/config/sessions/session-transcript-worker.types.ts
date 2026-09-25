@@ -345,6 +345,7 @@ export type SessionExactEntriesWorkerResult = {
     source: { agentId: string; path: string };
     databaseIdentity: string;
     members: Array<{ sessionKey: string; identityIds: string[] }>;
+    placeholders: Array<{ sessionKey: string; sessionId: string }>;
   };
 };
 

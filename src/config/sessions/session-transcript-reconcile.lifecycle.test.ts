@@ -226,7 +226,7 @@ describe("session transcript reconcile worker lifecycle", () => {
     const coordinate = coordination.withSqliteWorkerLifecycleCoordination;
     const coordinated = vi
       .spyOn(coordination, "withSqliteWorkerLifecycleCoordination")
-      .mockImplementation((context, actorId, run, settleFailure) =>
+      .mockImplementation((context, actorId, run, settleFailure, mode) =>
         coordinate(
           context,
           actorId,
@@ -238,6 +238,7 @@ describe("session transcript reconcile worker lifecycle", () => {
             return pending;
           },
           settleFailure,
+          mode,
         ),
       );
     try {

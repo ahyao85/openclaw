@@ -33,10 +33,10 @@ import type {
   RespondFn,
 } from "../../server-methods/types.js";
 import { bindSessionRowProjection } from "../../session-row-projection-access.js";
-import type { SessionRowProjection } from "../../session-row-projection.js";
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
 import { prepareTalkAgentConsultTranscript } from "../agent-consult-transcript.js";
 import { buildTalkRealtimeConfig } from "../session-config.js";
+import { preparedTalkSessionProjection as projection } from "../test-helpers.js";
 import { forgetLegacyVoiceBinding } from "./client-legacy-voice-bindings.js";
 import { talkConfigAccentCases } from "./config-accent.test-support.js";
 import {
@@ -2757,10 +2757,6 @@ describe("talk.session unified handlers", () => {
   it("passes managed-room spawnedBy visibility scope to session resolution", async () => {
     const createRespond = vi.fn();
     const config: OpenClawConfig = { agents: { entries: { worker: {} } } };
-    const projection = {
-      prepareMembership: async () => {},
-      needsMembershipPreparation: () => false,
-    } as SessionRowProjection;
     await callTalkHandler("talk.session.create", {
       params: {
         mode: "stt-tts",
@@ -2795,10 +2791,6 @@ describe("talk.session unified handlers", () => {
 
   it("resolves a bare managed-room session through the persisted fixed-store owner", async () => {
     const createRespond = vi.fn();
-    const projection = {
-      prepareMembership: async () => {},
-      needsMembershipPreparation: () => false,
-    } as SessionRowProjection;
     const config: OpenClawConfig = {
       session: { store: "/tmp/shared-sessions.sqlite", scope: "global" },
       agents: {
@@ -2852,10 +2844,6 @@ describe("talk.session unified handlers", () => {
 
   it("keeps direct-tools managed-room sessions behind admin scope", async () => {
     const rejectedRespond = vi.fn();
-    const projection = {
-      prepareMembership: async () => {},
-      needsMembershipPreparation: () => false,
-    } as SessionRowProjection;
     await callTalkHandler("talk.session.create", {
       params: {
         mode: "stt-tts",
