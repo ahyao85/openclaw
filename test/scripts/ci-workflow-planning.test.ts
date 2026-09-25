@@ -741,6 +741,7 @@ function runRunnerProfileFixture(options: {
   requestedProfile?: "default" | "hybrid" | "runson";
   ciShape?: "default" | "main";
   qualificationDispatch?: boolean;
+  hourlyMain?: boolean;
   targetSupportsRunson?: boolean;
   targetSupportsContract: boolean;
 }) {
@@ -770,6 +771,7 @@ function runRunnerProfileFixture(options: {
         ...process.env,
         AUTHOR_ASSOCIATION: options.authorAssociation ?? "",
         CONFIGURED_RUNNER_PROFILE: options.configuredProfile ?? "",
+        HOURLY_MAIN: String(options.hourlyMain ?? false),
         GITHUB_EVENT_NAME: options.eventName,
         GITHUB_OUTPUT: outputPath,
         GITHUB_REPOSITORY: options.repository ?? "openclaw/openclaw",
@@ -3572,6 +3574,20 @@ describe("ci workflow guards", () => {
           targetSupportsContract: true,
         },
       },
+      ...["hybrid", "runson"].flatMap((configuredProfile) =>
+        [1, 2].map((runAttempt) => ({
+          expected: runAttempt === 1 ? "hybrid" : "github",
+          name: `hourly main ${configuredProfile} attempt ${runAttempt}`,
+          options: {
+            configuredProfile,
+            eventName: "workflow_dispatch" as const,
+            hourlyMain: true,
+            runAttempt,
+            targetSupportsContract: true,
+            targetSupportsRunson: true,
+          },
+        })),
+      ),
       {
         expected: "blacksmith",
         name: "canonical trusted push keeps the default",
@@ -8243,7 +8259,7 @@ describe("ci workflow guards", () => {
       "${{ needs.preflight.outputs.compatibility_target }}",
     );
     expect(workflow.jobs.preflight.outputs.strict_control_ui_i18n).toBe(
-      "${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && 'true' || steps.changed_scope.outputs.strict_control_ui_i18n }}",
+      "${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && steps.runner_profile.outputs.hourly_main != 'true' && 'true' || steps.changed_scope.outputs.strict_control_ui_i18n }}",
     );
     expect(
       evaluateWorkflowExpression(

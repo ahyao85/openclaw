@@ -99,6 +99,131 @@ describe("hourly main CI admission", () => {
     }
   });
 
+  const hourlyContext = {
+    ...base,
+    eventName: "workflow_dispatch",
+    dispatchId: "hourly-main-123-1",
+    validationTier: "main",
+    runnerBackend: "hybrid",
+    sha: "a".repeat(40),
+    workflowSha: "a".repeat(40),
+  } as const;
+  const profileStep = ci.jobs.preflight.steps.find(
+    (step: { id?: string }) => step.id === "runner_profile",
+  );
+
+  it("routes scheduler-owned main validation through hybrid without changing manual admission", () => {
+    const rejected: Partial<Context>[] = [
+      { dispatchId: "" },
+      { repository: "fork/openclaw" },
+      { ref: "refs/heads/topic" },
+      { targetRef: "b".repeat(40) },
+      { workflowSha: "b".repeat(40) },
+      { releaseGate: true },
+      { releaseScope: "npm-beta" },
+      { validationTier: "full" },
+    ];
+    expect(evaluate(ci.jobs.preflight["runs-on"], hourlyContext)).toBe(
+      "blacksmith-16vcpu-ubuntu-2404",
+    );
+    expect(evaluate(profileStep.env.HOURLY_MAIN, hourlyContext)).toBe("true");
+    for (const override of rejected) {
+      const context = { ...hourlyContext, ...override };
+      expect(evaluate(profileStep.env.HOURLY_MAIN, context), JSON.stringify(override)).toBe(
+        "false",
+      );
+      expect(evaluate(ci.jobs.preflight["runs-on"], context), JSON.stringify(override)).toBe(
+        "ubuntu-24.04",
+      );
+    }
+    for (const override of [{ runAttempt: 2 }, { runnerBackend: "github" as const }]) {
+      const context = { ...hourlyContext, ...override };
+      expect(evaluate(profileStep.env.HOURLY_MAIN, context)).toBe("true");
+      expect(evaluate(ci.jobs.preflight["runs-on"], context)).toBe("ubuntu-24.04");
+    }
+  });
+
+  it("keeps hourly runner placement and dependency restores aligned with automatic main", () => {
+    const shared = {
+      ...base,
+      runnerBackend: "hybrid" as const,
+      runnerEnvironment: "self-hosted" as const,
+      matrix: { runner: "blacksmith-8vcpu-ubuntu-2404", check_name: "fixture", task: "lint" },
+    };
+    const push = { ...shared, eventName: "push" as const };
+    const child = {
+      ...hourlyContext,
+      ...shared,
+      preflightOutputs: {
+        hourly_hybrid: "true",
+        runner_profile: "hybrid",
+        node_runner_backend: "hybrid",
+      },
+    };
+    for (const [name, rawJob] of Object.entries(ci.jobs)) {
+      const job = rawJob as {
+        "runs-on": string;
+        needs?: string[] | string;
+        steps?: { with?: Record<string, unknown> }[];
+      };
+      if (!String(job.needs).includes("preflight") || !job["runs-on"]) continue;
+      expect(evaluate(job["runs-on"], child), name).toEqual(evaluate(job["runs-on"], push));
+      for (const step of job.steps ?? []) {
+        const cache = step.with?.["dependency-cache"];
+        if (typeof cache !== "string" || !cache.startsWith("${{")) continue;
+        expect(evaluate(cache, child), `${name} cache`).toBe(evaluate(cache, push));
+        expect(
+          evaluate(cache, { ...child, runnerEnvironment: "github-hosted" }),
+          `${name} retry cache`,
+        ).toBe("false");
+      }
+    }
+    const retry = { ...child, runAttempt: 2, preflightOutputs: { hourly_hybrid: "false" } };
+    expect(evaluate(ci.jobs["build-artifacts"]["runs-on"], retry)).toBe("ubuntu-24.04");
+    expect(evaluate(ci.jobs["checks-windows"]["runs-on"], retry)).toBe("windows-2025");
+  });
+
+  it("keeps hourly locale drift advisory while manual and generated-locale checks remain strict", () => {
+    for (const surface of ["control_ui", "native"]) {
+      const output = ci.jobs.preflight.outputs[`strict_${surface}_i18n`];
+      for (const runAttempt of [1, 2]) {
+        const context = { ...hourlyContext, runAttempt };
+        expect(
+          evaluate(output, {
+            ...context,
+            steps: {
+              changed_scope: { outputs: {} },
+              runner_profile: {
+                outputs: { hourly_main: String(evaluate(profileStep.env.HOURLY_MAIN, context)) },
+              },
+            },
+          }),
+        ).not.toBe("true");
+      }
+      for (const dispatchId of ["", "full-release-validation-123"]) {
+        const context = { ...hourlyContext, dispatchId };
+        expect(
+          evaluate(output, {
+            ...context,
+            steps: {
+              changed_scope: { outputs: {} },
+              runner_profile: {
+                outputs: { hourly_main: String(evaluate(profileStep.env.HOURLY_MAIN, context)) },
+              },
+            },
+          }),
+        ).toBe("true");
+      }
+      expect(
+        evaluate(output, {
+          ...base,
+          eventName: "pull_request",
+          steps: { changed_scope: { outputs: { [`strict_${surface}_i18n`]: "true" } } },
+        }),
+      ).toBe("true");
+    }
+  });
+
   it("isolates full manual CI from a later skip-only main push", () => {
     const common = { ...base, workflow: "CI", runId: 123, runNumber: 456 } as const;
     const full = evaluate(ci.concurrency.group, { ...common, eventName: "workflow_dispatch" });

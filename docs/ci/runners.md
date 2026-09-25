@@ -188,6 +188,14 @@ and logs but disables verbose system-diagnostic collection: Xcode 27 can spend
 universal simulator compilation, verbose diagnostics, the Release device build,
 and lifecycle/UI/Watch tests. Frozen targets keep their original build settings.
 
+Hourly scheduler dispatches for current canonical `main` use hybrid placement on
+attempt 1 when the configured backend is `hybrid` or `runson`. Preflight and heavy
+jobs use their existing Blacksmith classes, with dependency restores gated by the
+actual runner. The `runson` setting retains the hybrid baseline for hourly work.
+Retries and the `github` override stay hosted. Manual targets, release validation,
+untrusted contributions, native runner labels, and worker limits keep their
+existing policies. Complete main-tier coverage and hourly serialization are unchanged.
+
 ### Runner backend modes
 
 The `macos-swift` lane builds Swift tests once and runs each test once per job. The ordinary suite retains default-profile behavior; rendered Quick Chat tests follow in a fresh default-profile process, then AppState isolation tests run in a named-profile process through the same resource-owning launcher. Historical targets retain their original two partitions. Each launch owns a private home and disposable, unlocked default Keychain until the test process group and output pipes close. HOME and profile markers do not isolate macOS services; all partitions run only on the disposable credentialless macOS worker. Current launcher-capable targets bound Swift Testing parallelism to the runner's logical CPU count, capped at 12, for automatic runs, manual dispatches, and rerun attempts. Only frozen targets that predate the resource owner use the serial fallback. A failing test fails the job without an in-job retry. See [native test safety](/platforms/mac/dev-setup#run-native-tests-safely).

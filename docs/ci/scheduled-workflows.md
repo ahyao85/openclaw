@@ -24,7 +24,14 @@ packaging, and all six Docker seed scenarios. Hourly iOS keeps its full
 `ios-build (tests)` simulator phase and Swift lint; Android keeps phone/Wear
 tests and lint. The hourly Docker survivor uses the existing main smoke package, retaining runtime, assets, public
 SDK declarations, and tarball integrity checks without the release-only
-declaration build. Runner routing, timeouts, and concurrency limits are unchanged.
+declaration build. Timeouts and concurrency limits are unchanged.
+
+On the first attempt, trusted hourly dispatches use [hybrid runner placement](/ci/runners)
+when the backend is `hybrid` or `runson`. Retries and the `github` override remain
+hosted. Source verification for Control UI and native translations stays mandatory.
+Generated locale drift follows the automatic-main policy because the post-merge
+translation workflows own that refresh. Ordinary manual/release runs and
+pull requests that change generated locales retain strict parity checks.
 
 The dispatcher summary names the child `CI hourly-main-<run>-<attempt>` run.
 **A successful dispatcher is not a passing CI result**; inspect the child CI
