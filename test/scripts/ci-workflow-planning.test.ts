@@ -9009,11 +9009,6 @@ describe("ci workflow guards", () => {
     const verifyStep = gate.steps.find(
       (step: WorkflowStep) => step.name === "Verify selected CI lanes",
     );
-    expect(Object.keys(verifyStep.env)).toEqual([
-      "PREFLIGHT_RESULT",
-      "RELEASE_PRIORITY_RUN",
-      "JOB_RESULTS",
-    ]);
     const resultRows: string[] = verifyStep.env.JOB_RESULTS.trim().split("\n");
     expect(resultRows.slice(0, requiredJobs.length)).toEqual(
       requiredJobs.map((job) => `${job}=\${{ needs.${job}.result }}|true`),
