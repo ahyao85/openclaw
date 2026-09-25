@@ -933,6 +933,7 @@ internal fun overviewMetricCardSpecs(
       subtitle =
         when {
           nodesDevicesSummary.hasNodeCapabilityApprovalPending() -> nativeString("Review node access")
+          nodeCount == 0 && (nodesDevicesSummary.pendingDevices.isNotEmpty() || nodesDevicesSummary.pairedDevices.isNotEmpty()) -> nodesDevicesSummaryText(nodesDevicesSummary)
           nodeCount == 0 -> nativeString("None paired")
           onlineNodes == nodeCount -> nativeString("\$onlineNodes online", onlineNodes)
           else -> nativeString("\$onlineNodes of \$nodeCount online", onlineNodes, nodeCount)
