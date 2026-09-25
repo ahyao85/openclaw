@@ -2,8 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import memoryCore from "../../extensions/memory-core/index.js";
 import type { OpenClawConfig } from "../../src/config/types.js";
-import { CronService } from "../../src/cron/service.js";
+import { CronService, type CronEvent } from "../../src/cron/service.js";
 import { createNoopLogger } from "../../src/cron/service.test-harness.js";
 import {
   getCronJobsStoreRevision,
@@ -14,10 +15,15 @@ import type { CronStoredJob } from "../../src/cron/types.js";
 import * as sqliteSnapshot from "../../src/infra/sqlite-snapshot.js";
 import { createPluginDoctorStateMigrationContext } from "../../src/infra/state-migrations.plugin-doctor-context.js";
 import type { PluginDoctorRepairAuthority } from "../../src/infra/state-migrations.types.js";
+import { createTestPluginApi } from "../../src/plugin-sdk/plugin-test-api.js";
+import { createPluginRuntimeMock } from "../../src/plugin-sdk/test-helpers/plugin-runtime-mock.js";
 import type {
   PluginDoctorCronInventory,
   PluginDoctorCronJob,
 } from "../../src/plugins/doctor-contract-module.js";
+import { listPluginDoctorStateMigrationEntries } from "../../src/plugins/doctor-contract-registry.js";
+import { createEmptyPluginRegistry } from "../../src/plugins/registry.js";
+import { startPluginServices, type PluginServicesHandle } from "../../src/plugins/services.js";
 import {
   closeOpenClawStateDatabaseAsync,
   openOpenClawStateDatabase,
@@ -161,13 +167,15 @@ function makeAuthority(): PluginDoctorRepairAuthority {
   };
 }
 
-async function getDreamingMigration() {
-  const { stateMigrations } = await import("../../extensions/memory-core/doctor-contract-api.js");
-  const migration = stateMigrations.find((entry) => entry.id === "memory-core-dreaming-cron");
-  if (!migration) {
+function getDreamingMigration({ scope }: Fixture) {
+  const entry = listPluginDoctorStateMigrationEntries({
+    ...scope,
+    pluginIds: ["memory-core"],
+  }).find(({ migration }) => migration.id === "memory-core-dreaming-cron");
+  if (!entry) {
     throw new Error("Missing registered memory-core dreaming cron migration");
   }
-  return migration;
+  return entry.migration;
 }
 
 function migrationInput({ state, scope }: Fixture) {
@@ -186,6 +194,7 @@ function migrationInput({ state, scope }: Fixture) {
 
 function createPausedCronService(fixture: Fixture) {
   const logger = createNoopLogger();
+  const mutations: Array<Pick<CronEvent, "jobId" | "action">> = [];
   const cron = new CronService({
     storePath: fixture.activeStore,
     cronEnabled: true,
@@ -195,10 +204,58 @@ function createPausedCronService(fixture: Fixture) {
     enqueueSystemEvent: vi.fn(),
     requestHeartbeat: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+    onEvent(event) {
+      if (event.action === "added" || event.action === "updated" || event.action === "removed") {
+        mutations.push({ jobId: event.jobId, action: event.action });
+      }
+    },
   });
   // CRUD can arm an unstarted service; suspend automatic ticks during convergence proof.
   cron.pauseScheduling();
-  return { cron, logger };
+  return { cron, logger, mutations };
+}
+
+async function runRegisteredDreamingService(
+  config: OpenClawConfig,
+  cron: CronService,
+  logger: ReturnType<typeof createNoopLogger>,
+) {
+  const registry = createEmptyPluginRegistry();
+  memoryCore.register(
+    createTestPluginApi({
+      id: "memory-core",
+      config,
+      logger,
+      runtime: createPluginRuntimeMock({ config: { current: () => config } }),
+      registerService(service) {
+        registry.services.push({
+          pluginId: "memory-core",
+          origin: "bundled",
+          source: "memory-core/index.ts",
+          id: service.id,
+          service,
+        });
+      },
+    }),
+  );
+  if (!registry.services.some(({ id }) => id === "memory-core-dreaming")) {
+    throw new Error("Memory Core did not register its dreaming service");
+  }
+  let services: PluginServicesHandle | undefined;
+  try {
+    services = await startPluginServices({
+      registry,
+      config,
+      getCronService: () => cron,
+      throwOnStartError: true,
+      onHandle(handle) {
+        services = handle;
+      },
+    });
+    expect(logger.error).not.toHaveBeenCalled();
+  } finally {
+    await services?.stop({ strict: true });
+  }
 }
 
 function afterBackup(callback: () => void) {
@@ -274,9 +331,9 @@ describe("host Cron Doctor repair", () => {
   });
 
   it("runs the registered memory-core migration with recoverable backup and an idempotent second pass", async () => {
-    const migration = await getDreamingMigration();
     await withCronFixture(async (fixture) => {
       const { state, activeStore, retiredStore, databasePath } = fixture;
+      const migration = getDreamingMigration(fixture);
       saveCronJobsStoreWithRevisionNative(fixture.untouchedStore, {
         version: 1,
         jobs: [
@@ -411,11 +468,11 @@ describe("host Cron Doctor repair", () => {
   it.each([true, false])(
     "repairs phase-only partitions with dreaming enabled=%s and retains their original backup",
     async (enabled) => {
-      const migration = await getDreamingMigration();
       await withCronFixture(async (fixture) => {
         fixture.scope.config = {
           plugins: { entries: { "memory-core": { config: { dreaming: { enabled } } } } },
         };
+        const migration = getDreamingMigration(fixture);
         const phaseRows = [
           { store: fixture.activeStore, id: "survivor", phase: "light" },
           { store: fixture.activeStore, id: "duplicate", phase: "rem" },
@@ -530,14 +587,10 @@ describe("host Cron Doctor repair", () => {
   ])(
     "keeps $layout history in place after Doctor and runtime dreaming enabled=$enabled",
     async ({ activeDreaming, enabled }) => {
-      const migration = await getDreamingMigration();
-      const { reconcileShortTermDreamingCronJob } =
-        await import("../../extensions/memory-core/src/dreaming-cron.js");
-      const { resolveMemoryDeepDreamingConfig } =
-        await import("openclaw/plugin-sdk/memory-core-host-status");
       await withCronFixture(
         async (fixture) => {
           const { activeStore, retiredStore } = fixture;
+          const migration = getDreamingMigration(fixture);
           const authoredPayloadOptions = { model: "openai/gpt-4.1-mini", timeoutSeconds: 90 };
           runOpenClawStateWriteTransaction(({ db }) => {
             db.prepare(`UPDATE cron_jobs SET payload_kind = 'agentTurn',
@@ -575,18 +628,30 @@ describe("host Cron Doctor repair", () => {
           const authoredBefore = beforeRuntime.jobs.find(
             (row) => row.store_key === activeStore && row.job_id === "operator",
           );
-          const { cron, logger } = createPausedCronService(fixture);
+          const { cron, logger, mutations } = createPausedCronService(fixture);
           try {
-            const config = resolveMemoryDeepDreamingConfig({
-              pluginConfig: {
-                dreaming: { enabled, frequency: "15 4 * * *", timezone: "UTC" },
+            const config: OpenClawConfig = {
+              plugins: {
+                entries: {
+                  "memory-core": {
+                    config: { dreaming: { enabled, frequency: "15 4 * * *", timezone: "UTC" } },
+                  },
+                },
               },
-            });
-            const result = await reconcileShortTermDreamingCronJob({ cron, config, logger });
-            expect(result).toEqual({
-              status: enabled ? (activeDreaming ? "updated" : "added") : "disabled",
-              removed: !enabled && activeDreaming ? 1 : 0,
-            });
+            };
+            await runRegisteredDreamingService(config, cron, logger);
+            expect(mutations).toEqual(
+              enabled
+                ? [
+                    {
+                      jobId: activeDreaming ? "survivor" : expect.any(String),
+                      action: activeDreaming ? "updated" : "added",
+                    },
+                  ]
+                : activeDreaming
+                  ? [{ jobId: "survivor", action: "removed" }]
+                  : [],
+            );
             const jobs = await cron.list({ includeDisabled: true });
             const managed = jobs.filter(
               (job) => job.declarationKey === "memory-core:memory-dreaming-promotion",
@@ -621,9 +686,9 @@ describe("host Cron Doctor repair", () => {
               );
             }
             expect(getCronJobsStoreRevision(retiredStore)).toBe(retiredRevision);
-            await expect(
-              reconcileShortTermDreamingCronJob({ cron, config, logger }),
-            ).resolves.toEqual({ status: enabled ? "noop" : "disabled", removed: 0 });
+            mutations.length = 0;
+            await runRegisteredDreamingService(config, cron, logger);
+            expect(mutations).toEqual([]);
             expect(readRows(fixture.db())).toEqual(afterRuntime);
           } finally {
             cron.stop();
@@ -635,12 +700,8 @@ describe("host Cron Doctor repair", () => {
   );
 
   it("requires Doctor for a declared legacy payload before runtime converges the same job", async () => {
-    const migration = await getDreamingMigration();
-    const { reconcileShortTermDreamingCronJob } =
-      await import("../../extensions/memory-core/src/dreaming-cron.js");
-    const { resolveMemoryDeepDreamingConfig } =
-      await import("openclaw/plugin-sdk/memory-core-host-status");
     await withCronFixture(async (fixture) => {
+      const migration = getDreamingMigration(fixture);
       const declarationKey = "memory-core:memory-dreaming-promotion";
       runOpenClawStateWriteTransaction(({ db }) => {
         db.prepare(`UPDATE cron_jobs
@@ -651,7 +712,7 @@ describe("host Cron Doctor repair", () => {
           fixture.activeStore,
         );
       });
-      const { cron, logger } = createPausedCronService(fixture);
+      const { cron, logger, mutations } = createPausedCronService(fixture);
       try {
         // Admit existing schedules before isolating the dreaming reconciliation's mutations.
         await cron.list({ includeDisabled: true });
@@ -660,13 +721,17 @@ describe("host Cron Doctor repair", () => {
         const original = before.jobs.find(
           (row) => row.store_key === fixture.activeStore && row.job_id === "survivor",
         );
-        const config = resolveMemoryDeepDreamingConfig({
-          pluginConfig: { dreaming: { enabled: true, frequency: "15 4 * * *", timezone: "UTC" } },
-        });
-        await expect(reconcileShortTermDreamingCronJob({ cron, config, logger })).resolves.toEqual({
-          status: "doctor-required",
-          removed: 0,
-        });
+        const config: OpenClawConfig = {
+          plugins: {
+            entries: {
+              "memory-core": {
+                config: { dreaming: { enabled: true, frequency: "15 4 * * *", timezone: "UTC" } },
+              },
+            },
+          },
+        };
+        await runRegisteredDreamingService(config, cron, logger);
+        expect(mutations).toEqual([]);
         expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("openclaw doctor --fix"));
         expect(readRows(fixture.db())).toEqual(before);
         expect(revisions(fixture)).toEqual(previousRevisions);
@@ -690,10 +755,8 @@ describe("host Cron Doctor repair", () => {
           sessionTarget: "isolated",
           payload: { kind: "agentTurn", lightContext: true },
         });
-        await expect(reconcileShortTermDreamingCronJob({ cron, config, logger })).resolves.toEqual({
-          status: "updated",
-          removed: 0,
-        });
+        await runRegisteredDreamingService(config, cron, logger);
+        expect(mutations).toEqual([{ jobId: "survivor", action: "updated" }]);
         const managed = (await cron.list({ includeDisabled: true })).filter(
           (job) => job.declarationKey === declarationKey,
         );
