@@ -78,6 +78,13 @@ stop with a warning naming those counts; missing custody information never block
 the update. The next Gateway starts with the refreshed service policy. An operator drop-in
 that still shortens the native timeout is preserved and reported.
 
+An already replaced Gateway that rejects connections because its runtime files
+are unavailable is stopped through its service owner with a warning instead of
+waiting for an RPC it cannot serve. For the older error emitted by published
+June Gateways, this also requires a live legacy lock matching the owned service
+PID. The lock and native service identity are rechecked before stopping; an
+unrelated connection error does not take this path.
+
 Maintenance drain uses the service's local credentials, including an existing
 paired operator identity when no shared token or password is configured. It does
 not create an identity or request new pairing. Older installed updaters that omit

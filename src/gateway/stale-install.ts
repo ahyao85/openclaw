@@ -28,6 +28,22 @@ import { resolveRuntimeServiceBuildId, VERSION } from "../version.js";
 export const GATEWAY_STALE_INSTALL_CLOSE_REASON =
   "gateway install changed; run: openclaw gateway restart";
 
+export function classifyGatewayStaleConnectionError(
+  message: string | undefined,
+): "installation-replaced" | "legacy-handler-unavailable" | undefined {
+  if (message?.includes(GATEWAY_STALE_INSTALL_CLOSE_REASON)) {
+    return "installation-replaced";
+  }
+  // Published June Gateways report failed runtime imports before STALE_INSTALL existed.
+  if (
+    message?.replace(/^Error: /u, "").split("\n", 1)[0] ===
+    "gateway closed (1011): gateway message handler unavailable"
+  ) {
+    return "legacy-handler-unavailable";
+  }
+  return undefined;
+}
+
 // The install root is process-stable; capture it before an upgrade can replace
 // package metadata, then consult it only after a dynamic import has failed.
 const gatewayInstallRoot = resolveOpenClawPackageRootSync({ moduleUrl: import.meta.url });

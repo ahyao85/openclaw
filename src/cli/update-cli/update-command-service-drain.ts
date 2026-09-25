@@ -7,7 +7,8 @@ import { resolveReadOnlyLocalGatewayAuth } from "../../gateway/call-device-auth.
 import { callGatewayCli } from "../../gateway/call.js";
 import { createConfiguredGatewayLocalProbe } from "../../gateway/local-http-probe.js";
 import type { GatewayShutdownStatus } from "../../gateway/server-public.js";
-import { GATEWAY_STALE_INSTALL_CLOSE_REASON } from "../../gateway/stale-install.js";
+import { classifyGatewayStaleConnectionError } from "../../gateway/stale-install.js";
+import { readLegacyGatewayLockIdentity } from "../../infra/gateway-lock-legacy.js";
 import {
   GATEWAY_SERVICE_STOP_TIMEOUT_MS,
   GATEWAY_SHUTDOWN_TIMEOUT_MS,
@@ -30,7 +31,21 @@ export async function withGatewayMaintenanceDrain<T>(
   const requestId = randomUUID();
   let suspensionId: string | undefined;
   let stopped = false;
+  let legacyStalePid: number | undefined;
   const finish = async () => {
+    if (legacyStalePid !== undefined) {
+      const legacy = await readLegacyGatewayLockIdentity(params.state.env);
+      assertResidentCurrent();
+      if (
+        legacy?.state !== "alive" ||
+        legacy.pid !== legacyStalePid ||
+        legacy.pid !== params.state.runtime?.pid
+      ) {
+        throw new Error("Legacy Gateway identity changed during maintenance drain");
+      }
+    }
+    assertResidentCurrent();
+    // The native stop owner rechecks the service PID and authority before mutation.
     const result = await stop();
     stopped = true;
     return result;
@@ -118,9 +133,23 @@ export async function withGatewayMaintenanceDrain<T>(
   // A resident whose installation was replaced underneath it refuses every
   // connection; it can neither report readiness nor accept new work, so
   // draining it is pointless and would only burn the deadline.
-  const staleResident = () =>
-    observationError !== undefined && observationError.includes(GATEWAY_STALE_INSTALL_CLOSE_REASON);
-  if (staleResident()) {
+  const staleResident = async () => {
+    const reason = classifyGatewayStaleConnectionError(observationError);
+    if (reason === "installation-replaced") {
+      return true;
+    }
+    if (reason !== "legacy-handler-unavailable" || !params.state.running) {
+      return false;
+    }
+    const legacy = await readLegacyGatewayLockIdentity(params.state.env);
+    assertResidentCurrent();
+    if (legacy?.state !== "alive" || legacy.pid !== params.state.runtime?.pid) {
+      return false;
+    }
+    legacyStalePid = legacy.pid;
+    return true;
+  };
+  if (await staleResident()) {
     params.warn(
       "WARNING: The running Gateway's installation was replaced before this stop; it refuses connections, so lifecycle drain is skipped and it is stopped directly.",
     );
@@ -167,7 +196,7 @@ export async function withGatewayMaintenanceDrain<T>(
       if (!observationError && lastObservation?.status === "ready") {
         return await finish();
       }
-      if (staleResident()) {
+      if (await staleResident()) {
         params.warn(
           "WARNING: The running Gateway's installation was replaced during this stop; it refuses connections, so lifecycle drain is skipped and it is stopped directly.",
         );

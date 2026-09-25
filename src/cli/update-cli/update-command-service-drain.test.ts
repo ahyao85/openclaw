@@ -11,8 +11,15 @@ import type { CallGatewayCliOptions } from "../../gateway/call.js";
 import { GATEWAY_STALE_INSTALL_CLOSE_REASON } from "../../gateway/stale-install.js";
 import { DEFAULT_UPDATE_STEP_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
 
-const mocks = vi.hoisted(() => ({ call: vi.fn(), managerTimeout: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  call: vi.fn(),
+  managerTimeout: vi.fn(),
+  legacyLock: vi.fn(),
+}));
 vi.mock("../../gateway/call.js", () => ({ callGatewayCli: mocks.call }));
+vi.mock("../../infra/gateway-lock-legacy.js", () => ({
+  readLegacyGatewayLockIdentity: mocks.legacyLock,
+}));
 vi.mock("../../daemon/systemd-maintenance.js", () => ({
   readSystemdGatewayStopTimeout: mocks.managerTimeout,
 }));
@@ -34,6 +41,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
   mocks.call.mockReset();
   mocks.managerTimeout.mockReset().mockResolvedValue(330_000);
+  mocks.legacyLock.mockReset().mockResolvedValue(undefined);
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -367,31 +375,111 @@ it("rejects a replacement boot before sending suspension or stopping", async () 
   expect(f.stop).not.toHaveBeenCalled();
 });
 
-it("stops a resident whose installation was replaced without draining it", async () => {
-  const f = fixture();
-  mocks.call.mockImplementation(async () => {
-    throw new Error(`status (1011): ${GATEWAY_STALE_INSTALL_CLOSE_REASON}`);
-  });
-  const { timeoutMs: _timeoutMs, ...params } = f.params;
-  await expect(withGatewayMaintenanceDrain(params, f.stop)).resolves.toBe("stopped");
-  expect(f.events).toEqual([expect.stringMatching(/^warning:.*replaced before this stop/), "stop"]);
-});
+const juneStaleConnection = "gateway closed (1011): gateway message handler unavailable";
+const legacyResident = { pid: 42, state: "alive", path: "/tmp/openclaw-fixture/gateway.lock" };
 
-it("stops when the resident's installation is replaced during the drain", async () => {
-  const f = fixture({ observations: [draining("embedded-run", "1 active agent turn")] });
-  let calls = 0;
-  const base = mocks.call.getMockImplementation();
-  mocks.call.mockImplementation(async (request) => {
-    if (request.method === "gateway.suspend.prepare" && ++calls > 1) {
-      throw new Error(`gateway.suspend.prepare (1011): ${GATEWAY_STALE_INSTALL_CLOSE_REASON}`);
+it.each([GATEWAY_STALE_INSTALL_CLOSE_REASON, juneStaleConnection])(
+  "stops an identified replaced resident without draining: %s",
+  async (reason) => {
+    const f = fixture();
+    mocks.legacyLock.mockResolvedValue(legacyResident);
+    mocks.call.mockImplementation(async () => {
+      throw new Error(reason);
+    });
+    const { timeoutMs: _timeoutMs, ...params } = f.params;
+    const running = withGatewayMaintenanceDrain(params, f.stop);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.stop).toHaveBeenCalledOnce();
+    await expect(running).resolves.toBe("stopped");
+    expect(f.events).toEqual([
+      expect.stringMatching(/^warning:.*replaced before this stop/),
+      "stop",
+    ]);
+    if (reason === GATEWAY_STALE_INSTALL_CLOSE_REASON) {
+      expect(mocks.legacyLock).not.toHaveBeenCalled();
     }
-    return base?.(request);
-  });
+  },
+);
+
+it.each([GATEWAY_STALE_INSTALL_CLOSE_REASON, juneStaleConnection])(
+  "stops an identified resident replaced during the drain: %s",
+  async (reason) => {
+    const f = fixture({ observations: [draining("embedded-run", "1 active agent turn")] });
+    mocks.legacyLock.mockResolvedValue(legacyResident);
+    let calls = 0;
+    const base = mocks.call.getMockImplementation();
+    mocks.call.mockImplementation(async (request) => {
+      if (request.method === "gateway.suspend.prepare" && ++calls > 1) {
+        throw new Error(reason);
+      }
+      return base?.(request);
+    });
+    const running = withGatewayMaintenanceDrain(f.params, f.stop);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.events).toEqual(["status", "observe:draining"]);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(f.stop).toHaveBeenCalledOnce();
+    await expect(running).resolves.toBe("stopped");
+    expect(f.events.at(-1)).toBe("stop");
+    expect(f.events.at(-2)).toMatch(/^warning:.*replaced during this stop/);
+  },
+);
+
+it.each([
+  ["absent", undefined],
+  ["unverified", { ...legacyResident, state: "unknown" }],
+  ["different PID", { ...legacyResident, pid: 43 }],
+])("keeps the normal deadline with a %s legacy lock", async (_label, legacy) => {
+  const f = fixture();
+  mocks.legacyLock.mockResolvedValue(legacy);
+  mocks.call.mockRejectedValue(new Error(juneStaleConnection));
   const running = withGatewayMaintenanceDrain(f.params, f.stop);
   await vi.advanceTimersByTimeAsync(0);
-  expect(f.events).toEqual(["status", "observe:draining"]);
-  await vi.advanceTimersByTimeAsync(100);
+  expect(f.stop).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(f.params.timeoutMs);
   await expect(running).resolves.toBe("stopped");
-  expect(f.events.at(-1)).toBe("stop");
-  expect(f.events.at(-2)).toMatch(/^warning:.*replaced during this stop/);
+  expect(f.warn).toHaveBeenCalledWith(expect.stringContaining("drain deadline reached"));
 });
+
+it.each([
+  "unknown method: gateway.suspend.prepare",
+  "device identity required",
+  "gateway closed (1011): unrelated failure",
+  "gateway closed (1011): gateway message handler unavailable for another reason",
+])("does not shorten the deadline for %s", async (message) => {
+  const f = fixture();
+  mocks.legacyLock.mockResolvedValue(legacyResident);
+  mocks.call.mockRejectedValue(new Error(message));
+  const running = withGatewayMaintenanceDrain(f.params, f.stop);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.stop).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(f.params.timeoutMs);
+  await expect(running).resolves.toBe("stopped");
+  expect(mocks.legacyLock).not.toHaveBeenCalled();
+  expect(f.warn).toHaveBeenCalledWith(expect.stringContaining("drain deadline reached"));
+});
+
+it.each(["lock", "native PID", "authority"])(
+  "does not stop when %s changes during legacy revalidation",
+  async (change) => {
+    const f = fixture();
+    mocks.call.mockRejectedValue(new Error(juneStaleConnection));
+    mocks.legacyLock.mockResolvedValueOnce(legacyResident).mockImplementationOnce(async () => {
+      if (change === "lock") {
+        return undefined;
+      }
+      if (change === "native PID") {
+        f.params.state.runtime = { status: "running", pid: 43 };
+      } else {
+        f.loseAuthority();
+      }
+      return legacyResident;
+    });
+    await expect(withGatewayMaintenanceDrain(f.params, f.stop)).rejects.toThrow(
+      change === "authority"
+        ? "service operation authority lost"
+        : "Legacy Gateway identity changed",
+    );
+    expect(f.stop).not.toHaveBeenCalled();
+  },
+);
