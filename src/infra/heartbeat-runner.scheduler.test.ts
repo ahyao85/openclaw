@@ -815,10 +815,9 @@ describe("startHeartbeatRunner", () => {
     // spacing boundary; they did not bypass the floor or wait for the 30m tick.
     expect(runSpy).toHaveBeenCalledTimes(2);
 
-    // Settle the final retained batch so this module-level wake queue is empty
-    // before the next runner lifecycle starts.
+    // The next completion cannot sustain a 30-second command/heartbeat loop.
     await vi.advanceTimersByTimeAsync(20_000);
-    expect(runSpy).toHaveBeenCalledTimes(3);
+    expect(runSpy).toHaveBeenCalledTimes(2);
 
     runner.stop();
   });

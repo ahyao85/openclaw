@@ -219,6 +219,31 @@ describe("shouldDeferWake", () => {
     ).toEqual({ defer: true, reason: "min-spacing", retryAtMs: 79_000 });
   });
 
+  it("holds a third consecutive exec completion until the monitor slot", () => {
+    expect(
+      decide({
+        source: "exec-event",
+        reason: "exec-event",
+        now: 80_000,
+        nextDueMs: 1_849_000,
+        lastRunStartedAtMs: 49_000,
+        consecutiveExecEventRuns: 2,
+        retainedWork: true,
+      }),
+    ).toEqual({ defer: true, reason: "not-due", retryAtMs: 1_849_000 });
+    expect(
+      decide({
+        source: "exec-event",
+        reason: "exec-event",
+        now: 1_849_000,
+        nextDueMs: 1_849_000,
+        lastRunStartedAtMs: 49_000,
+        consecutiveExecEventRuns: 2,
+        retainedWork: true,
+      }),
+    ).toEqual({ defer: false });
+  });
+
   describe("event-driven wakes before any prior run (bootstrap)", () => {
     it.each<[name: string, source: Input["source"], reason: Input["reason"]]>([
       [

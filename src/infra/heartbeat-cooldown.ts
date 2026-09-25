@@ -25,6 +25,9 @@ const DEFAULT_MIN_WAKE_SPACING_MS = 30_000;
 // `manual` retry doesn't trip it but a feedback loop does.
 const DEFAULT_FLOOD_WINDOW_MS = 60_000;
 const DEFAULT_FLOOD_THRESHOLD = 5;
+// A completion-driven turn may start another background command. Bound that
+// feedback chain between scheduled or other independently triggered runs.
+const MAX_CONSECUTIVE_EXEC_EVENT_RUNS = 2;
 
 export type DeferDecision =
   | { defer: false }
@@ -50,6 +53,8 @@ type ShouldDeferInput = {
   lastRunStartedAtMs?: number;
   /** Recent wake timestamps for flood detection. */
   recentRunStarts?: readonly number[];
+  /** Consecutive runs admitted from exec completions since another wake source ran. */
+  consecutiveExecEventRuns?: number;
   /** Override the minimum spacing floor. */
   minSpacingMs?: number;
   /** Override the flood-window length. */
@@ -74,7 +79,8 @@ type ShouldDeferInput = {
  * | event         | Run (bootstrap responsive) | Defer if now < nextDueMs OR within floor |
  *
  * An `exec-event` is an event-intent exception: a completed background command
- * has pending task work, so only the spacing floor and flood guard defer it.
+ * has pending task work, so it may bypass the monitor cadence twice in a row.
+ * Further completion-driven runs wait for the next scheduled slot.
  *
  * Immediate is for documented wake-now delivery paths such as `openclaw system
  * event --mode now`, task completion follow-ups, cron `--wake now`, and
@@ -118,6 +124,14 @@ export function shouldDeferWake(input: ShouldDeferInput): DeferDecision {
   // first scheduled phase tick.
   if (input.lastRunStartedAtMs === undefined) {
     return { defer: false };
+  }
+
+  if (
+    input.source === "exec-event" &&
+    (input.consecutiveExecEventRuns ?? 0) >= MAX_CONSECUTIVE_EXEC_EVENT_RUNS &&
+    input.now < input.nextDueMs
+  ) {
+    return { defer: true, reason: "not-due", retryAtMs: input.nextDueMs };
   }
 
   // A completed background exec is pending task work. Admit it after the
