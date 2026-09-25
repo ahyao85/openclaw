@@ -260,7 +260,7 @@ describe("startHeartbeatRunner", () => {
     runner.stop();
   });
 
-  it("uses the persisted monitor cadence for scheduled ticks and later cooldown", async () => {
+  it("uses the persisted monitor cadence while waking promptly for a completed exec", async () => {
     useFakeHeartbeatTime();
     const runSpy = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
     const runner = startDefaultRunner(runSpy);
@@ -288,7 +288,7 @@ describe("startHeartbeatRunner", () => {
       coalesceMs: 0,
     });
     await vi.advanceTimersByTimeAsync(1);
-    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(runSpy).toHaveBeenCalledTimes(2);
 
     await vi.advanceTimersByTimeAsync(60_000);
     expect(runSpy).toHaveBeenCalledTimes(2);
@@ -334,7 +334,7 @@ describe("startHeartbeatRunner", () => {
       coalesceMs: 0,
     });
     await vi.advanceTimersByTimeAsync(1);
-    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(runSpy).toHaveBeenCalledTimes(2);
 
     await vi.advanceTimersByTimeAsync(60_000);
     expect(runSpy).toHaveBeenCalledTimes(2);
@@ -820,6 +820,35 @@ describe("startHeartbeatRunner", () => {
     await vi.advanceTimersByTimeAsync(20_000);
     expect(runSpy).toHaveBeenCalledTimes(3);
 
+    runner.stop();
+  });
+
+  it("delivers a background exec completion promptly after a long command", async () => {
+    useFakeHeartbeatTime();
+    const runSpy = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
+    const runner = startHeartbeatRunner({ cfg: heartbeatConfig(), runOnce: runSpy });
+    requestHeartbeat({
+      source: "exec-event",
+      intent: "event",
+      reason: "exec-event",
+      sessionKey: "agent:main:main",
+      coalesceMs: 0,
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(runSpy).toHaveBeenCalledTimes(1);
+
+    // The agent's command finishes well after the 30s flood floor, but before
+    // its 30m monitor tick. Its completion is pending work, not a monitor poll.
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    requestHeartbeat({
+      source: "exec-event",
+      intent: "event",
+      reason: "exec-event",
+      sessionKey: "agent:main:main",
+      coalesceMs: 0,
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(runSpy).toHaveBeenCalledTimes(2);
     runner.stop();
   });
 

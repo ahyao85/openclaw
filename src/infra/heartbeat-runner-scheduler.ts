@@ -25,6 +25,7 @@ import {
   type HeartbeatRunResult,
   type HeartbeatWakeHandler,
   type HeartbeatWakeIntent,
+  type HeartbeatWakeSource,
   isRetryableHeartbeatSkipReason,
   setHeartbeatWakeHandler,
 } from "./heartbeat-wake.js";
@@ -99,10 +100,15 @@ export function startHeartbeatRunner(opts: {
     now: number,
     reason?: string,
     intent: HeartbeatWakeIntent = "event",
-    options: { authoritativeScheduledTick?: boolean; retainedWork?: boolean } = {},
+    options: {
+      authoritativeScheduledTick?: boolean;
+      retainedWork?: boolean;
+      source?: HeartbeatWakeSource;
+    } = {},
   ): DeferDecision => {
     const decision = shouldDeferWake({
       intent,
+      source: options.source,
       reason,
       now,
       nextDueMs: options.authoritativeScheduledTick ? now : agent.cooldownUntilMs,
@@ -224,6 +230,7 @@ export function startHeartbeatRunner(opts: {
       const deferral = evaluateWakeDeferral(agent, now, reason, intent, {
         authoritativeScheduledTick,
         retainedWork,
+        source: params.source,
       });
       if (deferral.defer) {
         // Retained exec work never owns cadence unless a scheduled tick joined it.

@@ -187,7 +187,6 @@ describe("shouldDeferWake", () => {
 
   describe("event-driven wakes after a prior run (regression for #75436)", () => {
     it.each<[name: string, source: Input["source"], reason: Input["reason"]]>([
-      ["defers exec-event wakes when now < nextDueMs", "exec-event", "exec-event"],
       ["defers cron wakes when now < nextDueMs", "cron", "cron:morning-brief"],
       ["defers hook wakes when now < nextDueMs", "hook", "hook:wake"],
       ["defers acp spawn stream wakes when now < nextDueMs", "acp-spawn", "acp:spawn:stream"],
@@ -199,6 +198,25 @@ describe("shouldDeferWake", () => {
         retryAtMs: 79_000,
       });
     });
+  });
+
+  it("wakes for a completed exec after the spacing floor, before the next monitor tick", () => {
+    expect(
+      decide({
+        source: "exec-event",
+        reason: "exec-event",
+        now: 80_000,
+        nextDueMs: 1_849_000,
+        lastRunStartedAtMs: 49_000,
+      }),
+    ).toEqual({ defer: false });
+    expect(
+      decide({
+        source: "exec-event",
+        reason: "exec-event",
+        ...afterRun,
+      }),
+    ).toEqual({ defer: true, reason: "min-spacing", retryAtMs: 79_000 });
   });
 
   describe("event-driven wakes before any prior run (bootstrap)", () => {

@@ -73,6 +73,9 @@ type ShouldDeferInput = {
  * | task          | Run                        | Defer only within floor or on flood      |
  * | event         | Run (bootstrap responsive) | Defer if now < nextDueMs OR within floor |
  *
+ * An `exec-event` is an event-intent exception: a completed background command
+ * has pending task work, so only the spacing floor and flood guard defer it.
+ *
  * Immediate is for documented wake-now delivery paths such as `openclaw system
  * event --mode now`, task completion follow-ups, cron `--wake now`, and
  * `/hooks/wake mode=now`. Event is for external/system notifications such as
@@ -117,7 +120,14 @@ export function shouldDeferWake(input: ShouldDeferInput): DeferDecision {
     return { defer: false };
   }
 
-  if (input.intent !== "task" && !input.retainedWork && input.now < input.nextDueMs) {
+  // A completed background exec is pending task work. Admit it after the
+  // spacing floor instead of holding it until the next monitor interval.
+  if (
+    input.intent !== "task" &&
+    input.source !== "exec-event" &&
+    !input.retainedWork &&
+    input.now < input.nextDueMs
+  ) {
     const spacingRetryAtMs = resolveMinSpacingRetryAtMs(input);
     return {
       defer: true,
