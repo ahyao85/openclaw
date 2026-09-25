@@ -657,43 +657,22 @@ complete.
 
 ### Release priority
 
-Release runs are always prioritized over PR-side work on GitHub-hosted runners.
-The repo variable `OPENCLAW_RELEASE_PRIORITY_RUN` names the active Full Release
-Validation parent run id:
+CI and supporting workflows run normally while Full Release Validation is active.
+`OPENCLAW_RELEASE_PRIORITY_RUN` no longer controls workflow admission or the CI
+gate. Release tooling may still set and clear this legacy variable, but a set or
+stale value does not pause new runs using the updated workflows.
 
-- `pnpm ci:full-release` writes `.artifacts/frv-release-priority-<parent>.json`
-  (the pause window) and then sets the variable once the parent dispatch is
-  observed; it clears the variable when the operation ends, sealed or failed.
-  `pnpm frv continue --failed` and `pnpm frv verify` clear it for the sealed
-  parent as well. A failure to set or clear the variable is a warning, never a
-  validation failure.
-- While it is set, the root jobs of the hosted-runner workflows `CI`, `Auto
-response`, `PR context and evidence`, `Labeler`, the `CodeQL` workflows,
-  `Periphery Dead Code Comment`, `Workflow Sanity`, `ClawSweeper Dispatch`, and
-  `Maintainer Command Reactions` skip through a job-level `if` (no runner is
-  consumed) unless the run is a `workflow_dispatch` or targets a `release*/`
-  branch. `Security Review` is never paused: it owns approval revocation for
-  `openclaw/ci-gate`. A deferred `CI` run keeps its `openclaw/ci-gate` failing
-  with `Deferred for release <run>` so the PR stays unmergeable until the rerun.
-- `pnpm frv prioritize --run <parent>` records the pause window and the queued
-  (not started) runs of those workflows on non-release branches, excluding
-  `release/*`, `release-ci/*`, `release-publish/*`, and every
-  `workflow_dispatch`; sets the variable; rechecks each run is still queued and
-  cancels it; then records what was actually cancelled (`--out <file>`,
-  `--dry-run`). Repeating the command keeps the original window and cancellations.
-- `pnpm frv prioritize --restore <file>` first clears the variable when it still
-  names that parent, then `gh run rerun`s the recorded cancelled runs plus every
-  run the gate deferred since the window opened (skipped gated runs, and `CI`
-  runs whose only executed jobs are `security-fast` and the failed gate),
-  coalesced to the newest run per workflow and branch so an obsolete run never
-  cancels validation of a newer head. Run it after the release seals; deferred
-  PR work is never re-dispatched automatically. Not yet proven live: GitHub
-  re-evaluating the `vars` gate on `gh run rerun`.
-- Publish children run on hosted `ubuntu-latest`; Blacksmith testbox runs are
-  a separate pool and do not compete. When the hosted pool is saturated, cancel
-  queued PR CI and ClawSweeper review runs, then restore them afterwards with
-  `pnpm frv prioritize --restore <record>` or by re-running each open PR's
-  latest cancelled CI run.
+For runs already deferred by the old workflows, use
+`pnpm frv prioritize --restore <record>` with the saved
+`.artifacts/frv-release-priority-<parent>.json` record. It clears the variable
+when it still names that parent and reruns the latest cancelled or deferred run
+per workflow and branch. Historical workflow revisions still contain the gate,
+so clear the variable before rerunning those revisions.
+
+Do not use `pnpm frv prioritize --run <parent>` for routine release validation:
+it still explicitly cancels queued non-release runs, but no longer reserves
+capacity or pauses newly arriving work. Runner capacity and normal GitHub Actions
+queueing determine when release and CI jobs start.
 
 ## Stable main closeout
 
