@@ -487,24 +487,11 @@ The full checklist below explains each step; this section decides the default.
    hold npm/ClawHub publication, GitHub release finalization, or main closeout. `macos-swift` and Windows node-test CI lanes are advisory for
    the npm decision; retain their actual results and repair their owners in
    parallel without re-cutting.
-5. **Runner priority.** While a release FRV or publish parent is active, cancel
-   queued pull-request-event runs of the named non-release workflows and
-   restore them afterwards with the recipe below (the
-   `pnpm frv prioritize --run <parent>` / `--restore <record>` controller from
-   #156305 replaces it once it lands). Select by workflow name and
-   `pull_request` event, never by branch: release parents, children, Linux
-   requests, and Docker recovery are `workflow_dispatch` runs, some on `main`,
-   and must stay queued.
-
-   ```bash
-   gh run list --repo openclaw/openclaw --status queued --limit 500 \
-     --json databaseId,workflowName,headBranch,event \
-     --jq '.[] | select(.event | IN("pull_request","pull_request_target")) | select(.workflowName | IN("CI","Security Review","Auto response","PR context and evidence","Labeler","CodeQL","Periphery Dead Code Comment","Workflow Sanity")) | [.databaseId, .workflowName, .headBranch] | @tsv' \
-     > cancelled-for-release.tsv
-   cut -f1 cancelled-for-release.tsv | xargs -n1 gh run cancel --repo openclaw/openclaw
-   # after the release parent is terminal
-   cut -f1 cancelled-for-release.tsv | xargs -n1 gh run rerun --repo openclaw/openclaw
-   ```
+5. **Shared runner capacity.** Keep PR CI and supporting workflows running during
+   release validation and publication. Let GitHub Actions queue work normally;
+   do not cancel queued PR runs to prioritize a release. Use the
+   [release recovery guidance](#release-priority) only for runs already deferred
+   by historical workflows.
 
 6. **Flip GitHub as soon as npm is out.** The moment `openclaw@YYYY.M.PATCH`
    is visible on npm under the target dist-tag, publish the GitHub release:
@@ -582,7 +569,7 @@ owner authorization; admission does not grant it.
 
 An explicit stable or full release request includes macOS publication unless the operator limits its scope. That authorization carries through macOS validation, signing, notarization, promotion, and verification without a separate macOS consent step. Follow the current owner-configured environment policy and retain all enforced rules and exact-source artifact checks.
 
-For every release profile, normal CI, plugin prerelease, all cross-OS, performance, and QA test results are advisory for npm/ClawHub. Preserve their actual conclusions and selected terminal evidence. The required publication proofs are listed in the [fast path](#fast-path-default). Native publication runs independently: macOS, Windows, Linux, and Android failures never delay npm/ClawHub, GitHub release finalization, or main closeout. Verify each platform's own artifacts and updater contract before claiming that platform is ready. Release children also hold hosted-runner priority over PR-side work; see [Release priority](#release-priority).
+For every release profile, normal CI, plugin prerelease, all cross-OS, performance, and QA test results are advisory for npm/ClawHub. Preserve their actual conclusions and selected terminal evidence. The required publication proofs are listed in the [fast path](#fast-path-default). Native publication runs independently: macOS, Windows, Linux, and Android failures never delay npm/ClawHub, GitHub release finalization, or main closeout. Verify each platform's own artifacts and updater contract before claiming that platform is ready. Release and PR jobs share runner capacity; see [Release priority](#release-priority) for recovery of historical deferred runs.
 
 1. Start from current `main`: pull latest, confirm the target commit is pushed, and confirm `main` CI is green enough to branch from.
 2. Create `release/YYYY.M.PATCH` from that commit. Backports are optional; apply only the operator-selected set of merged `main` PRs. Bump every required version location, run `pnpm release:prep`, finish release fixes and required forward-ports, and review `src/plugins/compat/registry.ts` plus `src/commands/doctor/shared/deprecation-compat.ts`.

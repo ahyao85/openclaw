@@ -48,6 +48,10 @@ export async function createDiskSwap(sourceRoot, base) {
   const files = [
     "infra/package-update-swap",
     "infra/package-update-filesystem",
+    "infra/fs-safe-remove",
+    "infra/fs-safe-defaults",
+    "infra/mutation-authority",
+    "infra/errno",
     "infra/package-update-integrity",
     "infra/package-update-npm-root",
     "infra/package-update-local-overrides",
@@ -71,7 +75,7 @@ export async function createDiskSwap(sourceRoot, base) {
       new vm.SourceTextModule(code, { context, identifier: filename }),
     );
     for (const match of code.matchAll(
-      /(?:import|export)\s*\{([^}]+)\}\s*from\s*["']([^"']+)["']/gs,
+      /(?:import|export)\s*(?:\w+\s*,\s*)?\{([^}]+)\}\s*from\s*["']([^"']+)["']/gs,
     )) {
       if (!external.has(match[2])) {
         external.set(match[2], new Set());
@@ -82,7 +86,9 @@ export async function createDiskSwap(sourceRoot, base) {
         .filter(Boolean)
         .forEach((exportName) => external.get(match[2]).add(exportName));
     }
-    for (const match of code.matchAll(/import\s+(\w+)\s+from\s*["']([^"']+)["']/g)) {
+    for (const match of code.matchAll(
+      /import\s+(\w+)(?:\s*,\s*\{[^}]*\})?\s+from\s*["']([^"']+)["']/g,
+    )) {
       if (!external.has(match[2])) {
         external.set(match[2], new Set());
       }
@@ -95,7 +101,11 @@ export async function createDiskSwap(sourceRoot, base) {
       continue;
     }
     const names = [...namesSet];
-    const builtin = specifier.startsWith("node:") ? await import(specifier) : undefined;
+    const dependency = specifier.startsWith("node:")
+      ? await import(specifier)
+      : specifier.startsWith("@openclaw/fs-safe/")
+        ? await import(pathToFileURL(require.resolve(specifier)).href)
+        : undefined;
     stubs.set(
       specifier,
       new vm.SyntheticModule(
@@ -104,8 +114,8 @@ export async function createDiskSwap(sourceRoot, base) {
           for (const name of names) {
             this.setExport(
               name,
-              builtin
-                ? builtin[name]
+              dependency
+                ? dependency[name]
                 : Object.hasOwn(values, name)
                   ? values[name]
                   : function () {
