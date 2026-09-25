@@ -13,7 +13,6 @@ import { createOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { resolveManagedUpdateLeaseDatabasePath } from "./update-managed-service-handoff-lease.js";
 import { runUpdateRepairTurn } from "./update-repair-agent.runtime.js";
-import { UPDATE_REPAIR_MAINTENANCE_TOOL } from "./update-repair-maintenance.js";
 
 const fixture = vi.hoisted(() => ({
   run: vi.fn(),
@@ -105,7 +104,7 @@ it.each([false, true])(
               stopReason: "tool_calls",
               pendingToolCalls: [
                 {
-                  name: UPDATE_REPAIR_MAINTENANCE_TOOL,
+                  name: "request_update_maintenance",
                   arguments: '{"operation":"update-repair"}',
                 },
               ],
@@ -161,7 +160,7 @@ it.each([false, true])(
           fixture.run.mock.calls[0]?.[0].clientTools?.map(
             (tool: { function: { name: string } }) => tool.function.name,
           ),
-        ).toEqual([UPDATE_REPAIR_MAINTENANCE_TOOL]);
+        ).toEqual(["request_update_maintenance"]);
         const saved = auth.loadAuthProfileStoreForRuntime(agentDir, {
           readOnly: true,
           externalCli: { mode: "none" },

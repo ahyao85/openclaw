@@ -11,7 +11,6 @@ import { createOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { resolveManagedUpdateLeaseDatabasePath } from "./update-managed-service-handoff-lease.js";
 import { runUpdateRepairTurn } from "./update-repair-agent.runtime.js";
-import { UPDATE_REPAIR_MAINTENANCE_TOOL } from "./update-repair-maintenance.js";
 
 const fixture = vi.hoisted(() => ({
   stream: vi.fn<StreamFn>(),
@@ -93,7 +92,7 @@ it("executes the real terminal client tool before settling credentials and admit
     };
     await state.writeConfig(config);
     fixture.stream.mockImplementation((model, context) => {
-      expect(context.tools?.map((tool) => tool.name)).toContain(UPDATE_REPAIR_MAINTENANCE_TOOL);
+      expect(context.tools?.map((tool) => tool.name)).toContain("request_update_maintenance");
       const stream = createAssistantMessageEventStream();
       queueMicrotask(() => {
         stream.push({
@@ -105,7 +104,7 @@ it("executes the real terminal client tool before settling credentials and admit
               {
                 type: "toolCall",
                 id: "maintenance-request",
-                name: UPDATE_REPAIR_MAINTENANCE_TOOL,
+                name: "request_update_maintenance",
                 arguments: { operation: "doctor-fix" },
               },
             ],

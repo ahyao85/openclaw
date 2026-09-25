@@ -5,7 +5,7 @@ import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import type { UpdateRepairTarget } from "./update-repair-protocol.js";
 import { buildUpdateDoctorEnv } from "./update-runner-doctor.js";
 
-export const UPDATE_REPAIR_MAINTENANCE_TOOL = "request_update_maintenance";
+const UPDATE_REPAIR_MAINTENANCE_TOOL = "request_update_maintenance";
 const requestSchema = z.strictObject({ operation: z.enum(["doctor-fix", "update-repair"]) });
 export type UpdateRepairMaintenanceRequest = z.infer<typeof requestSchema>;
 

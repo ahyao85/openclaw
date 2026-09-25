@@ -4,7 +4,6 @@ import { CommandProcessCleanupError } from "../process/exec-result.js";
 import {
   readUpdateRepairMaintenanceRequest,
   runUpdateRepairMaintenance,
-  UPDATE_REPAIR_MAINTENANCE_TOOL,
 } from "./update-repair-maintenance.js";
 
 const external = vi.hoisted(() => ({ entry: vi.fn(), command: vi.fn() }));
@@ -31,7 +30,7 @@ it.each(["doctor-fix", "update-repair"] as const)(
     const request = readUpdateRepairMaintenanceRequest({
       stopReason: "tool_calls",
       pendingToolCalls: [
-        { name: UPDATE_REPAIR_MAINTENANCE_TOOL, arguments: JSON.stringify({ operation }) },
+        { name: "request_update_maintenance", arguments: JSON.stringify({ operation }) },
       ],
     });
     expect(request).toEqual({ operation });
@@ -110,7 +109,7 @@ it.each([
   {
     stopReason: "stop",
     pendingToolCalls: [
-      { name: UPDATE_REPAIR_MAINTENANCE_TOOL, arguments: '{"operation":"doctor-fix"}' },
+      { name: "request_update_maintenance", arguments: '{"operation":"doctor-fix"}' },
     ],
   },
   {
@@ -121,7 +120,7 @@ it.each([
     stopReason: "tool_calls",
     pendingToolCalls: [
       {
-        name: UPDATE_REPAIR_MAINTENANCE_TOOL,
+        name: "request_update_maintenance",
         arguments: '{"operation":"doctor-fix","command":"anything"}',
       },
     ],
@@ -129,8 +128,8 @@ it.each([
   {
     stopReason: "tool_calls",
     pendingToolCalls: [
-      { name: UPDATE_REPAIR_MAINTENANCE_TOOL, arguments: '{"operation":"doctor-fix"}' },
-      { name: UPDATE_REPAIR_MAINTENANCE_TOOL, arguments: '{"operation":"update-repair"}' },
+      { name: "request_update_maintenance", arguments: '{"operation":"doctor-fix"}' },
+      { name: "request_update_maintenance", arguments: '{"operation":"update-repair"}' },
     ],
   },
 ])("refuses malformed or ambiguous terminal maintenance requests: %j", (meta) => {
