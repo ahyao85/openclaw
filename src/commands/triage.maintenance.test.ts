@@ -4,6 +4,7 @@ import { createManagedHandoffTestBinding } from "../../test/helpers/managed-hand
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resolveManagedUpdateLeaseDatabasePath } from "../infra/update-managed-service-handoff-lease.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { runAutomaticTriageRepair } from "./triage-automatic-repair.js";
 import { triageCommand } from "./triage.js";
 import {
   createTriageInferenceSelection,
@@ -152,3 +153,49 @@ it("preserves a failed maintenance command as failure", async () => {
   await expect(run()).rejects.toMatchObject({ code: 1 });
   expect(mocks.maintenance).toHaveBeenCalledOnce();
 });
+
+it.each([false, true])(
+  "maintenance outlives the agent deadline but retains owner cancellation (cancel=%s)",
+  async (cancel) => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const owner = new AbortController();
+    mocks.turn.mockImplementation(async () => {
+      await vi.advanceTimersByTimeAsync(599_999);
+      return completed;
+    });
+    mocks.maintenance.mockImplementation(async ({ signal }: { signal: AbortSignal }) => {
+      await vi.advanceTimersByTimeAsync(2);
+      expect(signal.aborted).toBe(false);
+      if (cancel) {
+        owner.abort(new Error("owner cancelled"));
+        expect(signal.aborted).toBe(true);
+      }
+      return { termination: "exit", code: 0, stdout: "", stderr: "" };
+    });
+    try {
+      const pending = runAutomaticTriageRepair({
+        runtime: createTriageRuntime(),
+        target: {
+          stateDir,
+          configPath: path.join(stateDir, "openclaw.json"),
+          defaultWorkspaceDir: stateDir,
+        },
+        targetEnv: { OPENCLAW_STATE_DIR: stateDir },
+        installRoot: stateDir,
+        prompt: "Repair.",
+        signal: owner.signal,
+        allowGatewayActivation: false,
+        isCurrent: () => true,
+        formatError: String,
+      });
+      if (cancel) {
+        await expect(pending).rejects.toThrow("owner cancelled");
+      } else {
+        await pending;
+      }
+      expect(mocks.maintenance).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);

@@ -68,6 +68,9 @@ export async function runAutomaticTriageRepair(params: {
         maintenanceHandoff: true,
       });
     });
+    // Inference is bounded; settled maintenance keeps its own phase budgets and
+    // remains cancellable by the original owner, not by the expired agent timer.
+    clearTimeout(timer);
     if (result.status === "unavailable") {
       runtime.error(params.formatError(result.reason));
       exitCliAfterOutput(runtime, controller.signal.aborted ? 2 : 1);
@@ -96,7 +99,7 @@ export async function runAutomaticTriageRepair(params: {
         },
         env: targetEnv,
         allowGatewayActivation: params.allowGatewayActivation,
-        signal,
+        signal: params.signal,
         assertCurrent: () => {
           if (!isCurrent()) {
             throw new Error("Repair authority is no longer current.");
@@ -108,7 +111,7 @@ export async function runAutomaticTriageRepair(params: {
           runtime.log(redactSupportString(output, redaction, { maxLength: 32 * 1024 }));
         }
       }
-      signal.throwIfAborted();
+      params.signal.throwIfAborted();
       if (!isCurrent() || maintenance.termination !== "exit" || maintenance.code !== 0) {
         runtime.error(
           "Updater-owned maintenance did not complete; use the manual recovery command above.",
