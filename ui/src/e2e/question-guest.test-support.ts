@@ -27,7 +27,7 @@ import {
   releaseAgentRunDelegatedAuthority,
 } from "../../../src/infra/agent-run-registry.js";
 import { createDeferredCore } from "../../../src/shared/deferred.js";
-import { ensureProfileForEmail } from "../../../src/state/user-profiles.js";
+import { ensureProfileForEmail, getUserProfileRole } from "../../../src/state/user-profiles.js";
 
 export const guestQuestionSessionKey = "agent:main:guest-question-proof";
 export const guestQuestionPrompt = "Which format should I use for your summary?";
@@ -122,6 +122,7 @@ export async function createGuestQuestionFixture(deliver: (frame: unknown) => Pr
       operatorRunAuthority: createAdmittedRunOperatorAuthority({
         profileId: profile.id,
         scopes: guestQuestionScopes,
+        readCurrentRoleAssignment: () => getUserProfileRole(profile.id),
         signal: source.signal,
         assertCurrent: () => source.signal.throwIfAborted(),
       }),
