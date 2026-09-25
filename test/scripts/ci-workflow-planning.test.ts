@@ -5104,8 +5104,22 @@ describe("ci workflow guards", () => {
       expect(run.if).toBeUndefined();
       expect(run.run).not.toContain("cache-hit");
       expect(restore.with?.path).toBe(".artifacts/tsgo-cache");
-      expect(restore.with?.key).toContain("pnpm-lock.yaml");
-      expect(restore.with?.key).toContain("test/tsconfig/*.json");
+      for (const cache of steps.filter(
+        (step) =>
+          step.uses?.startsWith("actions/cache/restore@") &&
+          step.with?.path === ".artifacts/tsgo-cache",
+      )) {
+        const key = cache.with?.key;
+        const restoreKeys = cache.with?.["restore-keys"];
+        if (typeof key !== "string" || typeof restoreKeys !== "string") {
+          throw new Error(`${jobId} compiler cache keys must be strings`);
+        }
+        expect(key).toContain("pnpm-lock.yaml");
+        expect(key).toContain("test/tsconfig/*.json");
+        const commitSuffix = "${{ github.sha }}";
+        expect(key.endsWith(commitSuffix)).toBe(true);
+        expect(restoreKeys.trim().split(/\s*\n\s*/u)).toEqual([key.slice(0, -commitSuffix.length)]);
+      }
       expect(restore.with?.key).toContain(
         jobId === "check-shard" ? "matrix.task" : "matrix.stripe",
       );
