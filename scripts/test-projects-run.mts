@@ -2,11 +2,14 @@
 // full local suite.
 import type { SpawnOptions } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
 import { performance } from "node:perf_hooks";
 import pMap from "p-map";
+import { createTempDirTracker } from "../test/helpers/temp-dir.ts";
 import { assertTestHomeSelection, combineTestHomeSelections } from "../test/test-home-policy.mts";
 import { loadPatternListFromEnv } from "../test/vitest/vitest.pattern-file.ts";
 import { formatMs } from "./lib/check-timing-summary.mts";
+import { splitTestTargetChunks } from "./lib/gateway-server-test-plan.mts";
 import { signalExitCode } from "./lib/managed-child-process.mts";
 import {
   prepareE2eVitestRuntime,
@@ -56,11 +59,13 @@ import {
   type VitestCacheAssignment,
   writeVitestIncludeFile,
 } from "./test-projects.test-support.mts";
+import { shouldUseDetachedVitestProcessGroup } from "./vitest-process-group.mts";
 
 type VitestRunSpec = BaseVitestRunSpec & {
   timingIncludePatterns?: string[];
   continueOnFailure?: boolean;
   reportIndex?: number;
+  exactIncludeFiles?: true;
   workerRun?: VitestWorkerRun;
   cacheAssignment?: VitestCacheAssignment;
 };
@@ -143,14 +148,23 @@ function runPnpmSpecCommand(
 
 async function runVitestSpec(spec: VitestRunSpec, reports: VitestReportOwner) {
   let preflightJoined = true;
+  let productJoined = true;
   if (spec.includeFilePath && spec.includePatterns) {
+    if (spec.exactIncludeFiles) {
+      for (const file of spec.includePatterns) {
+        if (!fs.statSync(file).isFile()) {
+          throw new Error(`Collected infra test file disappeared: ${file}`);
+        }
+      }
+    }
     writeVitestIncludeFile(spec.includeFilePath, spec.includePatterns, {
-      expandGlobs: !spec.watchMode,
+      expandGlobs: !spec.watchMode && !spec.exactIncludeFiles,
     });
   }
   try {
     if (spec.preflightPnpmArgs) {
       console.error(`[test] preflight ${spec.config}`);
+      preflightJoined = false;
       const preflightResult = await runPnpmSpecCommand(
         spec,
         spec.preflightPnpmArgs,
@@ -165,7 +179,9 @@ async function runVitestSpec(spec: VitestRunSpec, reports: VitestReportOwner) {
     }
     const attempt = reports?.attempt(spec.reportIndex!, spec.pnpmArgs);
     try {
+      productJoined = false;
       const result = await runPnpmSpecCommand(spec, attempt?.args ?? spec.pnpmArgs, spec.workerRun);
+      productJoined = result.groupJoined;
       attempt?.complete(result);
       return { ...result, groupJoined: preflightJoined && result.groupJoined };
     } catch (error) {
@@ -173,7 +189,13 @@ async function runVitestSpec(spec: VitestRunSpec, reports: VitestReportOwner) {
       throw error;
     }
   } finally {
-    cleanupVitestRunSpec(spec);
+    if (preflightJoined && productJoined) {
+      cleanupVitestRunSpec(spec);
+    } else if (spec.includeFilePath && fs.existsSync(spec.includeFilePath)) {
+      console.error(
+        `[test] retained include file after unverified group completion: ${spec.includeFilePath}`,
+      );
+    }
   }
 }
 
@@ -244,6 +266,7 @@ async function runVitestSpecs(
 ) {
   let exitCode = 0;
   let stopScheduling = false;
+  let groupJoined = true;
   const failures: FailedVitestShard[] = [];
   const timings: ShardTiming[] = [];
   const withCacheSlot = createVitestCacheSlots();
@@ -260,6 +283,7 @@ async function runVitestSpecs(
         stopScheduling = true;
         throw error;
       }
+      groupJoined &&= result.groupJoined;
       if (result.signal) {
         // A forwarded termination signal must not admit replacement shards during shutdown.
         termination.signal ??= result.signal;
@@ -286,7 +310,7 @@ async function runVitestSpecs(
     // Join already-admitted shards even when another shard's group join fails.
     { concurrency, stopOnError: false },
   );
-  return { exitCode, failures, timings, stopScheduling };
+  return { exitCode, failures, timings, stopScheduling, groupJoined };
 }
 
 export async function runTestProjects(
@@ -399,22 +423,17 @@ export async function runTestProjects(
     }
   }
 
-  runSpecs.forEach((spec, index) => {
-    spec.reportIndex = index;
-  });
   const homeMode = combineTestHomeSelections(
     runSpecs.map((spec) => resolveVitestHomeSelection(spec.pnpmArgs, { env: spec.env })),
   );
   // Refuse a mixed real-home run before report setup or runtime preparation imports code.
   assertTestHomeSelection(baseEnv, homeMode);
-  const reports = await createVitestReportOwner(
-    runSpecs.map((spec) => ({
-      config: spec.config,
-      includePatterns: spec.includePatterns,
-      args: spec.pnpmArgs.slice(spec.pnpmArgs.indexOf(resolveVitestCliEntry()) + 1),
-    })),
-    process.cwd(),
-  );
+  let reports: VitestReportOwner = null;
+  const inventoryTemps = createTempDirTracker();
+  let inventoryJoined = true;
+  let inventoryAccepted = true;
+  let productConsumersJoined = true;
+  let reportExitCode: number | undefined;
   const termination: { signal: NodeJS.Signals | null } = { signal: null };
   let preparingWorkers = false;
   let workers: VitestWorkerRun | undefined;
@@ -430,6 +449,111 @@ export async function runTestProjects(
   let reportFailure: string | undefined;
   let printCompletedSummary: (() => void) | undefined;
   try {
+    // Only ordinary no-argument full runs are optimized. User selections retain
+    // their existing owner and are never reapplied independently to each chunk.
+    if (args.length === 0 && shouldUseDetachedVitestProcessGroup()) {
+      const expanded: VitestRunSpec[] = [];
+      for (const spec of runSpecs) {
+        if (spec.config !== "test/vitest/vitest.infra.config.ts" || spec.watchMode) {
+          expanded.push(spec);
+          continue;
+        }
+        const directory = inventoryTemps.make("oc-infra-inventory-");
+        const output = path.join(directory, "files.json");
+        inventoryJoined = false;
+        inventoryAccepted = false;
+        const result = await runPnpmSpecCommand(
+          spec,
+          [
+            "exec",
+            "node",
+            ...resolveVitestNodeArgs(spec.env),
+            resolveVitestCliEntry(),
+            "list",
+            "--config",
+            spec.config,
+            "--filesOnly",
+            `--json=${output}`,
+          ],
+          undefined,
+          homeMode,
+        );
+        inventoryJoined = result.groupJoined;
+        termination.signal ??= result.signal;
+        if (result.code !== 0 || result.signal || result.noOutputTimedOut || !result.groupJoined) {
+          process.exitCode = result.code || (result.noOutputTimedOut ? 143 : 1);
+          return;
+        }
+        const inventory: unknown = JSON.parse(fs.readFileSync(output, "utf8"));
+        if (!Array.isArray(inventory)) {
+          throw new Error("Native infra file inventory is not an array");
+        }
+        const files: string[] = [];
+        const entries: unknown[] = inventory;
+        for (const entry of entries) {
+          if (
+            !entry ||
+            typeof entry !== "object" ||
+            !("projectName" in entry) ||
+            entry.projectName !== "infra" ||
+            !("file" in entry) ||
+            typeof entry.file !== "string" ||
+            !path.isAbsolute(entry.file)
+          ) {
+            throw new Error("Native infra file inventory has an invalid project or path");
+          }
+          files.push(entry.file);
+        }
+        if (new Set(files).size !== files.length) {
+          throw new Error("Native infra file inventory contains duplicate paths");
+        }
+        inventoryAccepted = true;
+        if (
+          files.length <= 150 ||
+          files.some((file) => {
+            const relative = path.relative(process.cwd(), file);
+            return (
+              relative === ".." ||
+              relative.startsWith(`..${path.sep}`) ||
+              path.isAbsolute(relative) ||
+              /[*?[\]{}]|[@+!]\(/u.test(file)
+            );
+          })
+        ) {
+          expanded.push(spec);
+          continue;
+        }
+        const chunks = splitTestTargetChunks(files.toSorted(), Math.ceil(files.length / 150));
+        for (const [index, chunk] of chunks.entries()) {
+          const includeFilePath = path.join(directory, `include-${index}.json`);
+          expanded.push({
+            ...spec,
+            includePatterns: chunk,
+            includeFilePath,
+            exactIncludeFiles: true,
+            timingTargets: chunk.map((file) =>
+              path.relative(process.cwd(), file).replaceAll(path.sep, "/"),
+            ),
+            env: { ...spec.env, OPENCLAW_VITEST_INCLUDE_FILE: includeFilePath },
+          });
+        }
+      }
+      runSpecs.splice(0, runSpecs.length, ...expanded);
+    }
+    if (termination.signal) {
+      return;
+    }
+    runSpecs.forEach((spec, index) => {
+      spec.reportIndex = index;
+    });
+    reports = await createVitestReportOwner(
+      runSpecs.map((spec) => ({
+        config: spec.config,
+        includePatterns: spec.includePatterns,
+        args: spec.pnpmArgs.slice(spec.pnpmArgs.indexOf(resolveVitestCliEntry()) + 1),
+      })),
+      process.cwd(),
+    );
     const admitted = runSpecs.map((spec) => {
       const cliArgs = spec.pnpmArgs.slice(spec.pnpmArgs.indexOf(resolveVitestCliEntry()) + 1);
       const execution = parseVitestExecutionArgs(cliArgs, parseCLI);
@@ -538,7 +662,9 @@ export async function runTestProjects(
       }
     }
 
+    productConsumersJoined = false;
     const result = await runVitestSpecs(scheduledSpecs, concurrency, reports, termination);
+    productConsumersJoined = result.groupJoined;
     if (concurrency === 1 && termination.signal) {
       return;
     }
@@ -566,12 +692,13 @@ export async function runTestProjects(
   } finally {
     try {
       await workers?.dispose().catch((error: unknown) => {
+        productConsumersJoined = false;
         reportFailure ??= String(error);
         process.exitCode ||= 1;
         console.error(error);
       });
       if (reports) {
-        const reportCode = await reports.finish(
+        reportExitCode = await reports.finish(
           async (mergeArgs) => {
             // Replay is source-only: selected configs load after all compiled
             // borrowers close; report blobs own the exact executed selection.
@@ -588,20 +715,37 @@ export async function runTestProjects(
               homeMode,
             );
             termination.signal ??= outcome.signal;
+            productConsumersJoined &&= outcome.groupJoined;
             return outcome;
           },
           termination.signal ? `Cancelled by ${termination.signal}` : reportFailure,
         );
-        if (reportCode) {
-          process.exitCode ||= reportCode;
+        if (reportExitCode) {
+          process.exitCode ||= reportExitCode;
         }
       }
       printCompletedSummary?.();
     } finally {
-      process.off("SIGTERM", onSignal);
-      process.off("SIGINT", onSignal);
-      if (termination.signal) {
-        await exitBySignal(termination.signal);
+      try {
+        if (
+          inventoryJoined &&
+          inventoryAccepted &&
+          productConsumersJoined &&
+          (!reports || reportExitCode === 0) &&
+          !reportFailure
+        ) {
+          inventoryTemps.cleanup();
+        } else if (inventoryTemps.dirs.size > 0) {
+          console.error(
+            `[test] retained native inventory evidence: ${[...inventoryTemps.dirs].join(", ")}`,
+          );
+        }
+      } finally {
+        process.off("SIGTERM", onSignal);
+        process.off("SIGINT", onSignal);
+        if (termination.signal) {
+          await exitBySignal(termination.signal);
+        }
       }
     }
   }

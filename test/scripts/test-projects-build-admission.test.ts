@@ -460,6 +460,251 @@ async function start(args: string[]) {
   await import(entryUrl);
 }
 
+describe("owned include file custody", () => {
+  it.each([
+    ["product", "joined", false],
+    ["product", "uncertain", true],
+    ["product", "rejected", true],
+    ["preflight", "joined", false],
+    ["preflight", "uncertain", true],
+    ["preflight", "rejected", true],
+  ] as const)("keeps include custody for %s %s", async (phase, outcome, retained) => {
+    const planner = await import("../../scripts/test-projects.test-support.mts");
+    const { runTestProjects } = await import("../../scripts/test-projects-run.mts");
+    const root = tempDirs.make("include-custody-");
+    const include = path.join(root, "include.json");
+    const config = "test/vitest/vitest.ui-e2e.config.ts";
+    const args = ["exec", "node", resolveVitestCliEntry(), "run", "--config", config];
+    vi.spyOn(planner, "createVitestRunSpecs").mockReturnValue([
+      {
+        config,
+        env: process.env,
+        includeFilePath: include,
+        includePatterns: [modelTarget],
+        timingTargets: undefined,
+        pnpmArgs: args,
+        preflightPnpmArgs: phase === "preflight" ? ["preflight"] : null,
+        watchMode: false,
+      },
+    ]);
+    commands.prepare.mockResolvedValue(0);
+    commands.reader.mockImplementation(({ pnpmArgs }) => {
+      expect(fs.existsSync(include)).toBe(true);
+      expect(JSON.parse(fs.readFileSync(include, "utf8"))).toEqual([modelTarget]);
+      const stage = pnpmArgs.includes("preflight") ? "preflight" : "product";
+      return {
+        completion:
+          stage === phase && outcome === "rejected"
+            ? Promise.reject(new Error("owned group did not join"))
+            : Promise.resolve({
+                code: stage === phase && outcome === "uncertain" ? 1 : 0,
+                signal: null,
+                groupJoined: !(stage === phase && outcome === "uncertain"),
+              }),
+        getForwardedSignal: () => undefined,
+      };
+    });
+    const execution = runTestProjects(async () => {}, [config]);
+    if (outcome === "rejected") {
+      await expect(execution).rejects.toMatchObject({
+        errors: [expect.objectContaining({ message: "owned group did not join" })],
+      });
+    } else {
+      await execution;
+    }
+    expect(fs.existsSync(include)).toBe(retained);
+  });
+});
+
+describe("native infra inventory admission", () => {
+  it.each([
+    "success",
+    "unsupported",
+    "user-selection",
+    "uncertain",
+    "failed",
+    "watchdog",
+    "malformed",
+    "missing-file",
+    "cleanup-signal",
+  ] as const)("applies native discovery policy for %s outcome", async (outcome) => {
+    const unsupported =
+      outcome === "unsupported" || (outcome === "success" && process.platform === "win32");
+    const nativeSelection = outcome === "success" && process.platform !== "win32";
+    const planner = await import("../../scripts/test-projects.test-support.mts");
+    const runtime = await import("../../scripts/lib/vitest-runtime-selection.mts");
+    const groups = await import("../../scripts/vitest-process-group.mts");
+    const actual = await vi.importActual<typeof import("../../scripts/run-vitest.mts")>(
+      "../../scripts/run-vitest.mts",
+    );
+    const { runTestProjects } = await import("../../scripts/test-projects-run.mts");
+    const root = tempDirs.make("infra-native-selection-", path.resolve(".artifacts"));
+    const files = Array.from({ length: 151 }, (_, index) =>
+      path.join(root, `file-${String(index).padStart(3, "0")}.test.ts`),
+    );
+    for (const file of files) {
+      fs.writeFileSync(file, 'throw new Error("metadata must not evaluate tests");');
+    }
+    const inherited = patternFiles.writePatternFile("infra-native.json", [
+      path.join(root, "*.test.ts"),
+    ]);
+    vi.stubEnv("OPENCLAW_VITEST_INCLUDE_FILE", inherited);
+    vi.spyOn(planner, "buildFullSuiteVitestRunPlans").mockImplementation((args) => [
+      {
+        config: "test/vitest/vitest.infra.config.ts",
+        forwardedArgs: args,
+        includePatterns: null,
+        watchMode: false,
+      },
+    ]);
+    // The selected fixtures consume no compiled subprocesses or product build.
+    vi.spyOn(runtime, "shouldPrepareVitestCoreWorkers").mockReturnValue(false);
+    commands.prepare.mockResolvedValue(0);
+    if (outcome !== "success") {
+      vi.spyOn(groups, "shouldUseDetachedVitestProcessGroup").mockReturnValue(!unsupported);
+    }
+    const products: string[][] = [];
+    const accepted: string[][] = [];
+    const productArgs: string[][] = [];
+    const productIncludes: string[] = [];
+    let inventoryDir: string | undefined;
+    const remove = fs.rmSync;
+    const exit = vi.fn(async () => {});
+    const listeners = process.listenerCount("SIGTERM");
+    commands.reader.mockImplementation((options) => {
+      if (options.pnpmArgs.includes("list")) {
+        if (unsupported) {
+          throw new Error("metadata requires verified groups");
+        }
+        const output = options.pnpmArgs.find((arg: string) => arg.startsWith("--json="))!.slice(7);
+        inventoryDir = path.dirname(output);
+        // Only selection parity needs a real collector; the other rows inject caller outcomes.
+        const handle = nativeSelection
+          ? actual.spawnWatchedVitestProcess(options)
+          : {
+              completion: Promise.resolve().then(() => {
+                fs.writeFileSync(
+                  output,
+                  JSON.stringify(files.map((file) => ({ file, projectName: "infra" }))),
+                );
+                return { code: 0, signal: null, groupJoined: true };
+              }),
+              getForwardedSignal: () => undefined,
+            };
+        return {
+          ...handle,
+          completion: handle.completion.then((result) => {
+            if (outcome === "malformed") {
+              fs.writeFileSync(output, "{}");
+            }
+            if (outcome === "missing-file") {
+              fs.unlinkSync(files[0]!);
+            }
+            if (outcome === "watchdog") {
+              options.onNoOutputTimeout?.();
+            }
+            if (outcome === "cleanup-signal") {
+              vi.spyOn(fs, "rmSync").mockImplementation((target, removalOptions) => {
+                if (String(target) === inventoryDir) {
+                  throw new Error("owned cleanup refusal");
+                }
+                return remove(target, removalOptions);
+              });
+            }
+            return {
+              ...result,
+              code: outcome === "failed" ? 7 : result.code,
+              groupJoined: outcome !== "uncertain" && result.groupJoined,
+            };
+          }),
+        };
+      }
+      products.push(JSON.parse(fs.readFileSync(options.env.OPENCLAW_VITEST_INCLUDE_FILE, "utf8")));
+      productArgs.push(options.pnpmArgs);
+      productIncludes.push(options.env.OPENCLAW_VITEST_INCLUDE_FILE);
+      if (nativeSelection) {
+        const output = path.join(root, `accepted-${products.length}.json`);
+        const args = options.pnpmArgs.map((arg: string) => (arg === "run" ? "list" : arg));
+        args.push("--filesOnly", `--json=${output}`);
+        const handle = actual.spawnWatchedVitestProcess({
+          ...options,
+          workerRun: undefined,
+          pnpmArgs: args,
+        });
+        return {
+          ...handle,
+          completion: handle.completion.then((result) => {
+            const entries: Array<{ file: string; projectName: string }> = JSON.parse(
+              fs.readFileSync(output, "utf8"),
+            );
+            expect(entries.every((entry) => entry.projectName === "infra")).toBe(true);
+            accepted.push(entries.map((entry) => entry.file));
+            return result;
+          }),
+        };
+      }
+      return {
+        completion: Promise.resolve({
+          code: 0,
+          signal: null,
+          groupJoined: !unsupported,
+        }),
+        getForwardedSignal: () => (outcome === "cleanup-signal" ? "SIGTERM" : undefined),
+      };
+    });
+    try {
+      const execution = runTestProjects(exit, outcome === "user-selection" ? ["--shard=1/2"] : [], {
+        ...process.env,
+        OPENCLAW_TEST_PROJECTS_SERIAL: "1",
+      });
+      if (outcome === "missing-file") {
+        await expect(execution).rejects.toMatchObject({
+          errors: [expect.objectContaining({ code: "ENOENT" })],
+        });
+      } else if (outcome === "malformed" || outcome === "cleanup-signal") {
+        await expect(execution).rejects.toThrow(
+          outcome === "malformed" ? "not an array" : "owned cleanup refusal",
+        );
+      } else {
+        await execution;
+      }
+      expect(process.listenerCount("SIGTERM")).toBe(listeners);
+      if (nativeSelection) {
+        expect(products.length).toBeGreaterThan(1);
+        expect(products.every((chunk) => chunk.length <= 150)).toBe(true);
+        expect(accepted.flat().toSorted()).toEqual(files.toSorted());
+        expect(new Set(accepted.flat()).size).toBe(files.length);
+        expect(fs.existsSync(inventoryDir!)).toBe(false);
+      } else if (unsupported || outcome === "user-selection") {
+        expect(inventoryDir).toBeUndefined();
+        expect(products).toEqual([[path.join(root, "*.test.ts")]]);
+        expect(productArgs).toHaveLength(1);
+        expect(productIncludes).toEqual([inherited]);
+        if (outcome === "user-selection") {
+          expect(productArgs[0]).toContain("--shard=1/2");
+        }
+        expect(process.exitCode).toBe(0);
+      } else if (outcome === "cleanup-signal") {
+        expect(exit).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+      } else {
+        expect(products).toEqual([]);
+        expect(fs.existsSync(inventoryDir!)).toBe(true);
+        if (outcome === "failed") {
+          expect(process.exitCode).toBe(7);
+        }
+        if (outcome === "watchdog") {
+          expect(process.exitCode).toBe(143);
+        }
+      }
+    } finally {
+      vi.mocked(fs.rmSync).mockRestore?.();
+      if (inventoryDir) {
+        remove(inventoryDir, { recursive: true, force: true });
+      }
+    }
+  });
+});
+
 describe("full-suite timing metadata", () => {
   it("records inherited include selections without replacing whole-config history", async () => {
     vi.stubEnv("OPENCLAW_TEST_PROJECTS_TIMINGS", "1");
@@ -918,7 +1163,7 @@ describe("test-projects build admission", () => {
         process.argv = wrapperArgv;
       }
       return {
-        completion: Promise.resolve({ code: 0, signal: null }),
+        completion: Promise.resolve({ code: 0, signal: null, groupJoined: true }),
         getForwardedSignal: () => undefined,
       };
     });
