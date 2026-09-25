@@ -5,7 +5,6 @@ import { emitAgentRunOutputTokens } from "../../infra/agent-events.js";
 import { getActiveDiagnosticTraceContext } from "../../infra/diagnostic-trace-context.js";
 import {
   getInstallationTarget,
-  installationTargetEnv,
   withInstallationTarget,
 } from "../../infra/installation-target-context.js";
 import { registerMcpToolApprovalBinding } from "../../infra/mcp-tool-approval-binding.js";
@@ -15,7 +14,6 @@ import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
 } from "../../plugins/runtime/gateway-request-scope.js";
-import { getActiveSecretsRuntimeConfigSnapshot } from "../../secrets/runtime-state.js";
 import { bindUserTurnTranscriptAnnotation } from "../../sessions/user-turn-transcript-annotation.js";
 import { getAsyncWorkSignal } from "../../shared/async-work-scope.js";
 import { resolveSkillResourceCandidates } from "../../skills/runtime/resource-candidates.js";
@@ -35,7 +33,6 @@ import { log } from "../embedded-agent-runner/logger.js";
 import type { EmbeddedRunAttemptParams } from "../embedded-agent-runner/run/types.js";
 import { runBestEffortCallback } from "../embedded-agent-subscribe.callback.js";
 import { createCronScheduledToolProjection } from "../exec-tool-target-pinning.js";
-import { prepareGitHubToolEnvironment } from "../github-tool-identity.js";
 import { throwAgentRunRestartAbortReason } from "../run-termination.js";
 import {
   attachInternalToolExecutionPreparer,
@@ -57,6 +54,7 @@ import {
   transferCoreTtsToolResultProvenance,
 } from "../tools/tts-tool-result-provenance.js";
 import type { AgentHarnessHostCapabilities } from "./host-capability-types.js";
+import { prepareAgentHarnessEnvironment } from "./host-environment.js";
 import { bindHarnessMedia } from "./host-media.js";
 import {
   registerAgentHarnessBeforeToolCallRetention,
@@ -192,7 +190,6 @@ export function createAgentHarnessHostCapabilities(params: {
   const workSignal = getAsyncWorkSignal();
   const attemptSignal = attempt.abortSignal;
   const installationTarget = getInstallationTarget();
-  const localProcessEnv = installationTargetEnv(installationTarget);
   const { sessionKey, onAgentEvent } = attempt;
   // Capture the selected harness declaration before plugin code can mutate it.
   // Full must not cover other commands merely because the same plugin owns them.
@@ -325,10 +322,12 @@ export function createAgentHarnessHostCapabilities(params: {
         })
       : undefined;
   const skillsSnapshot = attempt.skillsSnapshot ? cloneSnapshot(attempt.skillsSnapshot) : undefined;
-  const preparedRunEnvironment = prepareGitHubToolEnvironment({
-    config: config ?? {},
-    sourceConfig: getActiveSecretsRuntimeConfigSnapshot()?.sourceConfig,
-    agentId: attempt.agentId ?? "main",
+  const preparedRunEnvironment = prepareAgentHarnessEnvironment({
+    config,
+    agentId: attempt.agentId,
+    sessionKey: attempt.sessionKey,
+    sandboxAgentId: attempt.sandboxAgentId,
+    installationTarget,
   });
   const skillUsagePaths = attempt.sandbox?.skillUsagePaths
     ? cloneSnapshot(attempt.sandbox.skillUsagePaths)
@@ -505,12 +504,7 @@ export function createAgentHarnessHostCapabilities(params: {
       : {}),
     preparedEnvironment: () => {
       assertActive();
-      return Object.freeze({
-        credentialScrubEnv: Object.freeze({ ...preparedRunEnvironment.credentialScrubEnv }),
-        localIdentityEnv: Object.freeze({ ...preparedRunEnvironment.localIdentityEnv }),
-        managedLocalIdentity: preparedRunEnvironment.managedLocalIdentity,
-        ...(localProcessEnv ? { localProcessEnv } : {}),
-      });
+      return preparedRunEnvironment;
     },
     activeComputerContext: () => {
       assertActive();

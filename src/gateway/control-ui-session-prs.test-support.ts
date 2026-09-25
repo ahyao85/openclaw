@@ -160,18 +160,15 @@ export function createSessionPullRequestsFixture() {
   };
   return {
     load,
-    prepareRead: (
+    prepareRead: async (
       _connId: string,
       session: Parameters<typeof loadControlUiSessionPullRequests>[0],
     ) => {
       const params = seed(session);
-      return {
-        readCurrent: () =>
-          resolveControlUiSessionPrTarget(
-            loadGatewaySessionEntryReadOnly(params.sessionKey, { agentId: params.agentId }),
-          ),
-        prepare: async () => undefined,
-      };
+      return async () =>
+        resolveControlUiSessionPrTarget(
+          loadGatewaySessionEntryReadOnly(params.sessionKey, { agentId: params.agentId }),
+        );
     },
   };
 }
