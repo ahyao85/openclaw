@@ -480,6 +480,8 @@ describe("Codex app-server terminal settlement", () => {
         __openclaw: undefined,
       });
       params.timeoutMs = 60 * 60_000;
+      const promptPersisted = createDeferred<void>();
+      params.onUserMessagePersisted = () => promptPersisted.resolve();
       vi.useFakeTimers();
       const settled = vi.fn();
       const run = runCodexAppServerAttempt(params);
@@ -491,6 +493,7 @@ describe("Codex app-server terminal settlement", () => {
         coverageBeforeSettlement = (await readCodexAppServerBinding(params.sessionFile))
           ?.historyCoveredThrough;
         if (boundary === "checkpoint") {
+          await promptPersisted.promise;
           await holdWriter();
         }
         await harness.notify({

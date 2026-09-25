@@ -245,6 +245,7 @@ type SessionEntryWorkerRead = SessionStoreWorkerReadScope & {
   lifecycleSessionKey?: string;
   projection?: "full" | "backing" | "sharing";
   includeMembers?: boolean;
+  includeParticipantRecords?: boolean;
   includeAuthorization?: boolean;
 };
 
@@ -393,6 +394,7 @@ async function withOrderedSessionEntriesInWorker<T>(
               lifecycleSessionKey: selectedInput.lifecycleSessionKey,
               projection: selectedInput.projection,
               includeMembers: selectedInput.includeMembers,
+              includeParticipantRecords: selectedInput.includeParticipantRecords,
               includeAuthorization: selectedInput.includeAuthorization,
               env: database.env,
               continuation,
@@ -431,6 +433,7 @@ async function withSessionEntriesFromStoreInWorker<T>(
     lifecycleSessionKey: input.lifecycleSessionKey,
     projection: input.projection,
     includeMembers: input.includeMembers,
+    includeParticipantRecords: input.includeParticipantRecords,
     includeAuthorization: input.includeAuthorization,
   };
   return withSessionStoreReaderInWorker(

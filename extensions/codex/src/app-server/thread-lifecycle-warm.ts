@@ -48,6 +48,7 @@ import {
 import {
   assertAdoptedCodexThreadResumeAllowed,
   CodexIncognitoPolicyChangeError,
+  refreshCodexThreadSkillsCatalog,
 } from "./thread-policy.js";
 import { buildThreadResumeParams } from "./thread-requests.js";
 
@@ -329,6 +330,7 @@ export async function tryReuseCodexLiveThread(
         appServer: params.appServer,
         dynamicTools: params.dynamicTools,
         developerInstructions: params.developerInstructions,
+        skillsInstructions: params.skillsInstructions,
         config: applyCodexNativeSkillIsolation(resumeConfig, nativeSkillIsolation),
         nativeCodeModeEnabled: params.nativeCodeModeEnabled,
         nativeProviderWebSearchSupport: params.nativeProviderWebSearchSupport,
@@ -371,9 +373,11 @@ export async function tryReuseCodexLiveThread(
           resumeAuthProfileId,
           dynamicToolsFingerprint,
         );
+    const ephemeralPolicy = retainedThread.ephemeralPolicy;
     if (
       incognito &&
-      (retainedThread.ephemeralPolicy !== resumeParams.developerInstructions ||
+      (!ephemeralPolicy ||
+        ephemeralPolicy.developerInstructions !== params.developerInstructions ||
         getCodexInferenceThread(params.client, binding.threadId) !== params.inferenceRoute ||
         [...(params.inferenceProviderRoutes?.keys() ?? [])].some(
           (provider) =>
@@ -403,6 +407,24 @@ export async function tryReuseCodexLiveThread(
       withCurrent: params.authority?.withCurrent,
     });
     assertWarmOwner();
+    if (ephemeralPolicy && ephemeralPolicy.skillsInstructions !== params.skillsInstructions) {
+      try {
+        await refreshCodexThreadSkillsCatalog({
+          client: params.client,
+          threadId: binding.threadId,
+          skillsInstructions: params.skillsInstructions,
+          timeoutMs: params.appServer.requestTimeoutMs,
+          signal: params.signal,
+          assertCurrent: assertWarmOwner,
+          withCurrent: params.authority?.withCurrent,
+        });
+      } catch (error) {
+        // The ephemeral conversation survives a failed catalog handoff; the retained
+        // record still names the old catalog, so the next turn delivers it again.
+        preserveSubscription = true;
+        throw error;
+      }
+    }
     const nativeHookRelayGeneration =
       prebuiltFinalConfigPatch.nativeHookRelayGeneration ?? binding.nativeHookRelayGeneration;
     // Older App Servers omit model metadata; newer ones report native changes between turns.
@@ -464,7 +486,10 @@ export async function tryReuseCodexLiveThread(
             }
           : {}),
         liveThreadConfigFingerprint,
-        liveThreadEphemeralPolicy: retainedThread.ephemeralPolicy,
+        liveThreadEphemeralPolicy: ephemeralPolicy && {
+          ...ephemeralPolicy,
+          skillsInstructions: params.skillsInstructions,
+        },
         liveThreadOwnership: retainedThread,
         ...(!incognito && retainedThread.serviceTier && resumeParams.serviceTier === undefined
           ? { clearInheritedServiceTier: true }

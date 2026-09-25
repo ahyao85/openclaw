@@ -25,7 +25,7 @@ import {
 } from "./thread-binding-policy.js";
 import { isContextEngineBindingCompatible } from "./thread-context-engine.js";
 import {
-  areDynamicToolFingerprintsCompatible,
+  areCodexDynamicToolFingerprintsCompatible,
   areUserMcpServersFingerprintsCompatible,
   shouldStartTransientNoToolThread,
 } from "./thread-fingerprints.js";
@@ -111,8 +111,8 @@ export async function startOrResumeThread(
     const initialBoundThreadId = binding?.threadId;
     const initialBoundClientId = binding?.clientId;
     const throwIfAborted = () => throwIfCodexThreadLifecycleAborted(params.signal);
-    const prepareRequestContext = () =>
-      prepareCodexThreadRequestContext(params, {
+    const prepareRequestContext = async () => {
+      const context = await prepareCodexThreadRequestContext(params, {
         binding,
         selectionBinding,
         bindingIdentity,
@@ -122,6 +122,11 @@ export async function startOrResumeThread(
         assertCurrent: assert,
         throwIfAborted,
       });
+      // Managed requests own a parent-local carrier. Only uncovered connections
+      // put the catalog in native thread state; recompute after route changes.
+      params.skillsInstructions = params.inferenceRoute ? undefined : input.skillsInstructions;
+      return context;
+    };
     const releaseRetainedThread = (
       threadId: string,
       ownerClientId = initialBoundClientId,
@@ -183,6 +188,7 @@ export async function startOrResumeThread(
           dynamicTools: params.dynamicTools,
           appServer: params.appServer,
           developerInstructions: params.developerInstructions,
+          skillsInstructions: params.skillsInstructions,
           config,
           nativeCodeModeEnabled: params.nativeCodeModeEnabled,
           nativeProviderWebSearchSupport: params.nativeProviderWebSearchSupport,
@@ -616,11 +622,11 @@ export async function startOrResumeThread(
       // the dynamic tool catalog, so only invalidate fingerprints we actually have.
       if (
         binding.dynamicToolsFingerprint &&
-        !areDynamicToolFingerprintsCompatible(
-          binding.dynamicToolsFingerprint,
-          dynamicToolsFingerprint,
-          legacyDynamicToolsFingerprint,
-        )
+        !areCodexDynamicToolFingerprintsCompatible({
+          previous: binding.dynamicToolsFingerprint,
+          next: dynamicToolsFingerprint,
+          nextLegacy: legacyDynamicToolsFingerprint,
+        })
       ) {
         assertCodexBindingMayBeReplaced(
           binding,

@@ -2,17 +2,17 @@
 import { embeddedAgentLog, formatErrorMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { refreshCodexAppServerAuthTokens, type CodexAppServerAuthHandoff } from "./auth-bridge.js";
 import { fingerprintTokenAuthProfileCacheKey } from "./auth-cache-key.js";
-import type {
-  ClientRuntimeContext,
-  CodexAppServerLiveThreadOwnership,
-} from "./client-runtime-types.js";
+import type { CodexAppServerAuthRuntimeContext as ClientRuntimeContext } from "./auth-profile.js";
 import {
   createThreadOwnerToken,
   forgetThreadOwnership,
   hasSiblingThreadWork,
   hasThreadOwnership,
   invalidateThreadOwnership,
+  revertRetainedThreadSkillsCatalog,
   type RetainedLiveThread,
+  type CodexEphemeralThreadPolicy,
+  type CodexAppServerLiveThreadOwnership,
   type ThreadOwnershipState,
   type ThreadOwnerToken,
   type ThreadReleaseTransition,
@@ -33,8 +33,6 @@ type ClientRuntime = ThreadOwnershipState &
     authHandoff?: CodexAppServerAuthHandoff;
     evictionTimer?: ReturnType<typeof setTimeout>;
   };
-
-export type { CodexAppServerLiveThreadOwnership } from "./client-runtime-types.js";
 
 /** Match Codex's native grace window without retaining inactive conversations indefinitely. */
 const CODEX_APP_SERVER_LIVE_THREAD_IDLE_TIMEOUT_MS = 30 * 60_000;
@@ -389,7 +387,7 @@ export async function retainCodexAppServerLiveThread(
   ) => Promise<void>,
   configFingerprint?: string,
   serviceTier?: CodexServiceTier | null,
-  ephemeralPolicy?: string,
+  ephemeralPolicy?: CodexEphemeralThreadPolicy,
 ): Promise<boolean> {
   const runtime = configuredClients.get(client);
   if (!runtime || runtime.closed) {
@@ -625,6 +623,17 @@ function claimCodexAppServerThreadOwnership(
       }
     },
   };
+}
+
+/** Standalone incognito compaction retains its separately owned subscription. */
+export function revertCodexAppServerLiveThreadSkillsCatalog(
+  client: CodexAppServerClient,
+  threadId: string,
+): void {
+  const runtime = configuredClients.get(client);
+  if (runtime && !runtime.closed) {
+    revertRetainedThreadSkillsCatalog(runtime, threadId);
+  }
 }
 
 /** Distinguish active claimed ownership from an already-evicted idle subscription. */
