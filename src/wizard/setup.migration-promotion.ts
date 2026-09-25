@@ -384,29 +384,14 @@ export async function moveRecordedEmptyTarget(component: PromotionComponent): Pr
   }
 }
 
-async function usesCaseInsensitivePaths(directory: string): Promise<boolean> {
-  const probe = await fs.mkdtemp(path.join(directory, ".openclaw-case-probe-"));
+async function recognizesPathAlias(
+  directory: string,
+  prefix: string,
+  aliasName: (name: string) => string,
+): Promise<boolean> {
+  const probe = await fs.mkdtemp(path.join(directory, prefix));
   try {
-    const alias = path.join(path.dirname(probe), path.basename(probe).toUpperCase());
-    if (alias === probe) {
-      return false;
-    }
-    await fs.access(alias);
-    return true;
-  } catch (error) {
-    if (isNotFoundPathError(error)) {
-      return false;
-    }
-    throw error;
-  } finally {
-    await fs.rm(probe, { recursive: true, force: true });
-  }
-}
-
-async function usesNormalizationInsensitivePaths(directory: string): Promise<boolean> {
-  const probe = await fs.mkdtemp(path.join(directory, ".openclaw-normalization-é-"));
-  try {
-    const alias = path.join(path.dirname(probe), path.basename(probe).normalize("NFD"));
+    const alias = path.join(path.dirname(probe), aliasName(path.basename(probe)));
     if (alias === probe) {
       return false;
     }
@@ -435,8 +420,16 @@ async function canonicalizePromotionPath(
         : path.dirname(ancestor);
       return {
         path: path.join(ancestor, ...suffix.toReversed()),
-        caseInsensitive: await usesCaseInsensitivePaths(probeDirectory),
-        normalizationInsensitive: await usesNormalizationInsensitivePaths(probeDirectory),
+        caseInsensitive: await recognizesPathAlias(
+          probeDirectory,
+          ".openclaw-case-probe-",
+          (name) => name.toUpperCase(),
+        ),
+        normalizationInsensitive: await recognizesPathAlias(
+          probeDirectory,
+          ".openclaw-normalization-é-",
+          (name) => name.normalize("NFD"),
+        ),
       };
     } catch (error) {
       if (!isNotFoundPathError(error)) {

@@ -1,4 +1,3 @@
-// Workspace audit helpers inspect local skill folders for security and trust issues.
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -16,24 +15,6 @@ type WorkspaceSkillScanLimits = {
 
 const MAX_WORKSPACE_SKILL_SCAN_FILES_PER_WORKSPACE = 2_000;
 const MAX_WORKSPACE_SKILL_ESCAPE_DETAIL_ROWS = 12;
-
-async function safeStat(targetPath: string): Promise<{
-  ok: boolean;
-  isDir: boolean;
-}> {
-  try {
-    const lst = await fs.lstat(targetPath);
-    return {
-      ok: true,
-      isDir: lst.isDirectory(),
-    };
-  } catch {
-    return {
-      ok: false,
-      isDir: false,
-    };
-  }
-}
 
 function realpathWithTimeout(p: string, timeoutMs = 2000): Promise<string | null> {
   let timerHandle: ReturnType<typeof setTimeout> | undefined;
@@ -59,8 +40,8 @@ async function listWorkspaceSkillMarkdownFiles(
   limits: WorkspaceSkillScanLimits = {},
 ): Promise<{ skillFilePaths: string[]; truncated: boolean }> {
   const skillsRoot = path.join(workspaceDir, "skills");
-  const rootStat = await safeStat(skillsRoot);
-  if (!rootStat.ok || !rootStat.isDir) {
+  const rootStat = await fs.lstat(skillsRoot).catch(() => null);
+  if (!rootStat?.isDirectory()) {
     return { skillFilePaths: [], truncated: false };
   }
 
@@ -87,25 +68,10 @@ async function listWorkspaceSkillMarkdownFiles(
         continue;
       }
       const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
+      const stat = entry.isSymbolicLink() ? await fs.stat(fullPath).catch(() => null) : entry;
+      if (stat?.isDirectory()) {
         queue.push(fullPath);
-        continue;
-      }
-      if (entry.isSymbolicLink()) {
-        const stat = await fs.stat(fullPath).catch(() => null);
-        if (!stat) {
-          continue;
-        }
-        if (stat.isDirectory()) {
-          queue.push(fullPath);
-          continue;
-        }
-        if (stat.isFile() && entry.name === "SKILL.md") {
-          skillFiles.push(fullPath);
-        }
-        continue;
-      }
-      if (entry.isFile() && entry.name === "SKILL.md") {
+      } else if (stat?.isFile() && entry.name === "SKILL.md") {
         skillFiles.push(fullPath);
       }
     }
@@ -174,21 +140,13 @@ export async function collectWorkspaceSkillSymlinkEscapeFindings(params: {
       seenSkillPaths.add(canonicalSkillPath);
 
       const skillRealPath = await realpathWithTimeout(canonicalSkillPath);
-      if (!skillRealPath) {
-        escapedSkillFiles.push({
-          workspaceDir: workspacePath,
-          skillFilePath: canonicalSkillPath,
-          skillRealPath: "(realpath timed out - symlink target unverifiable)",
-        });
-        continue;
-      }
-      if (isPathInside(workspaceRealPath, skillRealPath)) {
+      if (skillRealPath && isPathInside(workspaceRealPath, skillRealPath)) {
         continue;
       }
       escapedSkillFiles.push({
         workspaceDir: workspacePath,
         skillFilePath: canonicalSkillPath,
-        skillRealPath,
+        skillRealPath: skillRealPath || "(realpath timed out - symlink target unverifiable)",
       });
     }
   }

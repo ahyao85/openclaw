@@ -1,4 +1,3 @@
-// Implements the embedded backend used by local TUI sessions.
 import { randomUUID } from "node:crypto";
 import type {
   ErrorShape,
@@ -121,6 +120,7 @@ import {
   normalizeAgentId,
 } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
 import { applyQueueDropPolicy, waitForQueueDebounce } from "../utils/queue-helpers.js";
 import {
@@ -131,7 +131,6 @@ import {
 } from "./embedded-chat-projection.js";
 import {
   buildLocalQueuedPrompt,
-  createQueuedRunReadiness,
   timeoutSecondsFromMs,
   waitForLocalRunShutdown,
   waitForQueuedLocalRun,
@@ -405,14 +404,13 @@ export class EmbeddedTuiBackend implements TuiBackend {
       }
     }
     const controller = new AbortController();
-    const queuedRunReadiness = createQueuedRunReadiness();
+    const queuedRunReadiness = createDeferredCore();
     this.runs.set(runId, {
       sessionKey: opts.sessionKey,
       agentId,
       controller,
       buffer: "",
       managedMediaUrls: new Set(),
-      isBtw: Boolean(question),
       question,
       finishing: false,
       lifecycleEnded: false,
@@ -420,7 +418,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
       ...(pendingQueue ? { pendingQueue } : {}),
       ...(queuedAfter ? { queuedAfter } : {}),
       queuedRunReady: queuedRunReadiness.promise,
-      markQueuedRunReady: queuedRunReadiness.markReady,
+      markQueuedRunReady: queuedRunReadiness.resolve,
     });
 
     const runPromise = this.runTurn({
@@ -452,7 +450,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
     const runIds: string[] = [];
     const candidates = opts.runId ? [[opts.runId, this.runs.get(opts.runId)] as const] : this.runs;
     for (const [runId, run] of candidates) {
-      if (!run || (!opts.runId && run.isBtw) || run.sessionKey !== opts.sessionKey) {
+      if (!run || (!opts.runId && run.question) || run.sessionKey !== opts.sessionKey) {
         continue;
       }
       if (opts.sessionKey === "global") {
@@ -538,7 +536,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
     ).items;
     const newestInFlightRun = [...this.runs.entries()].findLast(
       ([, run]) =>
-        !run.isBtw &&
+        !run.question &&
         run.terminalState !== "final" &&
         agentSessionKeysMatchByRequestKey(run.sessionKey, opts.sessionKey) &&
         normalizeAgentId(run.agentId) === normalizeAgentId(sessionAgentId),
@@ -628,7 +626,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
   describeSession = this.sessionReader.describeSession;
 
   async listAgents(): Promise<TuiAgentsList> {
-    return (await listAgentsForGateway(getRuntimeConfig())) as TuiAgentsList;
+    return await listAgentsForGateway(getRuntimeConfig());
   }
 
   async patchSession(
@@ -999,7 +997,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
   }): QueuedSessionRun | undefined {
     let queuedAfter: QueuedSessionRun | undefined;
     for (const [runId, run] of this.runs) {
-      if (this.isSameRunScope(run, params) && !run.isBtw) {
+      if (this.isSameRunScope(run, params) && !run.question) {
         const promise = this.runPromises.get(runId);
         if (promise) {
           queuedAfter = { runId, run, promise };
@@ -1011,7 +1009,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
 
   private abortSessionRuns(params: { sessionKey: string; agentId?: string }) {
     for (const [runId, run] of this.runs) {
-      if (this.isSameRunScope(run, params) && !run.isBtw && this.isAbortableRun(runId, run)) {
+      if (this.isSameRunScope(run, params) && !run.question && this.isAbortableRun(runId, run)) {
         run.controller.abort();
       }
     }
@@ -1019,7 +1017,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
 
   private hasAbortableSessionRun(params: { sessionKey: string; agentId?: string }): boolean {
     for (const [runId, run] of this.runs) {
-      if (this.isSameRunScope(run, params) && !run.isBtw && this.isAbortableRun(runId, run)) {
+      if (this.isSameRunScope(run, params) && !run.question && this.isAbortableRun(runId, run)) {
         return true;
       }
     }
@@ -1181,7 +1179,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
   }
 
   private ensureRunRegistered(runId: string, run: LocalRunState) {
-    if (run.registered || run.isBtw) {
+    if (run.registered || run.question) {
       return;
     }
     run.registered = true;
@@ -1230,7 +1228,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
       evt.stream === "assistant" ? resolveAssistantTextInput(evt.data) : undefined;
     if (
       assistantLiveChatInput &&
-      !run.isBtw &&
+      !run.question &&
       !shouldSuppressAssistantEventForLiveChat(evt.data)
     ) {
       for (const url of assistantLiveChatInput.managedMediaUrls ?? []) {
@@ -1340,7 +1338,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
           return;
         }
       }
-      if (activeRun?.isBtw && activeRun.question) {
+      if (activeRun?.question) {
         const result = await this.runBtwTurn({
           runId: params.runId,
           sessionKey: params.sessionKey,
@@ -1407,22 +1405,6 @@ export class EmbeddedTuiBackend implements TuiBackend {
         return;
       }
       run.lifecycleYielded ||= isAgentLifecycleYieldedWaiting({ phase: "end", ...result?.meta });
-
-      if (run.isBtw) {
-        const text = payloadText(result?.payloads);
-        if (run.question && text) {
-          this.emit("chat.side_result", {
-            kind: "btw",
-            runId: params.runId,
-            sessionKey: run.sessionKey,
-            agentId: run.agentId,
-            question: run.question,
-            text,
-          });
-        }
-        this.emitChatTerminal(params.runId, run, "final");
-        return;
-      }
 
       if (run.terminalState !== "final") {
         const finalText = payloadText(result?.payloads);

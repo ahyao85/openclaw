@@ -238,7 +238,6 @@ export function createTuiCommandHandlersHarness(params?: {
     refreshAgents,
     abortActive,
     setActivityStatus,
-    formatSessionKey: vi.fn(),
     applySessionInfoFromPatch: applySessionInfoFromPatch as never,
     applySessionMutationResult: applySessionMutationResult as never,
     noteLocalRunId,
