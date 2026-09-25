@@ -95,7 +95,7 @@ class PermissionRequester internal constructor(
     if (permission.isGranted(appContext, required)) return false
     return required.any {
       ContextCompat.checkSelfPermission(appContext, it) != PackageManager.PERMISSION_GRANTED &&
-        prefs.wasPermissionRequested(it) && !ActivityCompat.shouldShowRequestPermissionRationale(activity, it)
+        prefs.wasPermissionDenied(it) && !ActivityCompat.shouldShowRequestPermissionRationale(activity, it)
     }
   }
 
@@ -125,7 +125,7 @@ class PermissionRequester internal constructor(
                   } else {
                     Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", appContext.packageName, null))
                   }
-                if (permission == PhonePermission.NotificationListener) prefs.recordRequestedPermissions(listOf(permission.name))
+                if (permission == PhonePermission.NotificationListener) prefs.recordPermissionResults(mapOf(permission.name to false))
                 active.host.activity.startActivity(intent)
                 true
               }
@@ -137,18 +137,16 @@ class PermissionRequester internal constructor(
       requestIfMissing(required, firstUse = firstUse)
     }
     val granted = permission.isGranted(appContext, required)
-    if (granted) applyFirstFeatureGrant(permission)
+    if (granted) recordGrantedPermissions(permission, required)
     return granted
   }
 
-  private fun applyFirstFeatureGrant(permission: PhonePermission) {
-    if (!prefs.canRequestFeatureOnFirstUse(permission)) return
-    when (permission) {
-      PhonePermission.Camera -> prefs.setCameraEnabled(true)
-      PhonePermission.Location -> prefs.setLocationMode(LocationMode.WhileUsing)
-      else -> Unit
-    }
-    (appContext as NodeApp).peekRuntime()?.refreshNodePermissionSurface()
+  private fun recordGrantedPermissions(
+    permission: PhonePermission,
+    required: List<String>,
+  ) {
+    val granted = required.filter { ContextCompat.checkSelfPermission(appContext, it) == PackageManager.PERMISSION_GRANTED }
+    prefs.recordPermissionResults((granted + permission.name).associateWith { true })
   }
 
   internal suspend fun requestOnFirstUse(
@@ -156,23 +154,16 @@ class PermissionRequester internal constructor(
     required: List<String> = permission.permissions,
     agentName: String,
   ): String? {
-    val needsFeatureConsent = prefs.canRequestFeatureOnFirstUse(permission)
-    val alreadyGranted = permission.isGranted(appContext, required)
-    if (alreadyGranted && !needsFeatureConsent) return null
+    if (permission.isGranted(appContext, required)) {
+      recordGrantedPermissions(permission, required)
+      return null
+    }
     val keys =
-      if (alreadyGranted) {
-        listOf(permission.name)
-      } else {
-        required
-          .filter { ContextCompat.checkSelfPermission(appContext, it) != PackageManager.PERMISSION_GRANTED }
-          .ifEmpty { listOf(permission.name) }
-      }
+      required
+        .filter { ContextCompat.checkSelfPermission(appContext, it) != PackageManager.PERMISSION_GRANTED }
+        .ifEmpty { listOf(permission.name) }
     if (activeActivityHost.value != null) {
-      if (keys.any(prefs::wasPermissionRequested)) return "Allow access in OpenClaw Settings > Phone Capabilities."
-      if (needsFeatureConsent && permission.isGranted(appContext, required)) {
-        if (!confirmFeatureAccess(permission, agentName)) return "Access declined. Allow access in OpenClaw Settings > Phone Capabilities."
-        return null
-      }
+      if (keys.any(prefs::wasPermissionDenied)) return "Allow access in OpenClaw Settings > Phone Capabilities."
       request(permission, required, firstUse = true)
       return if (permission.isGranted(appContext, required)) {
         "Permission granted. Retry after the phone reconnects and any required Gateway approval completes."
@@ -210,47 +201,6 @@ class PermissionRequester internal constructor(
       "Permission notification posted. Retry after the user allows access and any required Gateway approval completes."
     }
   }
-
-  private suspend fun confirmFeatureAccess(
-    permission: PhonePermission,
-    agentName: String,
-  ): Boolean =
-    mutex.withLock {
-      if (!prefs.canRequestFeatureOnFirstUse(permission)) return@withLock true
-      if (prefs.wasPermissionRequested(permission.name)) return@withLock false
-      withTimeout(20_000) {
-        while (true) {
-          val active = awaitActiveActivityHost(20_000)
-          val result =
-            showPermissionDialog(active, RationaleResult.HostLost) { activity, finish ->
-              prefs.recordRequestedPermissions(listOf(permission.name))
-              AlertDialog
-                .Builder(activity)
-                .setTitle(nativeString("Allow \$feature?", permission.label))
-                .setMessage(nativeString("\$agentName wants to use \$feature on this phone.", agentName, permission.label))
-                .setPositiveButton(nativeString("Allow")) { _, _ -> finish(RationaleResult.Proceed) }
-                .setNegativeButton(nativeString("Not now")) { _, _ -> finish(RationaleResult.Decline) }
-                .setOnCancelListener { finish(RationaleResult.Decline) }
-                .show()
-            }
-          when (result) {
-            RationaleResult.Proceed -> {
-              applyFirstFeatureGrant(permission)
-              return@withTimeout true
-            }
-
-            RationaleResult.Decline -> {
-              return@withTimeout false
-            }
-
-            RationaleResult.HostLost -> {
-              continue
-            }
-          }
-        }
-        error("unreachable")
-      }
-    }
 
   internal fun attach(
     activity: ComponentActivity,
@@ -302,7 +252,7 @@ class PermissionRequester internal constructor(
           ContextCompat.checkSelfPermission(appContext, perm) != PackageManager.PERMISSION_GRANTED
         }
       if (missing.isEmpty()) return@withLock permissions.associateWith { true }
-      if (firstUse && missing.any(prefs::wasPermissionRequested)) {
+      if (firstUse && missing.any(prefs::wasPermissionDenied)) {
         return@withLock permissions.associateWith { it !in missing }
       }
 
@@ -354,7 +304,9 @@ class PermissionRequester internal constructor(
         .mapIndexed { index, permission ->
           permission to (grantResults.getOrNull(index) == PackageManager.PERMISSION_GRANTED)
         }.toMap()
-    request.deferred.complete(request.permissions.associateWith { permission -> grants[permission] == true })
+    val results = request.permissions.associateWith { permission -> grants[permission] == true }
+    prefs.recordPermissionResults(results)
+    request.deferred.complete(results)
     return true
   }
 
@@ -418,7 +370,6 @@ class PermissionRequester internal constructor(
             if (activeActivityHost.value != active) return@withContext false
             val host = active.host
             if (host.activity.isFinishing || host.activity.isDestroyed) return@withContext false
-            prefs.recordRequestedPermissions(permissions)
             host.permissionRequestLauncher(permissions.toTypedArray(), requestCode)
             true
           }

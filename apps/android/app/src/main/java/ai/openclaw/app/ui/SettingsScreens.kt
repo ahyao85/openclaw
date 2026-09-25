@@ -176,6 +176,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import java.text.DateFormat
@@ -1299,9 +1300,8 @@ private fun PhoneCapabilitiesScreen(
 ) {
   val context = LocalContext.current
   val requester = (context.applicationContext as NodeApp).permissionRequester
-  val scope = rememberCoroutineScope()
+  val scope = viewModel.viewModelScope
   val lifecycleOwner = LocalLifecycleOwner.current
-  val firstUseFeatures by (context.applicationContext as NodeApp).prefs.unconfiguredPermissionFeatures.collectAsState()
   val cameraEnabled by viewModel.cameraEnabled.collectAsState()
   val locationMode by viewModel.locationMode.collectAsState()
   val locationPreciseEnabled by viewModel.locationPreciseEnabled.collectAsState()
@@ -1440,7 +1440,7 @@ private fun PhoneCapabilitiesScreen(
     SettingsTogglePanel(
       rows =
         listOf(
-          SettingsToggleRow(nativeString("Camera"), nativeString("Allow camera tools when requested."), Icons.Default.CameraAlt, cameraEnabled || PhonePermission.Camera.name in firstUseFeatures, ::setCameraAccess),
+          SettingsToggleRow(nativeString("Camera"), nativeString("Allow camera tools when requested."), Icons.Default.CameraAlt, cameraEnabled, ::setCameraAccess),
           SettingsToggleRow(nativeString("Precise Location"), nativeString("Share precise location while location is enabled."), Icons.Default.LocationOn, locationPreciseEnabled, ::setPreciseLocation),
           SettingsToggleRow(
             nativeString("Installed Apps"),
@@ -1458,12 +1458,10 @@ private fun PhoneCapabilitiesScreen(
     ClawPanel {
       Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(text = nativeString("Location"), style = ClawTheme.type.section, color = ClawTheme.colors.text)
-        val asksOnFirstUse = PhonePermission.Location.name in firstUseFeatures
-        val askWhenNeeded = nativeString("Ask when needed")
         ClawSegmentedControl(
-          options = (if (asksOnFirstUse) listOf(askWhenNeeded) else emptyList()) + locationModeLabels(backgroundLocationAvailable),
-          selected = if (asksOnFirstUse) askWhenNeeded else locationMode.displayLabel,
-          onSelect = { selected -> if (selected != askWhenNeeded) setLocationAccess(locationModeForLabel(selected)) },
+          options = locationModeLabels(backgroundLocationAvailable),
+          selected = locationMode.displayLabel,
+          onSelect = { selected -> setLocationAccess(locationModeForLabel(selected)) },
         )
         if (backgroundLocationAvailable) {
           Text(
@@ -1475,7 +1473,7 @@ private fun PhoneCapabilitiesScreen(
       }
     }
     Text(text = nativeString("Permissions"), style = ClawTheme.type.section, color = ClawTheme.colors.text)
-    PhonePermissionList(onPermissionChange = viewModel::refreshNodePermissionSurface)
+    PhonePermissionList(requestScope = scope, onPermissionChange = viewModel::refreshNodePermissionSurface)
   }
 
   if (showInstalledAppsDisclosure) {

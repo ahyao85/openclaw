@@ -2,8 +2,10 @@ package ai.openclaw.app.ui
 
 import ai.openclaw.app.GatewayConnectionProblem
 import ai.openclaw.app.GatewayNodeCapabilityApproval
+import ai.openclaw.app.LocationMode
 import ai.openclaw.app.MainViewModel
 import ai.openclaw.app.PhonePermission
+import ai.openclaw.app.SensitiveFeatureConfig
 import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.app.gateway.isLocalCleartextGatewayHost
 import ai.openclaw.app.gatewayConnectionStatusForDisplay
@@ -12,6 +14,7 @@ import ai.openclaw.app.i18n.nativeString
 import ai.openclaw.app.i18n.nativeText
 import ai.openclaw.app.i18n.resolveNativeTextResource
 import ai.openclaw.app.i18n.verbatimText
+import ai.openclaw.app.node.readAndroidPermissionSnapshot
 import ai.openclaw.app.ui.design.ClawDesignTheme
 import ai.openclaw.app.ui.design.ClawPrimaryButton
 import ai.openclaw.app.ui.design.ClawScaffold
@@ -80,6 +83,8 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.QrCode2
@@ -113,6 +118,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -121,11 +127,13 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.viewModelScope
 import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -506,8 +514,6 @@ fun OnboardingFlow(
       rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         cameraPermissionGranted = granted
       }
-
-    val initialNotificationsGranted = rememberSaveable { PhonePermission.Notifications.isGranted(context) }
 
     DisposableEffect(setupBarcodeScanner) {
       onDispose { setupBarcodeScanner.close() }
@@ -1012,12 +1018,45 @@ fun OnboardingFlow(
       }
 
       OnboardingStep.Permissions -> {
+        val cameraEnabled by viewModel.cameraEnabled.collectAsState()
+        val locationMode by viewModel.locationMode.collectAsState()
+
+        fun currentPermissions() =
+          readAndroidPermissionSnapshot(
+            context = context,
+            smsEnabled = SensitiveFeatureConfig.smsEnabled,
+            callLogEnabled = SensitiveFeatureConfig.callLogEnabled,
+            photosEnabled = SensitiveFeatureConfig.photosEnabled,
+            backgroundLocationEnabled = SensitiveFeatureConfig.backgroundLocationEnabled,
+          ).gatewayPermissions()
+        val initialPermissions = rememberSaveable { currentPermissions() }
+        val initialCameraEnabled = rememberSaveable { cameraEnabled }
+        val initialLocationMode = rememberSaveable { locationMode.rawValue }
         PermissionSetupScreen(
           modifier = modifier,
+          requestScope = viewModel.viewModelScope,
           onPermissionChange = viewModel::refreshNodePermissionSurface,
+          enabledFeatures = mapOf(PhonePermission.Camera to cameraEnabled, PhonePermission.Location to (locationMode != LocationMode.Off)),
+          onFeatureChange = { permission, enabled ->
+            when (permission) {
+              PhonePermission.Camera -> {
+                viewModel.setCameraEnabled(enabled)
+              }
+
+              PhonePermission.Location -> {
+                viewModel.setLocationMode(if (enabled) LocationMode.WhileUsing else LocationMode.Off)
+              }
+
+              else -> {
+              }
+            }
+          },
           onBack = ::goBack,
           onContinue = {
-            val requiresNodeSurfaceRefresh = initialNotificationsGranted != PhonePermission.Notifications.isGranted(context)
+            val requiresNodeSurfaceRefresh =
+              initialCameraEnabled != cameraEnabled ||
+                initialLocationMode != locationMode.rawValue ||
+                initialPermissions != currentPermissions()
             if (
               permissionContinueNeedsNodeApproval(
                 ready = ready,
@@ -2428,11 +2467,16 @@ private fun ApprovalCommandBlock(
 
 @Composable
 private fun PermissionSetupScreen(
+  requestScope: CoroutineScope,
   onPermissionChange: () -> Unit,
+  enabledFeatures: Map<PhonePermission, Boolean>,
+  onFeatureChange: (PhonePermission, Boolean) -> Unit,
   onBack: () -> Unit,
   onContinue: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
+  val setupPermissions = remember { listOf(PhonePermission.Notifications, PhonePermission.Voice, PhonePermission.Camera, PhonePermission.Location) }
+  var additionalFeaturesExpanded by rememberSaveable { mutableStateOf(false) }
   ClawScaffold(modifier = modifier, contentPadding = onboardingContentPadding()) {
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
       LazyColumn(
@@ -2450,7 +2494,7 @@ private fun PermissionSetupScreen(
         }
         item {
           Text(
-            text = nativeString("Allow notifications so OpenClaw can alert you when it needs access. Other permissions are requested when needed and can be managed in Settings."),
+            text = nativeString("Choose what this phone can share. All permissions are optional and can be changed later in Settings."),
             style = ClawTheme.type.body,
             color = ClawTheme.colors.textMuted,
             textAlign = TextAlign.Center,
@@ -2458,7 +2502,35 @@ private fun PermissionSetupScreen(
           )
         }
         item {
-          PhonePermissionList(permissions = listOf(PhonePermission.Notifications), onPermissionChange = onPermissionChange)
+          PhonePermissionList(
+            requestScope = requestScope,
+            permissions = setupPermissions,
+            onPermissionChange = onPermissionChange,
+            enabledFeatures = enabledFeatures,
+            onFeatureChange = onFeatureChange,
+          )
+        }
+        item {
+          TextButton(
+            onClick = { additionalFeaturesExpanded = !additionalFeaturesExpanded },
+            modifier = Modifier.semantics { stateDescription = if (additionalFeaturesExpanded) nativeString("Expanded") else nativeString("Collapsed") },
+          ) {
+            Text(nativeString("Additional features"))
+            Spacer(modifier = Modifier.size(8.dp))
+            Icon(
+              imageVector = if (additionalFeaturesExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+              contentDescription = null,
+            )
+          }
+        }
+        if (additionalFeaturesExpanded) {
+          item {
+            PhonePermissionList(
+              requestScope = requestScope,
+              permissions = PhonePermission.entries.filterNot(setupPermissions::contains),
+              onPermissionChange = onPermissionChange,
+            )
+          }
         }
       }
       OnboardingActions {

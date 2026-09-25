@@ -17,13 +17,13 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -32,28 +32,27 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 
 @Composable
 internal fun PhonePermissionList(
+  requestScope: CoroutineScope,
   permissions: List<PhonePermission> = PhonePermission.entries,
   onPermissionChange: () -> Unit,
+  enabledFeatures: Map<PhonePermission, Boolean> = emptyMap(),
+  onFeatureChange: (PhonePermission, Boolean) -> Unit = { _, _ -> },
 ) {
   val context = LocalContext.current
   val requester = (context.applicationContext as NodeApp).permissionRequester
   val lifecycleOwner = LocalLifecycleOwner.current
-  val scope = rememberCoroutineScope()
   val onChange by rememberUpdatedState(onPermissionChange)
   val available = remember(context, permissions) { permissions.filter { it.isAvailable(context) } }
 
-  fun readPermissions() =
-    available.associateWith {
-      val featurePending = (context.applicationContext as NodeApp).prefs.canRequestFeatureOnFirstUse(it)
-      (it.isGranted(context) && !featurePending) to requester.isBlocked(it)
-    }
+  fun readPermissions() = available.associateWith { it.isGranted(context) to requester.isBlocked(it) }
 
-  var states by remember(context, available) { mutableStateOf(readPermissions()) }
+  var states by remember(context, available, enabledFeatures) { mutableStateOf(readPermissions()) }
   var requesting by remember { mutableStateOf(false) }
   var requestError by remember { mutableStateOf<String?>(null) }
 
@@ -75,40 +74,25 @@ internal fun PhonePermissionList(
   requestError?.let { Text(text = it, color = ClawTheme.colors.warning, style = ClawTheme.type.body) }
   ClawListPanel(items = available) { permission ->
     val (granted, blocked) = states.getValue(permission)
+    val featureEnabled = enabledFeatures[permission]
     val opensSettings = blocked || permission == PhonePermission.NotificationListener
-    ClawListItem(
-      title = permission.label,
-      subtitle = if (blocked) nativeString("Blocked by Android") else permission.description,
-      leading = {
-        Icon(imageVector = permission.icon, contentDescription = null, modifier = Modifier.size(20.dp), tint = ClawTheme.colors.text)
-      },
-      trailing = {
-        Text(
-          text =
-            when {
-              granted -> nativeString("Allowed")
-              opensSettings -> nativeString("Open settings")
-              else -> nativeString("Allow")
-            },
-          color =
-            when {
-              granted -> ClawTheme.colors.success
-              blocked -> ClawTheme.colors.warning
-              else -> ClawTheme.colors.accent
-            },
-          style = ClawTheme.type.label,
-        )
-      },
-      onClick =
-        if (granted || requesting) {
-          null
-        } else {
-          {
-            scope.launch {
+    val onClick: (() -> Unit)? =
+      if (requesting || (granted && featureEnabled == null)) {
+        null
+      } else {
+        {
+          if (featureEnabled == true && granted) {
+            onFeatureChange(permission, false)
+            refresh()
+          } else {
+            // The screen model retains this user action if Android recreates the UI during its prompt.
+            requestScope.launch {
               requesting = true
               requestError = null
               try {
-                requester.request(permission)
+                if (requester.request(permission) && featureEnabled != null) {
+                  onFeatureChange(permission, true)
+                }
                 refresh()
               } catch (_: TimeoutCancellationException) {
                 requestError = nativeString("Permission request timed out. Tap to try again.")
@@ -118,7 +102,36 @@ internal fun PhonePermissionList(
               }
             }
           }
-        },
+        }
+      }
+    ClawListItem(
+      title = if (permission == PhonePermission.Voice) nativeString("Microphone") else permission.label,
+      subtitle = if (blocked) nativeString("Blocked by Android") else permission.description,
+      leading = {
+        Icon(imageVector = permission.icon, contentDescription = null, modifier = Modifier.size(20.dp), tint = ClawTheme.colors.text)
+      },
+      trailing = {
+        if (featureEnabled != null) {
+          Switch(checked = featureEnabled && granted, onCheckedChange = { onClick?.invoke() }, enabled = !requesting)
+        } else {
+          Text(
+            text =
+              when {
+                granted -> nativeString("Allowed")
+                opensSettings -> nativeString("Open settings")
+                else -> nativeString("Allow")
+              },
+            color =
+              when {
+                granted -> ClawTheme.colors.success
+                blocked -> ClawTheme.colors.warning
+                else -> ClawTheme.colors.accent
+              },
+            style = ClawTheme.type.label,
+          )
+        }
+      },
+      onClick = onClick,
     )
   }
 }

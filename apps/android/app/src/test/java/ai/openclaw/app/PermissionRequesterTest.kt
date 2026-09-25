@@ -5,12 +5,10 @@ import android.app.Dialog
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.content.DialogInterface
 import android.content.pm.PackageManager
 import android.os.Looper
 import android.provider.Settings
 import androidx.activity.ComponentActivity
-import androidx.appcompat.app.AlertDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.TimeoutCancellationException
@@ -107,6 +105,38 @@ class PermissionRequesterTest {
 
   @Test
   @OptIn(ExperimentalCoroutinesApi::class)
+  fun expiredOneTimeGrantCanBeRequestedAgain() =
+    runTest {
+      Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+      val activity = activity()
+      val app = activity.application as NodeApp
+      val requests = FakePermissionRequests()
+      val requester = requester(activity, requests)
+
+      try {
+        val initial = async { requester.request(PhonePermission.Voice) }
+        runCurrent()
+        assertEquals(1, requests.size)
+        shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        requests.deliver(requester, 0, mapOf(Manifest.permission.RECORD_AUDIO to true))
+        runCurrent()
+        assertTrue(initial.await())
+
+        shadowOf(app).denyPermissions(Manifest.permission.RECORD_AUDIO)
+        val renewed = async { requester.requestOnFirstUse(PhonePermission.Voice, agentName = "Research agent") }
+        runCurrent()
+        assertEquals(2, requests.size)
+        shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        requests.deliver(requester, 1, mapOf(Manifest.permission.RECORD_AUDIO to true))
+        runCurrent()
+        assertTrue(requireNotNull(renewed.await()).contains("Permission granted"))
+      } finally {
+        Dispatchers.resetMain()
+      }
+    }
+
+  @Test
+  @OptIn(ExperimentalCoroutinesApi::class)
   fun deniedPermissionDoesNotPromptOnFirstUseAgainAndExplicitTapOpensSettings() =
     runTest {
       Dispatchers.setMain(StandardTestDispatcher(testScheduler))
@@ -163,85 +193,23 @@ class PermissionRequesterTest {
 
   @Test
   @OptIn(ExperimentalCoroutinesApi::class)
-  fun explicitChoiceEnablesUnconfiguredFeaturesButPreservesExplicitOffAfterRecreation() =
+  fun androidGrantsDoNotChangeCameraOrLocationFeatureChoices() =
     runTest {
       Dispatchers.setMain(StandardTestDispatcher(testScheduler))
       val app = RuntimeEnvironment.getApplication() as NodeApp
-      val prefs = app.prefs
       shadowOf(app).grantPermissions(Manifest.permission.CAMERA, Manifest.permission.ACCESS_COARSE_LOCATION)
       val requester = PermissionRequester(app)
 
       try {
-        assertFalse(prefs.cameraEnabled.value)
-        assertEquals(LocationMode.Off, prefs.locationMode.value)
         assertTrue(requester.request(PhonePermission.Camera))
         assertTrue(requester.request(PhonePermission.Location))
-        assertTrue(prefs.cameraEnabled.value)
-        assertEquals(LocationMode.WhileUsing, prefs.locationMode.value)
-
-        prefs.setCameraEnabled(false)
-        prefs.setLocationMode(LocationMode.Off)
-        val restored = SecurePrefs(app)
-        assertFalse(restored.canRequestFeatureOnFirstUse(PhonePermission.Camera))
-        assertFalse(restored.canRequestFeatureOnFirstUse(PhonePermission.Location))
-        val recreated = PermissionRequester(app)
-        assertNull(recreated.requestOnFirstUse(PhonePermission.Camera, agentName = "Research agent"))
-        assertNull(recreated.requestOnFirstUse(PhonePermission.Location, agentName = "Research agent"))
-        assertFalse(prefs.cameraEnabled.value)
-        assertEquals(LocationMode.Off, prefs.locationMode.value)
+        assertFalse(app.prefs.cameraEnabled.value)
+        assertEquals(LocationMode.Off, app.prefs.locationMode.value)
+        assertNull(requester.requestOnFirstUse(PhonePermission.Camera, agentName = "Research agent"))
+        assertNull(requester.requestOnFirstUse(PhonePermission.Location, agentName = "Research agent"))
         val persisted = SecurePrefs(app)
         assertFalse(persisted.cameraEnabled.value)
         assertEquals(LocationMode.Off, persisted.locationMode.value)
-      } finally {
-        Dispatchers.resetMain()
-      }
-    }
-
-  @Test
-  @OptIn(ExperimentalCoroutinesApi::class)
-  fun preexistingAndroidGrantStillNeedsFirstUseFeatureConsent() =
-    runTest {
-      Dispatchers.setMain(StandardTestDispatcher(testScheduler))
-      val activity = activity()
-      val app = activity.application as NodeApp
-      shadowOf(app).grantPermissions(Manifest.permission.CAMERA, Manifest.permission.ACCESS_COARSE_LOCATION)
-      val requests = FakePermissionRequests()
-      val requester = requester(activity, requests)
-      try {
-        val camera = async { requester.requestOnFirstUse(PhonePermission.Camera, agentName = "Research agent") }
-        runCurrent()
-        assertFalse(app.prefs.cameraEnabled.value)
-        val cameraDialog = checkNotNull(ShadowDialog.getLatestDialog()) as AlertDialog
-        cameraDialog.getButton(DialogInterface.BUTTON_NEGATIVE).performClick()
-        shadowOf(Looper.getMainLooper()).idle()
-        runCurrent()
-        assertTrue(requireNotNull(camera.await()).contains("declined"))
-        assertFalse(app.prefs.cameraEnabled.value)
-        requester.requestOnFirstUse(PhonePermission.Camera, agentName = "Research agent")
-        assertFalse(cameraDialog.isShowing)
-        assertFalse(app.prefs.cameraEnabled.value)
-
-        val earlierLocationRequest =
-          async {
-            requester.requestIfMissing(listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-          }
-        runCurrent()
-        requests.deliver(requester, 0, mapOf(Manifest.permission.ACCESS_FINE_LOCATION to false, Manifest.permission.ACCESS_COARSE_LOCATION to true))
-        runCurrent()
-        cancelDialog(checkNotNull(ShadowDialog.getLatestDialog()))
-        runCurrent()
-        earlierLocationRequest.await()
-
-        val location = async { requester.requestOnFirstUse(PhonePermission.Location, agentName = "Research agent") }
-        runCurrent()
-        assertEquals(LocationMode.Off, app.prefs.locationMode.value)
-        val locationDialog = checkNotNull(ShadowDialog.getLatestDialog()) as AlertDialog
-        assertTrue(locationDialog.isShowing)
-        locationDialog.getButton(DialogInterface.BUTTON_POSITIVE).performClick()
-        shadowOf(Looper.getMainLooper()).idle()
-        runCurrent()
-        location.await()
-        assertEquals(LocationMode.WhileUsing, app.prefs.locationMode.value)
       } finally {
         Dispatchers.resetMain()
       }

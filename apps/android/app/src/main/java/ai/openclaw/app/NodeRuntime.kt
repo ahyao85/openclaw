@@ -1333,8 +1333,8 @@ class NodeRuntime private constructor(
       callLogHandler = callLogHandler,
       mobileUiHandler = mobileUiHandler,
       isForeground = { _isForeground.value },
-      cameraEnabled = { cameraEnabled.value || prefs.canRequestFeatureOnFirstUse(PhonePermission.Camera) },
-      locationEnabled = { locationMode.value != LocationMode.Off || prefs.canRequestFeatureOnFirstUse(PhonePermission.Location) },
+      cameraEnabled = { cameraEnabled.value },
+      locationEnabled = { locationMode.value != LocationMode.Off },
       sendSmsAvailable = { SensitiveFeatureConfig.smsEnabled && sms.hasTelephonyFeature() },
       readSmsAvailable = { SensitiveFeatureConfig.smsEnabled && sms.canReadSms() },
       smsSearchPossible = { SensitiveFeatureConfig.smsEnabled && sms.hasTelephonyFeature() },
@@ -3911,13 +3911,13 @@ class NodeRuntime private constructor(
   }
 
   fun setCameraEnabled(value: Boolean) {
-    if (prefs.cameraEnabled.value == value && !prefs.canRequestFeatureOnFirstUse(PhonePermission.Camera)) return
+    if (prefs.cameraEnabled.value == value) return
     prefs.setCameraEnabled(value)
     refreshAcceptedGatewayConnection()
   }
 
   fun setLocationMode(mode: LocationMode) {
-    if (prefs.locationMode.value == mode && !prefs.canRequestFeatureOnFirstUse(PhonePermission.Location)) return
+    if (prefs.locationMode.value == mode) return
     prefs.setLocationMode(mode)
     refreshAcceptedGatewayConnection()
   }
