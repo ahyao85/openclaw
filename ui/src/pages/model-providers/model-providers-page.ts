@@ -304,7 +304,7 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       if (
         (data.agentId ?? "") === this.selectedAgentId &&
         data.selectionIntentRevision === this.context.settingsAgentSelection.intentRevision &&
-        this.gateway.isRouteDataCurrent(this.routeData)
+        this.gateway.isRouteDataCurrent(data)
       ) {
         this.supplemental.adoptCoreData(data.client, data.data);
       } else {
